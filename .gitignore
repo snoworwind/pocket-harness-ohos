@@ -25,3 +25,10 @@ entry/src/main/resources/rawfile/tools/*.zip
 
 # 本地产物
 *.log
+
+# 本机签名材料：整套签名配置只在本地存在，构建时由 scripts/build.ps1 临时套用
+signing.local.profile.json5
+signing.config.json5
+.ohos/
+*.jks
+*.keystore

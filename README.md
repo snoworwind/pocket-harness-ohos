@@ -62,7 +62,7 @@ bash scripts/pack-native.sh            # 产物 + 引擎归档 → entry/
 
 ```powershell
 pwsh -File scripts/build.ps1 -DevEcoHome 'D:\D Program Files\DevEco Studio'
-# 签名配置写在 build-profile.json5 的 signingConfigs（仓库里留空，需在本机用 DevEco 生成或手动填入），并由 product 的 signingConfig 引用
+# 签名：把带 signingConfigs 的完整配置存成本地 signing.local.profile.json5（已被 .gitignore 排除），build.ps1 会临时套用并在构建后还原
 pwsh -File scripts/sign-and-install.ps1 -AppCert <cer> -Profile <p7b> -Keystore <p12> `
   -KeystorePwd ****** -KeyPwd ******
 ```
