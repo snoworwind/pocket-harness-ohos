@@ -94,6 +94,9 @@ export struct TerminalView {
   onClose: () => void = () => {};
   @State private status: string = '正在启动终端';
   @State private ready: boolean = false;
+  @State private canvasReady: boolean = false;
+  @State private dbg: string = '';
+  private received: number = 0;
   @State private keyBar: boolean = true;
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
@@ -159,7 +162,7 @@ export struct TerminalView {
       env['TERM'] = 'xterm-256color';
       env['SHELL'] = this.root + '/bin/bash';
       this.session = new TerminalSession(this.root + '/bin/bash', ['-i'], context.filesDir, env,
-        (bytes: Uint8Array) => { term.input(this.handle, bytes); this.dirty = true; },
+        (bytes: Uint8Array) => { this.received += bytes.length; term.input(this.handle, bytes); this.dirty = true; },
         (code: number) => { this.status = 'bash 已退出（' + code.toString() + '）'; });
       this.status = '';
       this.ready = true;
@@ -220,6 +223,12 @@ export struct TerminalView {
     if (width < 10 || height < 10) { this.dirty = true; return; }
     this.ctx.fillStyle = DEFAULT_BG;
     this.ctx.fillRect(0, 0, width, height);
+    this.ctx.fillStyle = '#ff0000';
+    this.ctx.fillRect(20, 90, 120, 30);
+    this.ctx.fillStyle = '#ffffff';
+    this.ctx.font = '12px monospace';
+    this.ctx.fillText('TICK', 26, 110);
+    this.ctx.font = FONT_SIZE.toString() + 'px monospace';
     this.ctx.font = FONT_SIZE.toString() + 'px monospace';
     this.ctx.textBaseline = 'alphabetic';
     this.cellW = Math.max(1, this.ctx.measureText('M').width);
@@ -290,6 +299,13 @@ export struct TerminalView {
             .height(this.viewH)
             .backgroundColor(DEFAULT_BG)
             .onReady(() => {
+              this.canvasReady = true;
+              this.dbg = 'rdy ' + Math.round(this.ctx.width).toString() + 'x' + Math.round(this.ctx.height).toString();
+              this.ctx.fillStyle = '#00ff00';
+              this.ctx.fillRect(20, 20, 180, 60);
+              this.ctx.fillStyle = '#000000';
+              this.ctx.font = '14px monospace';
+              this.ctx.fillText('ONREADY', 28, 56);
               if (this.ctx.width > 0) { this.viewW = this.ctx.width; this.viewH = this.ctx.height; }
               this.dirty = true;
             })
@@ -313,6 +329,13 @@ export struct TerminalView {
         }
         .width('100%')
         .layoutWeight(1)
+        Text('dbg=' + this.dbg + ' w=' + Math.round(this.viewW).toString() + ' h=' +
+          Math.round(this.viewH).toString() + ' hnd=' + this.handle.toString() + ' rx=' +
+          this.received.toString() + ' ' + this.status)
+          .fontSize(10)
+          .fontColor('#80ff80')
+          .width('100%')
+          .padding({ left: 8 })
         if (this.keyBar) {
           Scroll() {
             Row({ space: 6 }) {

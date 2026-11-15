@@ -116,6 +116,14 @@ static napi_value MakeInt(napi_env env, int value) {
     return out;
 }
 
+// 句柄是 64 位指针：必须用 double 返回（JS number 能精确表示 53 位），
+// 用 int32 会截断指针，回到 ArkTS 再当指针用就是野地址。
+static napi_value MakeHandle(napi_env env, void* pointer) {
+    napi_value out = NULL;
+    napi_create_double(env, (double)(uintptr_t)pointer, &out);
+    return out;
+}
+
 static napi_value Create(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value argv[2] = {NULL, NULL};
@@ -150,7 +158,7 @@ static napi_value Create(napi_env env, napi_callback_info info) {
     vterm_screen_enable_altscreen(term->screen, 1);
     vterm_screen_reset(term->screen, 1);
     vterm_screen_flush_damage(term->screen);
-    return MakeInt(env, (int)(intptr_t)term);
+    return MakeHandle(env, term);
 }
 
 static napi_value Destroy(napi_env env, napi_callback_info info) {
