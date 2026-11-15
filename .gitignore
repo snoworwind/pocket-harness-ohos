@@ -1,34 +1,82 @@
-.hvigor/
-oh_modules/
+# ---- 依赖 ----
 node_modules/
-entry/build/
+oh_modules/
+
+# ---- 构建产物 ----
+.hvigor/
 build/
+entry/build/
+build-cmake/
+dist/
+.cxx/
+.preview/
+.test/
+.test-build/
+coverage/
+*.hap
+*.hsp
+*.app
+*.har
+*.abc
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dSYM/
+compile_commands.json
+BuildProfile.ets
+
+# ---- 本地配置与签名材料 ----
 local.properties
+*.local
+.env
+.env.*
+!.env.example
+.npmrc
+.ohpmrc
+.sign/
+.ohos/
+signing.local.profile.json5
+signing.config.json5
 *.p12
 *.p7b
 *.cer
-.test-build/
+*.csr
+*.jks
+*.keystore
+
+# ---- 原生预编译产物与第三方包 ----
 native/iec/build/
 native/iec/thirdparty/*.tar.gz
 native/iec/thirdparty/*.tar.xz
 native/iec/platform/ohos/har/build/
-
-# IDE
-.idea/
-*.iml
-
-# 构建产物：预编译原生库与打包好的引擎归档由 scripts/pack-native.sh 生成
 entry/libs/
 entry/src/main/resources/rawfile/tools/*.tar.gz
 entry/src/main/resources/rawfile/tools/*.tar.xz
 entry/src/main/resources/rawfile/tools/*.zip
 
-# 本地产物
-*.log
+# ---- IDE / 编辑器 ----
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+*.tmp
 
-# 本机签名材料：整套签名配置只在本地存在，构建时由 scripts/build.ps1 临时套用
-signing.local.profile.json5
-signing.config.json5
-.ohos/
-*.jks
-*.keystore
+# ---- 日志与崩溃 ----
+*.log
+*.hprof
+hs_err_pid*
+core.*
+vgcore.*
+
+# ---- macOS / Windows 系统文件 ----
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

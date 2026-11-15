@@ -30,7 +30,7 @@ Windows 打包：
 pwsh -NoProfile -File scripts/build.ps1 -DevEcoHome 'D:\D Program Files\DevEco Studio'
 ```
 
-签名沿用项目当前调试签名配置。安装时必须显式指定模拟器 `hdc -t 127.0.0.1:5555`，避免操作真机。
+安装时必须显式指定模拟器 `hdc -t 127.0.0.1:5555`，避免操作真机。
 
 ## 新增装载器验证
 

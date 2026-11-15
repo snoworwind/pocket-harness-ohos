@@ -2,7 +2,7 @@
 
 把**官方 DeepSeek Harness** 整个搬进鸿蒙应用：界面就是官方 Web GUI（`dsh --profile web` 的浏览器前端），Agent Loop、工具调用、审批、会话、工作区、终端全部由官方 `@deepseek-ai/dsh` 提供；Bash、Node、toybox、libarchive、ripgrep 针对 `arm64-linux-ohos` 交叉编译成原生库随 HAP 安装，不依赖 adb、Termux 或远程服务器。
 
-> 状态：HAP 已用调试签名安装到真机（SGT-AL10 / HarmonyOS 6.1）并成功启动，界面是官方 Web GUI 的壳：ArkTS 只负责解包引擎、起 `dsh --profile web`、把打印出来的 `http://127.0.0.1:<port>/?token=…` 交给 Web 组件。真机上的引擎启动、界面加载与工具调用链路正在逐项验收，进度见 [验证说明](docs/VALIDATION.md)。
+> 状态：HAP 已安装到真机（SGT-AL10 / HarmonyOS 6.1）并成功启动，界面是官方 Web GUI 的壳：ArkTS 只负责解包引擎、起 `dsh --profile web`、把打印出来的 `http://127.0.0.1:<port>/?token=…` 交给 Web 组件。真机上的引擎启动、界面加载与工具调用链路正在逐项验收，进度见 [验证说明](docs/VALIDATION.md)。
 
 ## 组成
 
@@ -20,7 +20,6 @@ native/iec/                     端侧原生执行核（IEC，来自 Bettersh）
 
 scripts/pack-native.sh          把交叉编译产物、官方引擎和前端打进 HAP
 scripts/build.ps1               Windows 命令行构建 HAP
-scripts/sign-and-install.ps1    签名 + 安装 + 启动（含包名一致性检查）
 ```
 
 ## 设备上真正运行的东西
@@ -58,16 +57,11 @@ bash scripts/pack-native.sh            # 产物 + 引擎归档 → entry/
 
 > `work/` 里的脚本是本机交叉编译环境的历史记录，路径写死在 `/var/tmp/deepseek-harmony-native`。
 
-### 2. HAP 与安装
+### 2. HAP 构建
 
 ```powershell
 pwsh -File scripts/build.ps1 -DevEcoHome 'D:\D Program Files\DevEco Studio'
-# 签名：把带 signingConfigs 的完整配置存成本地 signing.local.profile.json5（已被 .gitignore 排除），build.ps1 会临时套用并在构建后还原
-pwsh -File scripts/sign-and-install.ps1 -AppCert <cer> -Profile <p7b> -Keystore <p12> `
-  -KeystorePwd ****** -KeyPwd ******
 ```
-
-`sign-and-install.ps1` 会先比对 Profile 里的 `bundle-name` 与 `AppScope/app.json5` 的 `bundleName`（当前是 `dev.snoworwind.phoh`），不一致直接退出——调试 Profile 是绑定包名的，拿别的项目的材料签名装不上。
 
 ### 3. 宿主机测试
 
@@ -99,7 +93,7 @@ filesDir/
 
 ## 升级与数据
 
-覆盖安装（同 bundleName、同签名证书、`versionCode` 递增）时，应用数据目录整体保留：
+覆盖安装（同 bundleName、`versionCode` 递增）时，应用数据目录整体保留：
 
 | 内容 | 路径 | 覆盖更新后 |
 | --- | --- | --- |
@@ -108,9 +102,8 @@ filesDir/
 
 运行时目录名是 `0.2.0-<12 位摘要>`。摘要 = `sha256(应用版本 + 引擎版本 + Node 版本 + official-engine.tar.gz 全文 + npm.tar.gz 全文 + entry/libs 下每个 .so 全文)` 的前 12 位（`scripts/pack-native.sh`）。所以引擎、npm、任一原生库变了都会换目录、重新解包；只改 ArkTS 代码时摘要不变，升级后直接复用，省掉一次 1–2 分钟的解包。引擎归档用固定 `mtime`/排序打包，同样的输入两次打包摘要相同（已验证两次都是同一个值）。
 
-两条必须知道的边界：
+一条必须知道的边界：
 
-- **换签名证书**（debug 换 release、调试证书过期后重新生成）系统会拒绝覆盖安装，只能卸载重装，`harness-home` 会一起消失；
 - **降级**：装回旧版本会得到旧的运行时目录，需要重新解包；旧版本的 `runtime-<旧摘要>` 已被删掉，属于预期行为。
 
 ### 运行时目录被改坏时
