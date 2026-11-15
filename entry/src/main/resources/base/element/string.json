@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "鸿蒙原生 DeepSeek Harness"
+    },
+    {
+      "name": "location_reason",
+      "value": "保持官方引擎在后台继续执行任务"
+    }
+  ]
+}

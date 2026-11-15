@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0-d0ec68c03902",
+  "engineVersion": "0.2.2-rc.1",
+  "nodeVersion": "24.22.1",
+  "commands": [
+    { "name": "bash", "library": "libbash.so", "entry": "iec_bash_main", "arity": 3 },
+    { "name": "sh", "library": "libbash.so", "entry": "iec_bash_main", "arity": 3 },
+    { "name": "toybox", "library": "libtoybox.so", "entry": "bsh_toybox_main" },
+    { "name": "node", "library": "libnode.so", "entry": "iec_node_main" },
+    { "name": "npm", "library": "libnode.so", "entry": "iec_npm_main" },
+    { "name": "npx", "library": "libnode.so", "entry": "iec_npx_main" },
+    { "name": "pnpm", "library": "libnode.so", "entry": "iec_pnpm_main" },
+    { "name": "tar", "library": "libbsdtar.so", "entry": "iec_bsdtar_main" },
+    { "name": "cpio", "library": "libbsdcpio.so", "entry": "iec_bsdcpio_main" },
+    { "name": "unzip", "library": "libbsdunzip.so", "entry": "iec_bsdunzip_main" },
+    { "name": "zip", "library": "libzipcmd.so", "entry": "iec_zip_main" },
+    { "name": "rg", "library": "librg.so", "entry": "iec_rg_main" }
+  ]
+}

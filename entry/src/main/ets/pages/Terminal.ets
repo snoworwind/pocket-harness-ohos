@@ -1,0 +1,381 @@
+import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { display } from '@kit.ArkUI';
+import { execStart, execPoll, execRelease, execWrite } from 'iec';
+import { NativeRuntime } from '../platform/NativeRuntime';
+import terminal from 'libdsh_terminal.so';
+
+interface TerminalNative {
+  create(cols: number, rows: number): number;
+  destroy(handle: number): void;
+  input(handle: number, data: Uint8Array): void;
+  resize(handle: number, cols: number, rows: number): void;
+  copyScreen(handle: number, buffer: ArrayBuffer): number;
+  scrollbackCount(handle: number): number;
+  copyScrollback(handle: number, index: number, buffer: ArrayBuffer): number;
+  cursor(handle: number): number;
+  cellBytes(): number;
+}
+
+interface CellData {
+  ch: string;
+  fg: number;
+  bg: number;
+  attrs: number;
+  width: number;
+}
+
+const term = terminal as TerminalNative;
+
+interface TerminalManifest { version: string }
+
+const CELL_BYTES = 16;
+const FONT_SIZE = 14;
+const DEFAULT_FG = '#d6d6d6';
+const DEFAULT_BG = '#101113';
+const COLORS: string[] = [
+  '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
+  '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'
+];
+
+class TerminalSession {
+  private id: number = -1;
+  private timer: number = -1;
+  private base64 = new util.Base64Helper();
+  private onOutput: (bytes: Uint8Array) => void;
+  private onExit: (code: number) => void;
+  ended: boolean = false;
+
+  constructor(command: string, args: string[], cwd: string, env: Record<string, string>,
+    onOutput: (bytes: Uint8Array) => void, onExit: (code: number) => void) {
+    this.onOutput = onOutput;
+    this.onExit = onExit;
+    const handle = execStart({ cmd: command, args: args, cwd: cwd, env: env, envReplace: true,
+      keepStdinOpen: true, timeoutMs: 0, maxOutputBytes: 67108864 });
+    this.id = handle.id;
+    this.timer = setInterval(() => this.poll(), 25);
+  }
+
+  private poll(): void {
+    if (this.ended) return;
+    try {
+      const chunk = execPoll(this.id, 65536, 65536, 'base64');
+      if (chunk.out) this.onOutput(this.base64.decodeSync(chunk.out));
+      if (chunk.err) this.onOutput(this.base64.decodeSync(chunk.err));
+      if (!chunk.running && chunk.outEof && chunk.errEof) {
+        this.ended = true;
+        clearInterval(this.timer);
+        execRelease(this.id);
+        this.onExit(chunk.code);
+      }
+    } catch (error) {
+      this.ended = true;
+      clearInterval(this.timer);
+      this.onExit(-1);
+    }
+  }
+
+  write(text: string): void {
+    if (this.ended || text.length === 0) return;
+    try { execWrite(this.id, text); } catch (error) { /* 已结束 */ }
+  }
+
+  close(): void {
+    if (this.ended) return;
+    this.ended = true;
+    clearInterval(this.timer);
+    try { execRelease(this.id); } catch (error) { /* 忽略 */ }
+  }
+}
+
+@Component
+export struct TerminalView {
+  runtime?: NativeRuntime;
+  onClose: () => void = () => {};
+  @State private status: string = '正在启动终端';
+  @State private ready: boolean = false;
+  @State private keyBar: boolean = true;
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private handle: number = 0;
+  private session?: TerminalSession;
+  private screenBuf: ArrayBuffer = new ArrayBuffer(0);
+  private cellBuf: ArrayBuffer = new ArrayBuffer(0);
+  private cols: number = 80;
+  private rows: number = 24;
+  private cellW: number = 8;
+  private cellH: number = 18;
+  private dirty: boolean = true;
+  private timer: number = -1;
+  private sbOffset: number = 0;
+  private scrollbackCount: number = 0;
+  private input: string = '';
+  private lastY: number = 0;
+  @State private viewW: number = 360;
+  @State private viewH: number = 720;
+  private context?: common.UIAbilityContext;
+  private root: string = '';
+
+  aboutToAppear(): void {
+    try { this.context = this.getUIContext().getHostContext() as common.UIAbilityContext; } catch (error) { /* 无上下文 */ }
+    // Canvas 不依赖 onAreaChange：直接用窗口尺寸定死，避免首帧 0×0。
+    try {
+      const win = display.getDefaultDisplaySync();
+      this.viewW = px2vp(win.width);
+      this.viewH = px2vp(win.height) - 90;
+    } catch (error) { /* 取不到窗口尺寸时保持 0，draw 里再兜底 */ }
+    this.start();
+    this.timer = setInterval(() => this.tick(), 33);
+  }
+
+  aboutToDisappear(): void {
+    if (this.timer >= 0) { clearInterval(this.timer); this.timer = -1; }
+    this.session?.close();
+    if (this.handle !== 0) { term.destroy(this.handle); this.handle = 0; }
+  }
+
+  private tick(): void {
+    if (!this.ready || !this.dirty) return;
+    this.dirty = false;
+    this.draw();
+  }
+
+  private async start(): Promise<void> {
+    const context = this.context;
+    if (!context) { this.status = '没有应用上下文'; return; }
+    const runtime = this.runtime;
+    if (!runtime) { this.status = '运行时未就绪'; return; }
+    try {
+      // 复用 Index 的运行时：probeCaps/startIecServer 已经在 ensure() 里做过。
+      await runtime.ensure();
+      this.root = runtime.rootDir;
+      if (this.root === '') { this.status = '运行时目录为空'; return; }
+      this.status = '正在启动 bash';
+      this.handle = term.create(this.cols, this.rows) as number;
+      if (this.handle === 0) { this.status = 'libvterm 初始化失败'; return; }
+      this.screenBuf = new ArrayBuffer(this.cols * this.rows * CELL_BYTES);
+      term.input(this.handle, new Uint8Array([82, 69, 65, 68, 89, 13, 10]));
+      const env: Record<string, string> = runtime.environment;
+      env['TERM'] = 'xterm-256color';
+      env['SHELL'] = this.root + '/bin/bash';
+      this.session = new TerminalSession(this.root + '/bin/bash', ['-i'], context.filesDir, env,
+        (bytes: Uint8Array) => { term.input(this.handle, bytes); this.dirty = true; },
+        (code: number) => { this.status = 'bash 已退出（' + code.toString() + '）'; });
+      this.status = '';
+      this.ready = true;
+      this.dirty = true;
+    } catch (error) {
+      this.status = '终端启动失败：' + (error as Error).message;
+    }
+  }
+
+  private colorOf(value: number, fallback: string): string {
+    if (value === 0xFFFFFFFF) return fallback;
+    return '#' + (value & 0xFFFFFF).toString(16).padStart(6, '0');
+  }
+
+  private drawCell(x: number, y: number, ch: string, fg: number, bg: number, attrs: number, width: number): void {
+    if (bg !== 0xFFFFFFFF) {
+      this.ctx.fillStyle = this.colorOf(bg, DEFAULT_BG);
+      this.ctx.fillRect(x, y, this.cellW * width, this.cellH);
+    }
+    if (ch === '' || ch === '\u0000') return;
+    if (ch === ' ' && bg === 0xFFFFFFFF && attrs === 0) return;
+    this.ctx.fillStyle = (attrs & 8) !== 0 ? this.colorOf(bg, DEFAULT_BG) : this.colorOf(fg, DEFAULT_FG);
+    this.ctx.fillText(ch, x, y + this.cellH - 4);
+    if ((attrs & 2) !== 0) {
+      const w = this.cellW * width;
+      this.ctx.fillRect(x, y + this.cellH - 2, w, 1);
+    }
+  }
+
+  private decodeCell(buffer: ArrayBuffer, index: number): CellData {
+    const view = new DataView(buffer);
+    const off = index * CELL_BYTES;
+    const code = view.getUint32(off, true);
+    const ch = code > 0 ? String.fromCodePoint(code) : '';
+    return {
+      ch: ch, fg: view.getUint32(off + 4, true), bg: view.getUint32(off + 8, true),
+      attrs: view.getUint8(off + 12), width: Math.max(1, view.getUint8(off + 13))
+    };
+  }
+
+  private draw(): void {
+    if (this.handle === 0) return;
+    let width = this.viewW > 0 ? this.viewW : this.ctx.width;
+    let height = this.viewH > 0 ? this.viewH : this.ctx.height;
+    // Canvas 的 onAreaChange 在部分入口下不会触发；用窗口尺寸兜底，保证首帧就能画。
+    if (width < 10 || height < 10) {
+      try {
+        const win = display.getDefaultDisplaySync();
+        width = px2vp(win.width);
+        height = px2vp(win.height) - 96;
+      } catch (error) {
+        width = 360;
+        height = 720;
+      }
+      this.viewW = width;
+      this.viewH = height;
+    }
+    if (width < 10 || height < 10) { this.dirty = true; return; }
+    this.ctx.fillStyle = DEFAULT_BG;
+    this.ctx.fillRect(0, 0, width, height);
+    this.ctx.font = FONT_SIZE.toString() + 'px monospace';
+    this.ctx.textBaseline = 'alphabetic';
+    this.cellW = Math.max(1, this.ctx.measureText('M').width);
+    this.cellH = Math.round(FONT_SIZE * 1.35);
+    const visibleRows = Math.max(1, Math.floor(height / this.cellH));
+    const visibleCols = Math.max(2, Math.floor(width / this.cellW));
+
+    const cells = term.copyScreen(this.handle, this.screenBuf) as number;
+    if (cells <= 0) return;
+    this.scrollbackCount = term.scrollbackCount(this.handle) as number;
+    if (this.sbOffset > this.scrollbackCount) this.sbOffset = this.scrollbackCount;
+
+    if (this.cellBuf.byteLength < this.cols * CELL_BYTES) {
+      this.cellBuf = new ArrayBuffer(this.cols * CELL_BYTES);
+    }
+    let y = 0;
+    // 回看区：从最新的一行往前画。
+    const sbRows = Math.min(this.sbOffset, Math.floor(height / this.cellH));
+    for (let i = 0; i < sbRows; i++) {
+      const index = this.scrollbackCount - this.sbOffset + i;
+      if ((term.copyScrollback(this.handle, index, this.cellBuf) as number) < 0) break;
+      for (let col = 0; col < this.cols; col++) {
+        const cell = this.decodeCell(this.cellBuf, col);
+        this.drawCell(col * this.cellW, y, cell.ch, cell.fg, cell.bg, cell.attrs, cell.width);
+      }
+      y += this.cellH;
+    }
+    const screenRows = Math.min(this.rows, visibleRows - sbRows);
+    for (let row = 0; row < screenRows; row++) {
+      for (let col = 0; col < Math.min(this.cols, visibleCols); col++) {
+        const cell = this.decodeCell(this.screenBuf, row * this.cols + col);
+        this.drawCell(col * this.cellW, y, cell.ch, cell.fg, cell.bg, cell.attrs, cell.width);
+      }
+      y += this.cellH;
+    }
+    // 光标只在没有滚动时画。
+    if (this.sbOffset === 0) {
+      const cursor = term.cursor(this.handle) as number;
+      const visible = (cursor & 1) !== 0;
+      const col = (cursor >> 1) & 0x7FFF;
+      const row = (cursor >> 16) & 0xFFFF;
+      if (visible && row < screenRows && col < visibleCols) {
+        const cy = sbRows * this.cellH + row * this.cellH;
+        this.ctx.fillStyle = '#8ab4f8';
+        this.ctx.fillRect(col * this.cellW, cy, this.cellW, this.cellH - 2);
+      }
+    }
+  }
+
+  private send(text: string): void {
+    this.session?.write(text);
+    this.dirty = true;
+  }
+
+  private onTextChange(value: string): void {
+    if (value.length === 0) return;
+    const added = value.startsWith(this.input) ? value.slice(this.input.length) : value;
+    this.input = value;
+    if (added.length > 0) this.send(added);
+  }
+
+  build() {
+    Stack() {
+      Column() {
+        Stack() {
+          Canvas(this.ctx)
+            .width(this.viewW)
+            .height(this.viewH)
+            .backgroundColor(DEFAULT_BG)
+            .onReady(() => {
+              if (this.ctx.width > 0) { this.viewW = this.ctx.width; this.viewH = this.ctx.height; }
+              this.dirty = true;
+            })
+            .onAreaChange((_old: Area, area: Area) => {
+              this.viewW = Number(area.width);
+              this.viewH = Number(area.height);
+              this.dirty = true;
+            })
+            .onTouch((event: TouchEvent) => {
+              if (event.touches.length === 1 && event.type === TouchType.Move) {
+                const dy = event.touches[0].y - this.lastY;
+                if (Math.abs(dy) > 8) {
+                  this.sbOffset = Math.max(0, Math.min(this.scrollbackCount, this.sbOffset + (dy > 0 ? 1 : -1)));
+                  this.lastY = event.touches[0].y;
+                  this.dirty = true;
+                }
+              } else if (event.type === TouchType.Down) {
+                this.lastY = event.touches[0].y;
+              }
+            })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        if (this.keyBar) {
+          Scroll() {
+            Row({ space: 6 }) {
+              this.keyButton('Esc', '\u001b')
+              this.keyButton('Tab', '\t')
+              this.keyButton('Ctrl-C', '\u0003')
+              this.keyButton('Ctrl-D', '\u0004')
+              this.keyButton('←', '\u001b[D')
+              this.keyButton('↑', '\u001b[A')
+              this.keyButton('↓', '\u001b[B')
+              this.keyButton('→', '\u001b[C')
+              this.keyButton('Enter', '\r')
+              Button('输入')
+                .fontSize(12)
+                .height(30)
+                .backgroundColor('#26282c')
+                .fontColor('#d6d6d6')
+                .onClick(() => { this.getUIContext().getFocusController().requestFocus('term-input'); })
+              Button('关闭')
+                .fontSize(12)
+                .height(30)
+                .backgroundColor('#3a2a2a')
+                .fontColor('#f0a0a0')
+                .onClick(() => this.onClose())
+            }.padding({ left: 8, right: 8, top: 6, bottom: 6 })
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .width('100%')
+          .backgroundColor('#17181b')
+        }
+        TextInput({ text: this.input })
+          .width(1).height(1).opacity(0.01)
+          .id('term-input')
+          .onChange((value: string) => this.onTextChange(value))
+          .onSubmit(() => { this.send('\r'); this.input = ''; })
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(DEFAULT_BG)
+
+      if (!this.ready) {
+        Column({ space: 10 }) {
+          LoadingProgress().width(36).height(36)
+          Text(this.status).fontSize(13).fontColor('#9aa0a6')
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(DEFAULT_BG)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(DEFAULT_BG)
+  }
+
+  @Builder
+  keyButton(label: string, seq: string) {
+    Button(label)
+      .fontSize(12)
+      .height(30)
+      .backgroundColor('#26282c')
+      .fontColor('#d6d6d6')
+      .onClick(() => this.send(seq))
+  }
+}

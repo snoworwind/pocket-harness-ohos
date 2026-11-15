@@ -1,0 +1,603 @@
+// py_runner.cpp — `python3` 的独立解释器进程。
+//
+// 为什么需要它：shell 命令是 fork 出来的，而应用进程里已经有一个初始化好的
+// CPython（run_python）。在 fork 子进程里再初始化/收尾解释器会被父进程的锁状态
+// 影响（实测：SIGKILL 一次之后入口永久挂死；sys.exit(n) 的退出码也会丢）。
+//
+// 这里换一条彻底隔离的路：应用启动时（Python 还没初始化）fork 一个常驻 runner，
+// 它自己**从不加载 libpython**；每来一个请求，它再 fork 一个孙进程，孙进程才
+// dlopen libpython 并跑 Py_BytesMain。于是：
+//   * 孙进程的 CPython 永远是全新的，不继承任何父进程解释器状态；
+//   * 客户端/libpycmd 被 SIGKILL 只影响那一次请求，runner 不受影响；
+//   * 退出码由 runner 原样回传，不会被吞。
+//
+// 协议（本机 UDS，小端）：
+//   请求: u32 argc, u32 envc, u32 stdin_len
+//         argc 个 NUL 结尾 argv；envc 个 NUL 结尾 "K=V"；cwd 一个 NUL 结尾字符串
+//         stdin_len == 0xffffffff 时再跟一个 stdin 文件路径字符串（由 runner
+//         自己流式读进管道）；否则跟 stdin_len 字节 stdin。
+//   响应: u32 exit_code, u32 out_len, out bytes, u32 err_len, err bytes
+#include "py_runner.h"
+
+#include <arpa/inet.h>
+#include <dlfcn.h>
+#include <elf.h>
+#include <fcntl.h>
+#include <link.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "common/constant.h"
+
+namespace {
+
+// 设备上解释器固定在 bundle 里；宿主测试要指向宿主自己的 libpython，所以
+// 留一个编译期覆盖点。只改路径来源，不改变运行行为。
+#ifndef IEC_PY_LIBPYTHON
+#define IEC_PY_LIBPYTHON "/data/storage/el1/bundle/libs/arm64/libpython3.12.so"
+#endif
+constexpr const char* kLibPython = IEC_PY_LIBPYTHON;
+
+// CPython 的 Py_Exit() 调 libc 的 exit()：sys.exit(n) 和未捕获的 SystemExit
+// 都从这里结束。孙进程是从应用进程一路 fork 下来的，继承了 ArkTS 运行时的
+// atexit 处理器；其中一个会直接 _exit(0)，于是 `python3 -c "sys.exit(3)"`
+// 实测退出码是 0（普通 return 结束的脚本不受影响）。命令 so 用
+// -Wl,--wrap=exit 解决同类问题，但 libpython 是 dlopen 进来的，链接期包不住。
+// 这里在孙进程里把 libpython 的 exit GOT 槽改指向 iec_py_exit()，让结束码
+// 原样落到 _exit()，不运行任何继承来的 atexit 处理器。
+#if defined(__aarch64__)
+extern "C" void iec_py_exit(int status) {
+    fflush(nullptr);
+    _exit(status & 0xff);
+}
+
+struct ExitPatch {
+    const char* library;   // 要匹配的 so 文件名（basename）
+    bool patched;
+};
+
+void RedirectExitSlot(ExitPatch* state, void** slot) {
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) page = 4096;
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(slot);
+    void* page_addr = reinterpret_cast<void*>(addr & ~static_cast<uintptr_t>(page - 1));
+    // 全 RELRO 时 GOT 页是只读的；先放开写权限（进程私有 COW 页，安全）。
+    if (mprotect(page_addr, static_cast<size_t>(page), PROT_READ | PROT_WRITE) != 0) {
+        return;
+    }
+    *slot = reinterpret_cast<void*>(&iec_py_exit);
+    state->patched = true;
+}
+
+int PatchExitCallback(struct dl_phdr_info* info, size_t, void* data) {
+    ExitPatch* state = static_cast<ExitPatch*>(data);
+    if (info->dlpi_name == nullptr ||
+        strstr(info->dlpi_name, state->library) == nullptr) {
+        return 0;
+    }
+    const ElfW(Dyn)* dyn = nullptr;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+            dyn = reinterpret_cast<const ElfW(Dyn)*>(
+                info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
+            break;
+        }
+    }
+    if (dyn == nullptr) return 0;
+
+    const ElfW(Sym)* symtab = nullptr;
+    const char* strtab = nullptr;
+    const ElfW(Rela)* jmprel = nullptr;
+    size_t pltrelsz = 0;
+    const ElfW(Rela)* rela = nullptr;
+    size_t relasz = 0;
+    for (const ElfW(Dyn)* d = dyn; d->d_tag != DT_NULL; d++) {
+        switch (d->d_tag) {
+            case DT_SYMTAB:
+                symtab = reinterpret_cast<const ElfW(Sym)*>(info->dlpi_addr + d->d_un.d_ptr);
+                break;
+            case DT_STRTAB:
+                strtab = reinterpret_cast<const char*>(info->dlpi_addr + d->d_un.d_ptr);
+                break;
+            case DT_JMPREL:
+                jmprel = reinterpret_cast<const ElfW(Rela)*>(info->dlpi_addr + d->d_un.d_ptr);
+                break;
+            case DT_PLTRELSZ:
+                pltrelsz = static_cast<size_t>(d->d_un.d_val);
+                break;
+            case DT_RELA:
+                rela = reinterpret_cast<const ElfW(Rela)*>(info->dlpi_addr + d->d_un.d_ptr);
+                break;
+            case DT_RELASZ:
+                relasz = static_cast<size_t>(d->d_un.d_val);
+                break;
+            default:
+                break;
+        }
+    }
+    if (symtab == nullptr || strtab == nullptr) return 0;
+
+    auto patch_table = [&](const ElfW(Rela)* table, size_t bytes) {
+        if (table == nullptr) return;
+        const size_t n = bytes / sizeof(ElfW(Rela));
+        for (size_t i = 0; i < n; i++) {
+            const unsigned type = ELF64_R_TYPE(table[i].r_info);
+            if (type != R_AARCH64_JUMP_SLOT && type != R_AARCH64_GLOB_DAT) continue;
+            const size_t sym = ELF64_R_SYM(table[i].r_info);
+            const char* name = strtab + symtab[sym].st_name;
+            if (strcmp(name, "exit") != 0) continue;
+            void** slot = reinterpret_cast<void**>(info->dlpi_addr + table[i].r_offset);
+            RedirectExitSlot(state, slot);
+        }
+    };
+    patch_table(jmprel, pltrelsz);
+    patch_table(rela, relasz);
+    return 1;   // 已找到目标库，停止遍历
+}
+
+// 返回是否至少改到一个 exit 槽。失败时调用方只打一条 stderr，不阻断解释器。
+bool PatchPythonExit() {
+    const char* base = strrchr(kLibPython, '/');
+    base = (base == nullptr) ? kLibPython : base + 1;
+    ExitPatch state{base, false};
+    dl_iterate_phdr(PatchExitCallback, &state);
+    return state.patched;
+}
+#endif  // __aarch64__
+
+#if !defined(__aarch64__)
+// 宿主测试进程没有从 ArkTS 继承 atexit 处理器，CPython 的 exit(n) 本来就正确；
+// 且 GOT 重定位类型与设备不同，这里什么也不做，保持宿主断言原样。
+bool PatchPythonExit() {
+    return true;
+}
+#endif
+
+bool g_started = false;
+
+bool ReadFull(int fd, void* buf, size_t len) {
+    char* p = static_cast<char*>(buf);
+    while (len > 0) {
+        const ssize_t n = read(fd, p, len);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        p += n;
+        len -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool WriteFull(int fd, const void* buf, size_t len) {
+    const char* p = static_cast<const char*>(buf);
+    while (len > 0) {
+        const ssize_t n = write(fd, p, len);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        p += n;
+        len -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+uint32_t Get32(const char* p) {
+    uint32_t v = 0;
+    std::memcpy(&v, p, sizeof v);
+    return v;
+}
+
+bool ReadString(int fd, std::string* out) {
+    out->clear();
+    char c = 0;
+    while (true) {
+        if (!ReadFull(fd, &c, 1)) return false;
+        if (c == '\0') return true;
+        out->push_back(c);
+        if (out->size() > 64 * 1024) return false;
+    }
+}
+
+// Runs one python request. Returns after the response has been written.
+void HandleClient(int fd) {
+    // 客户端可能在任何一次 write 之前/之后消失。默认处置会让本 handler 直接
+    // 死于 SIGPIPE，连 waitpid 都走不到；这里只想看到 EPIPE 再决定怎么收尾。
+    signal(SIGPIPE, SIG_IGN);
+    char head[12];
+    if (!ReadFull(fd, head, sizeof head)) {
+        close(fd);
+        return;
+    }
+    const uint32_t argc = Get32(head + 0);
+    const uint32_t envc = Get32(head + 4);
+    const uint32_t stdin_len = Get32(head + 8);
+    // 0xffffffff 表示 stdin 走文件路径，runner 边读文件边喂管道：客户端不必
+    // 把大文件读进内存，也就不存在 16MB 截断。内联缓冲保留 64MB 上限，超过
+    // 直接拒绝而不是悄悄截断（客户端也会先在本地报错）。
+    const bool stdin_by_path = stdin_len == 0xffffffffu;
+    if (argc == 0 || argc > 256 || envc > 4096 ||
+        (!stdin_by_path && stdin_len > 64u * 1024 * 1024)) {
+        close(fd);
+        return;
+    }
+
+    std::vector<std::string> args;
+    std::vector<std::string> envs;
+    std::string cwd;
+    for (uint32_t i = 0; i < argc; i++) {
+        std::string s;
+        if (!ReadString(fd, &s)) { close(fd); return; }
+        args.push_back(std::move(s));
+    }
+    for (uint32_t i = 0; i < envc; i++) {
+        std::string s;
+        if (!ReadString(fd, &s)) { close(fd); return; }
+        envs.push_back(std::move(s));
+    }
+    if (!ReadString(fd, &cwd)) { close(fd); return; }
+    std::string stdin_data;
+    std::string stdin_path;
+    int in_file = -1;
+    if (stdin_by_path) {
+        if (!ReadString(fd, &stdin_path) || stdin_path.empty()) { close(fd); return; }
+        in_file = open(stdin_path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (in_file < 0) {
+            static const char kOpenFailed[] = "python3: cannot open the stdin file\n";
+            char resp[8];
+            const uint32_t ucode = 127;
+            const uint32_t zero = 0;
+            std::memcpy(resp, &ucode, 4);
+            std::memcpy(resp + 4, &zero, 4);
+            WriteFull(fd, resp, sizeof resp);
+            const uint32_t err_len = static_cast<uint32_t>(sizeof kOpenFailed - 1);
+            std::memcpy(resp, &err_len, 4);
+            WriteFull(fd, resp, 4);
+            WriteFull(fd, kOpenFailed, sizeof kOpenFailed - 1);
+            close(fd);
+            return;
+        }
+    } else if (stdin_len > 0) {
+        stdin_data.resize(stdin_len);
+        if (!ReadFull(fd, stdin_data.data(), stdin_len)) { close(fd); return; }
+    }
+
+    int in_pipe[2] = {-1, -1};
+    int out_pipe[2] = {-1, -1};
+    int err_pipe[2] = {-1, -1};
+    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+        for (int pfd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1],
+                        err_pipe[0], err_pipe[1]})
+            if (pfd >= 0) close(pfd);
+        close(fd);
+        return;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        // fork 失败时也要回一条响应。写不回去的话客户端只看到连接被关，
+        // 把"进程创建失败"报成"解释器挂了"，而且 8 字节响应的长度字段里
+        // 是 0，客户端能据此拿到下面这条错误文本。
+        static const char kForkFailed[] = "python3: cannot fork the interpreter\n";
+        char resp[8];
+        const uint32_t ucode = 127;
+        const uint32_t zero = 0;
+        std::memcpy(resp, &ucode, 4);
+        std::memcpy(resp + 4, &zero, 4);
+        WriteFull(fd, resp, sizeof resp);
+        const uint32_t err_len = static_cast<uint32_t>(sizeof kForkFailed - 1);
+        std::memcpy(resp, &err_len, 4);
+        WriteFull(fd, resp, 4);
+        WriteFull(fd, kForkFailed, sizeof kForkFailed - 1);
+        for (int pfd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1],
+                        err_pipe[0], err_pipe[1]})
+            if (pfd >= 0) close(pfd);
+        if (in_file >= 0) close(in_file);
+        close(fd);
+        return;
+    }
+    if (pid == 0) {
+        // 孙进程：这里才第一次加载 libpython，解释器状态是全新的。
+        // 自己开一个进程组：调用者消失后 handler 用 kill(-pid) 才能把它起的子进程
+        // 一并收掉（解释器自己没 setsid，子进程默认继承这个组）。
+        setpgid(0, 0);
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        // 只关 2 以上的原 fd：runner 启动时关掉了自己的 0..1023，handler 里
+        // pipe() 会从 0 开始分配编号，于是 in_pipe/out_pipe 的某个原 fd 很可能
+        // 就是 0/1/2。dup2 之后那个编号已经是 stdio 本身，再按原编号 close
+        // 会把刚接好的 stdin/stdout/stderr 关掉，解释器就在没有任何标准流的
+        // 情况下启动（表现为没有输出、退出码也不是脚本给的）。
+        if (in_pipe[0] > 2) close(in_pipe[0]);
+        if (in_pipe[1] > 2) close(in_pipe[1]);
+        if (out_pipe[0] > 2) close(out_pipe[0]);
+        if (out_pipe[1] > 2) close(out_pipe[1]);
+        if (err_pipe[0] > 2) close(err_pipe[0]);
+        if (err_pipe[1] > 2) close(err_pipe[1]);
+        if (fd > 2) close(fd);
+        for (const std::string& e : envs) {
+            const size_t eq = e.find('=');
+            if (eq != std::string::npos) {
+                setenv(e.substr(0, eq).c_str(), e.substr(eq + 1).c_str(), 1);
+            }
+        }
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
+            // 跑到别的目录里执行，比直接失败更难查：脚本会去读写错误的路径。
+            std::fprintf(stderr, "python3: cannot enter %s: %s\n",
+                         cwd.c_str(), std::strerror(errno));
+            _exit(127);
+        }
+        std::vector<char*> argv;
+        argv.reserve(args.size() + 1);
+        for (std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+        argv.push_back(nullptr);
+
+        void* lib = dlopen(kLibPython, RTLD_NOW | RTLD_LOCAL);
+        if (lib == nullptr) {
+            std::fprintf(stderr, "python3: cannot load %s: %s\n", kLibPython, dlerror());
+            _exit(127);
+        }
+        // 必须在 Py_BytesMain 之前改：Py_Exit() 的 exit 调用一旦先走 libc，
+        // 继承的 atexit 处理器就会把 sys.exit(n) 的 n 抹成 0。
+        if (!PatchPythonExit()) {
+            std::fprintf(stderr, "python3: warning: cannot redirect libpython exit()\n");
+        }
+        using PyBytesMain = int (*)(int, char**);
+        PyBytesMain entry = reinterpret_cast<PyBytesMain>(dlsym(lib, "Py_BytesMain"));
+        if (entry == nullptr) {
+            std::fprintf(stderr, "python3: Py_BytesMain not found\n");
+            _exit(127);
+        }
+        _exit(entry(static_cast<int>(argv.size() - 1), argv.data()));
+    }
+
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+
+    // stdin 不能先整块写完再开始读 stdout/stderr：解释器完全可能先写满
+    // stdout 再回来读 stdin，双方各等对方的管道腾出空间，64KB 一满就是死锁。
+    // 所以把 stdin 也放进同一个 poll：可写就写一段，可读就读 stdout/stderr。
+    size_t in_off = 0;
+    if (stdin_data.empty() && in_file < 0) {
+        close(in_pipe[1]);
+        in_pipe[1] = -1;
+    } else {
+        const int flags = fcntl(in_pipe[1], F_GETFL, 0);
+        if (flags >= 0) fcntl(in_pipe[1], F_SETFL, flags | O_NONBLOCK);
+    }
+
+    std::string out;
+    std::string err;
+    char buf[65536];
+    // 走文件路径时只在需要写入管道时读 64KB，不把整个文件装进 runner 内存。
+    char in_chunk[65536];
+    size_t in_chunk_len = 0;
+    size_t in_chunk_off = 0;
+    // 同时读 stdout/stderr，避免任一管道写满把孙进程卡住。
+    int open_fds = 2;
+    // 客户端连上后不会再发一个字节，所以它一旦可读，读到的只可能是 EOF：调用者
+    // 已经没了（shell 工具超时按 job 杀进程、用户取消、或应用进程退出）。必须盯着
+    // 它：解释器是 runner 的孙进程，不在调用者的作业里，job 级 SIGKILL 打不到，
+    // 不在这里收掉就会留下一个没人等、也没人能停的解释器一直跑。
+    int client_watch = fd;
+    bool client_gone = false;
+    auto kill_descendant = [&]() {
+        if (pid <= 0) return;
+        // 组在的时候先收全组（解释器自己起的子进程也在组里），再补一发单 pid：
+        // fork 与 setpgid 之间有窗口，早到的请求只杀得到根进程。
+        if (getpgid(pid) == pid) kill(-pid, SIGKILL);
+        kill(pid, SIGKILL);
+    };
+    while (open_fds > 0 || in_pipe[1] >= 0) {
+        struct pollfd pfd[4];
+        pfd[0].fd = out_pipe[0]; pfd[0].events = POLLIN;
+        pfd[1].fd = err_pipe[0]; pfd[1].events = POLLIN;
+        pfd[2].fd = in_pipe[1];  pfd[2].events = POLLOUT;
+        pfd[3].fd = client_watch; pfd[3].events = POLLIN;
+        // 负的 fd 会被 poll() 忽略，所以 4 个槽位固定给出，不必再按条件缩短。
+        const int rc = poll(pfd, 4, -1);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rc == 0) continue;
+
+        if (pfd[3].fd >= 0 && (pfd[3].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+            char probe = 0;
+            const ssize_t n = recv(pfd[3].fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+            if (n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN &&
+                           errno != EWOULDBLOCK)) {
+                client_gone = true;
+                client_watch = -1;
+                kill_descendant();
+            } else if (n > 0) {
+                // 协议里请求之后没有客户端数据；真收到了就读掉，免得下一轮
+                // poll 立刻又返回同一个 POLLIN 空转。
+                if (recv(pfd[3].fd, &probe, 1, MSG_DONTWAIT) < 0) {}
+            }
+        }
+
+        // stdin：写到 EAGAIN 为止，下一轮 POLLOUT 继续；全部写完就关闭，
+        // 让孙进程看到 EOF。对端先退出时 write 给 EPIPE（SIGPIPE 已忽略）。
+        if (in_pipe[1] >= 0 && (pfd[2].revents & (POLLOUT | POLLHUP | POLLERR)) != 0) {
+            bool close_in = (pfd[2].revents & (POLLHUP | POLLERR)) != 0;
+            while (!close_in) {
+                const char* src;
+                size_t avail;
+                if (in_file >= 0) {
+                    if (in_chunk_off == in_chunk_len) {
+                        ssize_t r = read(in_file, in_chunk, sizeof in_chunk);
+                        if (r < 0 && errno == EINTR) continue;
+                        if (r <= 0) { close_in = true; break; }
+                        in_chunk_len = static_cast<size_t>(r);
+                        in_chunk_off = 0;
+                    }
+                    src = in_chunk + in_chunk_off;
+                    avail = in_chunk_len - in_chunk_off;
+                } else {
+                    if (in_off >= stdin_data.size()) { close_in = true; break; }
+                    src = stdin_data.data() + in_off;
+                    avail = stdin_data.size() - in_off;
+                }
+                const ssize_t n = write(in_pipe[1], src, avail);
+                if (n > 0) {
+                    if (in_file >= 0) in_chunk_off += static_cast<size_t>(n);
+                    else in_off += static_cast<size_t>(n);
+                } else if (n < 0 && errno == EINTR) {
+                    continue;
+                } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    break;  // 管道满了，等下一次 POLLOUT
+                } else {
+                    close_in = true;
+                }
+            }
+            if (close_in) {
+                close(in_pipe[1]);
+                in_pipe[1] = -1;
+            }
+        }
+
+        for (int i = 0; i < 2; i++) {
+            if (pfd[i].fd < 0 || (pfd[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
+            const ssize_t n = read(pfd[i].fd, buf, sizeof buf);
+            if (n > 0) {
+                (i == 0 ? out : err).append(buf, static_cast<size_t>(n));
+            } else if (n < 0 && errno == EINTR) {
+                continue;
+            } else {
+                // pfd 每轮都从 out_pipe[0]/err_pipe[0] 重建：只把 pfd[i].fd 置 -1
+                // 不够，原 fd 编号下一轮又会被拿回 poll，对已关闭的 fd poll 会立刻
+                // 返回 POLLNVAL → 忙等自旋。这里同步把源变量也置 -1。
+                close(pfd[i].fd);
+                if (i == 0) out_pipe[0] = -1; else err_pipe[0] = -1;
+                pfd[i].fd = -1;
+                open_fds--;
+            }
+        }
+    }
+    if (in_pipe[1] >= 0) close(in_pipe[1]);
+    if (in_file >= 0) close(in_file);
+    close(out_pipe[0]);
+    close(err_pipe[0]);
+
+    int status = 0;
+    pid_t reaped = -1;
+    do {
+        reaped = waitpid(pid, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    // No status was observed, so never fall through with the initialised status
+    // (0) -- that claimed a success nobody saw. 127 is the status this client
+    // already uses for "the runner could not carry out the request"
+    // (python_entry.c); the caller only needs a failure that is not 0.
+    int code = -1;
+    if (reaped == pid) {
+        if (WIFEXITED(status)) code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) code = 128 + WTERMSIG(status);
+    } else {
+        code = 127;
+        err += "python3: waitpid: ";
+        err += std::strerror(errno);
+        err += "\n";
+    }
+
+    // 客户端已经没了就不写：反正只会拿到 EPIPE，而这段响应也没有人再看。
+    if (!client_gone) {
+        char resp[8];
+        const uint32_t ucode = static_cast<uint32_t>(code);
+        const uint32_t out_len = static_cast<uint32_t>(out.size());
+        std::memcpy(resp + 0, &ucode, 4);
+        std::memcpy(resp + 4, &out_len, 4);
+        WriteFull(fd, resp, sizeof resp);
+        WriteFull(fd, out.data(), out.size());
+        const uint32_t err_len = static_cast<uint32_t>(err.size());
+        std::memcpy(resp, &err_len, 4);
+        WriteFull(fd, resp, 4);
+        WriteFull(fd, err.data(), err.size());
+    }
+    close(fd);
+}
+
+}  // namespace
+
+bool StartPyRunner() {
+    if (g_started) {
+        return true;
+    }
+    const std::string sock_path = std::string(FAKE_SYSROOT) + "/py-runner.sock";
+    const int listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (listen_fd < 0) {
+        return false;
+    }
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path.c_str());
+    unlink(sock_path.c_str());
+    if (bind(listen_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof addr) != 0 ||
+        listen(listen_fd, 16) != 0) {
+        close(listen_fd);
+        return false;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(listen_fd);
+        return false;
+    }
+    if (pid > 0) {
+        // 父进程只保留监听 fd 给子进程；子进程自己会关掉无关 fd。
+        close(listen_fd);
+        g_started = true;
+        return true;
+    }
+
+    // 子进程：runner。绝不加载 libpython。
+    setsid();
+    for (int fd = 0; fd < 1024; fd++) {
+        if (fd != listen_fd) close(fd);
+    }
+    // 这个进程从应用进程 fork 出来，会继承应用运行时装下的信号处理器；它不
+    // exec，所以不像 execve 那样自动复位。其中若有"只在主进程里跑"的断言，
+    // 收到 SIGTERM 时会在 runner 里 abort。手动恢复成默认处置。
+    struct sigaction dfl {};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    for (int sig = 1; sig < NSIG; sig++) {
+        struct sigaction old {};
+        if (sigaction(sig, nullptr, &old) != 0) continue;
+        if (old.sa_handler == SIG_IGN || old.sa_handler == SIG_DFL) continue;
+        sigaction(sig, &dfl, nullptr);
+    }
+    // SIGCHLD 例外：即使应用把它设成了 SIG_IGN（内核自动回收），runner 也要
+    // 自己 waitpid 回收 handler 进程，所以无条件恢复默认。
+    signal(SIGCHLD, SIG_DFL);
+
+    for (;;) {
+        // 父进程（应用）死了就退出，避免留下孤儿 runner。
+        if (getppid() == 1) _exit(0);
+        struct pollfd pfd { listen_fd, POLLIN, 0 };
+        const int rc = poll(&pfd, 1, 5000);
+        if (rc < 0) continue;
+        if (rc == 0) continue;
+        const int fd = accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
+        if (fd < 0) continue;
+        const pid_t handler = fork();
+        if (handler == 0) {
+            close(listen_fd);
+            HandleClient(fd);
+            _exit(0);
+        }
+        close(fd);
+        while (waitpid(-1, nullptr, WNOHANG) > 0) {}
+    }
+}

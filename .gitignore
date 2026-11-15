@@ -1,0 +1,27 @@
+.hvigor/
+oh_modules/
+node_modules/
+entry/build/
+build/
+local.properties
+*.p12
+*.p7b
+*.cer
+.test-build/
+native/iec/build/
+native/iec/thirdparty/*.tar.gz
+native/iec/thirdparty/*.tar.xz
+native/iec/platform/ohos/har/build/
+
+# IDE
+.idea/
+*.iml
+
+# 构建产物：预编译原生库与打包好的引擎归档由 scripts/pack-native.sh 生成
+entry/libs/
+entry/src/main/resources/rawfile/tools/*.tar.gz
+entry/src/main/resources/rawfile/tools/*.tar.xz
+entry/src/main/resources/rawfile/tools/*.zip
+
+# 本地产物
+*.log

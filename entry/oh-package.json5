@@ -1,0 +1,11 @@
+{
+  "name": "entry",
+  "version": "0.2.0",
+  "description": "Native ArkUI entry",
+  "main": "",
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "iec": "file:../native/iec/platform/ohos/har"
+  }
+}
