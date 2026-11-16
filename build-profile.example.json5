@@ -1,5 +1,8 @@
 {
   "app": {
+    // 本文件是模板：复制成 build-profile.json5 后按需填写 signingConfigs。
+    // 带签名的配置不要提交，仓库已忽略 build-profile.json5。
+    "signingConfigs": [],
     "products": [
       {
         "name": "default",

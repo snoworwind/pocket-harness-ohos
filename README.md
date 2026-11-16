@@ -66,7 +66,7 @@ node scripts/build.mjs --deveco-home "D:\D Program Files\DevEco Studio"
 node scripts/build.mjs --clean
 ```
 
-签名材料写在 `build-profile.json5` 的 `signingConfigs` 里（本地填写，不要提交），或由 DevEco 注入。脚本只调用 hvigor，不会改动任何构建配置文件。
+`build-profile.json5` 已被 `.gitignore` 排除（它会含证书路径与口令）；仓库只保留 `build-profile.example.json5`。首次构建脚本会自动由模板生成前者；需要签名时在本地把 `signingConfigs` 填进去，或由 DevEco 注入。
 
 ### 3. 宿主机测试
 

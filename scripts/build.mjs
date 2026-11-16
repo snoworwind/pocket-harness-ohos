@@ -8,7 +8,7 @@
 //
 // 签名完全交给构建配置本身：签名材料写在 build-profile.json5 的 signingConfigs 里
 // （本地填写、不要提交），或由 DevEco 注入。脚本不会改动任何构建配置文件。
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, copyFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -91,6 +91,15 @@ function run(command, args, label) {
   });
   if (result.error) fail(`${label}: ${result.error.message}`);
   if (result.status !== 0) fail(`${label}: exit ${result.status}`);
+}
+
+// ── 构建配置 ───────────────────────────────────────────────────────────────
+// build-profile.json5 被 .gitignore 排除（含证书路径与口令）；首次构建用模板生成。
+const profilePath = join(root, 'build-profile.json5');
+const examplePath = join(root, 'build-profile.example.json5');
+if (!existsSync(profilePath) && existsSync(examplePath)) {
+  copyFileSync(examplePath, profilePath);
+  console.log('build: 已由 build-profile.example.json5 生成 build-profile.json5');
 }
 
 // ── 依赖 ──────────────────────────────────────────────────────────────────

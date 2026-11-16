@@ -80,3 +80,6 @@ vgcore.*
 ._*
 Thumbs.db
 desktop.ini
+
+# 本机签名配置（含证书路径与口令），仓库只保留 build-profile.example.json5
+build-profile.json5
