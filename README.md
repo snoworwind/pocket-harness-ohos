@@ -14,7 +14,9 @@
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
 | 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1 |
-| 发布产物 | GitHub Release：未签名 HAP + arm64/x86_64 原生库；应用市场：签名 `.app` |
+| 发布产物 | GitHub Release：未签名 HAP + arm64/x86_64 原生库（**本项目暂不打算上架华为应用市场**） |
+
+> 本项目**暂不打算上架华为应用市场**，只通过 GitHub Release 分发未签名的 HAP 与预编译原生库；使用者需要自行用调试证书签名后安装。下文的应用包（`.app`）构建步骤仅作为将来可能上架时的参考保留。
 
 ## 功能
 
@@ -82,9 +84,10 @@ node scripts/build.mjs --clean
 `build-profile.json5` 已被 `.gitignore` 排除（含证书路径与口令），仓库只保留
 `build-profile.example.json5`；首次构建由模板生成。签名在本地 `signingConfigs` 中配置。
 
-### 3. 应用包（上架用）
+### 3. 应用包（可选，仅将来上架时）
 
-HAP 之外的上架包需要在 project 模式下再跑一次 `assembleApp`：
+本项目**暂不打算上架应用市场**，这一步通常不需要。若将来要打包上架，可在 project 模式下再跑
+`assembleApp`：
 
 ```bash
 # 指向 DevEco 的 SDK 与 JBR；也可以直接在 DevEco 里 Build → Build App
@@ -93,17 +96,18 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
   --mode project -p product=default -p buildMode=release assembleApp --no-daemon
 ```
 
-产物在 `build/outputs/default/*.app`，提交应用市场；单 HAP 在
+产物在 `build/outputs/default/*.app`；单 HAP 在
 `entry/build/default/outputs/default/entry-default-signed.hap`。
 
 ## 签名与分发
 
 - **真机调试**需要 `com.snoworwind.phoh` 的 debug Profile（含设备 UDID），在 DevEco
   Project Structure → Signing Configs 里自动生成；
-- **应用市场**使用发布证书 + release Profile，签名后的 `.app` 才能上架；
+- **GitHub Release** 只提供**未签名**的 HAP 与预编译原生库，使用者需自行签名；
+- 本项目**不计划上架华为应用市场**；如果自行上架，才需要发布证书 + release Profile 签名的
+  `.app`，并自行承担商店审核、备案、商标与 AI 服务合规等责任；
 - **release 签名的 HAP 不能 `hdc install`**（会报 `9568322 not trusted app source`），
-  也不要用来做本地调试；
-- GitHub Release 只提供**未签名**的 HAP 与预编译原生库，使用者需自行签名。
+  也不要用来做本地调试。
 
 ## 测试与校验
 

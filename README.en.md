@@ -14,7 +14,12 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 | Min / target API | HarmonyOS 5.1.0 (API 18) / API 24 |
 | Engine | `@deepseek-ai/dsh` 0.2.2-rc.1 (web profile, 291 plugins) |
 | Runtime | Node 24.22.1 (`--jitless`), Bash 5.3, toybox 0.8.14, libarchive 3.7.7, ripgrep 14.1.1 |
-| Distribution | GitHub Release: unsigned HAP + arm64/x86_64 native libraries; AppGallery: signed `.app` |
+| Distribution | GitHub Release: unsigned HAP + arm64/x86_64 native libraries (**no AppGallery release is planned for now**) |
+
+> This project is **not intended for Huawei AppGallery** for now. It is distributed only through
+> GitHub Releases as an unsigned HAP plus prebuilt native libraries; users must sign it with their
+> own debug certificate before installing. The `.app` packaging step below is kept only for a
+> possible future store release.
 
 ## Features
 
@@ -82,7 +87,10 @@ node scripts/build.mjs --clean   # after changing native libs
 `build-profile.json5` is gitignored (it contains signing paths and passwords); only
 `build-profile.example.json5` is committed. Signing is configured locally.
 
-### 3. App pack for distribution
+### 3. App pack (optional, only for a future store release)
+
+This project is **not planned for AppGallery** for now, so this step is normally unnecessary. If you
+do want a store package later, run `assembleApp` in project mode:
 
 ```bash
 # Point at DevEco's SDK and JBR; alternatively use Build → Build App in DevEco
@@ -91,17 +99,20 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
   --mode project -p product=default -p buildMode=release assembleApp --no-daemon
 ```
 
-Output: `build/outputs/default/*.app` (for AppGallery) and
-`entry/build/default/outputs/default/entry-default-signed.hap` (single HAP).
+Output: `build/outputs/default/*.app`; the single HAP is at
+`entry/build/default/outputs/default/entry-default-signed.hap`.
 
 ## Signing and distribution
 
 - **On-device debugging** requires a debug profile for `com.snoworwind.phoh` that lists the
   device UDID (generate it in DevEco → Project Structure → Signing Configs).
-- **AppGallery** requires a release certificate and release profile.
+- **GitHub Releases** ship an **unsigned** HAP and native libraries; sign them yourself before
+  installing.
+- This project is **not intended for Huawei AppGallery**; if you publish it yourself, you need a
+  release certificate/profile and you are responsible for store review, filings, trademark and
+  AI-service compliance.
 - A **release-signed HAP cannot be installed with `hdc install`** (`9568322 not trusted app
   source`); do not use it for local testing.
-- GitHub Releases ship **unsigned** HAP and native libraries; sign them yourself before installing.
 
 ## Tests
 

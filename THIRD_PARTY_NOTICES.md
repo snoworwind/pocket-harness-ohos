@@ -1,6 +1,6 @@
 # 第三方软件声明
 
-本应用 **Pocket Harness（HarmonyOS 原生版）** 是第三方（非官方）项目，与 DeepSeek 没有隶属、
+本应用 **pocket-harness-ohos（Pocket Harness，HarmonyOS 原生版）** 是第三方（非官方）项目，与 DeepSeek 没有隶属、
 赞助或背书关系。"DeepSeek"、"DeepSeek Harness" 名称及鲸鱼标识归 DeepSeek 所有，本项目仅在
 描述所兼容的上游软件时使用它们。
 
