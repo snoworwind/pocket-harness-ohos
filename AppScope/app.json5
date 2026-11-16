@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "dev.snoworwind.phoh",
+    "bundleName": "com.snoworwind.phoh",
     "vendor": "independent",
     "versionCode": 1,
     "versionName": "0.1.0-alpha.1",

@@ -8,11 +8,11 @@
 
 | 项目 | 操作 | 结果 |
 | --- | --- | --- |
-| 调试签名 | DevEco 自动签名生成 `~/.ohos/config/default_deepseek-harmony_…{cer,p12,p7b}` | Profile `bundle-name` = `dev.snoworwind.phoh`、`type` = debug、device-ids 含本机 UDID |
+| 调试签名 | DevEco 自动签名生成 `~/.ohos/config/default_deepseek-harmony_…{cer,p12,p7b}` | Profile `bundle-name` = `com.snoworwind.phoh`、`type` = debug、device-ids 含本机 UDID |
 | 构建签名 HAP | `node scripts/build.mjs` + `signingConfig` | `entry-default-signed.hap`，169,452,498 字节 |
 | 本地验签 | `hap-sign-tool.jar verify-app` | `Verify success`，SHA-256 摘要一致 |
 | 安装 | `hdc install -r` | `install bundle successfully`，`bm dump` 显示 `appProvisionType: debug`、`versionName 0.2.0` |
-| 启动 | `aa start -a EntryAbility -b dev.snoworwind.phoh` | `start ability successfully`，应用进程存活，首屏渲染正常 |
+| 启动 | `aa start -a EntryAbility -b com.snoworwind.phoh` | `start ability successfully`，应用进程存活，首屏渲染正常 |
 | 官方 Web GUI | 真机截图 | `dsh --profile web` 起来后 Web 组件加载出官方界面（首次进入弹「开始使用 / 登录 DeepSeek 账号，或添加 API Key」） |
 | 覆盖式升级 | 用新摘要的 HAP `hdc install -r`，不清数据 | `runtime-0.2.0` 被删除、新建 `runtime-0.2.0-ee001db1d404`（447 MB）；`harness-home` 内容保留（`profiles/web/*`、`.credentials.yaml`、`sessions/`）；启动后官方界面正常 |
 | 未签名 HAP | `hdc install entry-default-unsigned.hap` | 被拒：`code:9568320 error: no signature file`（签名确实生效） |

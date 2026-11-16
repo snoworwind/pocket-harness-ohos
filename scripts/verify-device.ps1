@@ -7,7 +7,7 @@ param(
 # 真机验收：装、清数据、启动、等首启解包、截图、抓日志。
 $ErrorActionPreference = 'Stop'
 $hdc = 'D:\D Program Files\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe'
-$bundle = 'dev.snoworwind.phoh'
+$bundle = 'com.snoworwind.phoh'
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 
 $targets = & $hdc list targets
