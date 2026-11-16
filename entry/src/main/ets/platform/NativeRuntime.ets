@@ -167,6 +167,7 @@ export class NativeRuntime {
       }
     }
     installCaBundle(this.root + '/certs');
+    this.installFetchPolyfill();
     this.env = this.buildEnv();
     const applets = await this.capture('toybox', ['--long']);
     for (const item of applets.split(/\s+/)) {
@@ -241,8 +242,15 @@ export class NativeRuntime {
       'CURL_CA_BUNDLE': this.root + '/certs/cacert.pem',
       'DSH_HOME': this.context.filesDir + '/harness-home',
       'DSH_PRIMARY_RUNTIME': '',
-      'DSH_TELEMETRY_DISABLED': '1'
+      'DSH_TELEMETRY_DISABLED': '1',
+      // Node 在鸿蒙上跑在 --jitless 下，没有 WebAssembly；undici 的 fetch 需要它。
+      // 预加载纯 JS 补丁，宿主与终端里的 node 都会用上。
+      'NODE_OPTIONS': '--require ' + this.root + '/harmony/fetch-polyfill.cjs'
     };
+    if (this.readInsecureTls()) {
+      // 仅用于带 TLS 中间人的开发环境；正式设备不要打开。
+      env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
+    }
 
     return env;
   }
@@ -255,6 +263,18 @@ export class NativeRuntime {
       const text = fs.readTextSync(file);
       const parsed = JSON.parse(text) as Record<string, boolean>;
       return parsed.keepAlive === true;
+    } catch (error) { return false; }
+  }
+  // 开发/模拟器环境的 TLS 逃生口：有些模拟器或抓包代理会做 HTTPS 中间人，
+  // 系统浏览器（ArkWeb）信系统证书库所以正常，而 Node 只信随包的 Mozilla 根证书，
+  // 于是登录请求报 SELF_SIGNED_CERT_IN_CHAIN。默认关闭；用户在
+  // harness-home/harmony-native.json 里显式写 allowInsecureTls: true 才生效。
+  readInsecureTls(): boolean {
+    try {
+      const file = this.context.filesDir + '/harness-home/harmony-native.json';
+      if (!fs.accessSync(file)) { return false; }
+      const parsed = JSON.parse(fs.readTextSync(file)) as Record<string, boolean>;
+      return parsed.allowInsecureTls === true;
     } catch (error) { return false; }
   }
   // 一次性迁移：旧版本把 HOME 放在 runtime-<版本>/home，升级后该目录被删，
@@ -458,6 +478,19 @@ export class NativeRuntime {
         fs.closeSync(out);
       }
     } catch (error) { /* 声明文件缺失不影响运行 */ }
+  }
+  // 鸿蒙上 Node 以 --jitless 运行，WebAssembly 被关掉，内置 undici 的 fetch
+  // 因此不可用。把纯 JS 的 fetch 补丁写进运行时，并用 NODE_OPTIONS 预加载。
+  private installFetchPolyfill(): void {
+    const dir = this.root + '/harmony';
+    try {
+      this.ensureDir(dir);
+      const content = this.context.resourceManager.getRawFileContentSync('harmony/fetch-polyfill.cjs');
+      const text = util.TextDecoder.create('utf-8').decodeToString(content);
+      const out = fs.openSync(dir + '/fetch-polyfill.cjs', fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(out.fd, text);
+      fs.closeSync(out);
+    } catch (error) { /* 补丁缺失时退回原生 fetch（有 WASM 的设备不受影响） */ }
   }
   private copyTree(from: string, to: string): void {
     for (const name of fs.listFileSync(from)) {

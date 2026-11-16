@@ -128,6 +128,12 @@ filesDir/
 - `fork` 未被拦截，是否允许由设备决定，`probeCaps().fork` 会先探测；终端 PTY 依赖 `forkpty`；
 - 未包含：Python、MCP、语音、插件市场、后台常驻执行。
 
+## 运行时补丁
+
+鸿蒙上 Node 只能以 `--jitless` 运行，V8 关闭了 WebAssembly；而 Node 24 内置的 `fetch`（undici）依赖 WASM 解析 HTTP，直接使用会报 `WebAssembly is not defined`。因此运行时会在 `harmony/fetch-polyfill.cjs` 写入一份纯 JS 的 `fetch`（`https` + Web Streams，支持 JSON、SSE 流式响应、重定向、gzip/br/deflate 与 `AbortSignal`），并通过 `NODE_OPTIONS=--require` 预加载到宿主与终端里的 node。有 WASM 的环境不会被替换。
+
+带 HTTPS 中间人的模拟器/抓包代理会让宿主请求报 `SELF_SIGNED_CERT_IN_CHAIN`（系统浏览器信系统证书库，Node 只信随包的 Mozilla 根证书）。这是开发环境问题，默认**不**放宽校验；需要时在 `harness-home/harmony-native.json` 里显式写 `"allowInsecureTls": true`，宿主才会带上 `NODE_TLS_REJECT_UNAUTHORIZED=0`。正式设备不要打开。
+
 ## 许可证与合规
 
 本工程原创代码为 MIT（见 [LICENSE](LICENSE)），上游 DeepSeek Harness 也是 MIT。随包分发的所有第三方组件、许可证原文和 GNU Bash 的对应源码获取方式，统一维护在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：
