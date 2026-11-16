@@ -57,10 +57,11 @@ struct Index {
     if (context) { this.keepAlive.stop(context); }
   }
 
-  // 系统返回键先收起右侧栏，终端继续跑；只有 tab 的 × 才停止会话。
-  // 优先用插件暴露的服务方法（不依赖界面语言），再退回按 aria-label 点按钮。
-  onBackPress(): boolean {
-    if (!this.showTerminal) { return false; }
+  // 系统返回手势的语义：
+  //  1. 终端浮层可见时先收起右侧栏，会话继续跑（只有 tab 的 × 才停止会话）；
+  //  2. 其余情况交给 Web 自己返回（历史/路由），与浏览器的返回一致；
+  //  3. Web 没有可回退的历史时再交回系统（退到后台/退出）。
+  private collapseRightSidebar(): void {
     try {
       this.controller.runJavaScript(
         "(function(){try{if(window.__dshCollapseRightSidebar)return window.__dshCollapseRightSidebar();}catch(e){}" +
@@ -70,7 +71,20 @@ struct Index {
         "return false;})()"
       ).catch(() => {});
     } catch (error) { /* Web 未挂载 */ }
-    return true;
+  }
+
+  onBackPress(): boolean {
+    if (this.termVisible) {
+      this.collapseRightSidebar();
+      return true;
+    }
+    try {
+      if (this.controller.accessBackward()) {
+        this.controller.backward();
+        return true;
+      }
+    } catch (error) { /* 控制器未就绪时退回系统默认行为 */ }
+    return false;
   }
 
   // 后台保活由 DSH 插件（设置 → 通用 → 鸿蒙适配）控制：插件把开关镜像到
