@@ -4,8 +4,8 @@
 import { readFileSync, writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve as presolve } from 'node:path';
 
-const W = '/mnt/c/Users/zouha/Documents/Codex/2026-11-15/ca/work';
-const NM = '/var/tmp/deepseek-harmony-native/official-engine/node_modules';
+const W = process.env.ENGINE_PRUNE_WORK ?? process.cwd();
+const NM = process.env.ENGINE_NODE_MODULES ?? '/var/tmp/deepseek-harmony-native/official-engine/node_modules';
 const MB = (b) => (b / 1048576).toFixed(1);
 
 const namesFile = process.argv[2] ?? 'dump-sdk-names.txt';

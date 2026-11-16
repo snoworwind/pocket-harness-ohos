@@ -2,8 +2,8 @@
 // Emit the shippable file list for the sdk import closure (paths relative to NM).
 import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-const W = '/mnt/c/Users/zouha/Documents/Codex/2026-11-15/ca/work';
-const NM = '/var/tmp/deepseek-harmony-native/official-engine/node_modules';
+const W = process.env.ENGINE_PRUNE_WORK ?? process.cwd();
+const NM = process.env.ENGINE_NODE_MODULES ?? '/var/tmp/deepseek-harmony-native/official-engine/node_modules';
 const im = JSON.parse(readFileSync(join(W, process.argv[2] ?? 'import-closure.json'), 'utf8'));
 const out = [];
 for (const r of im.rows) {

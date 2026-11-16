@@ -10,17 +10,12 @@
 
 ## 与官方引擎的关系
 
-引擎是 npm 上的 `@deepseek-ai/dsh@0.2.2-rc.1`，以 `--profile sdk` 启动，通过官方 SDK 的 JSON-RPC 协议接入。界面不复制、不重写 Agent Loop；协议依据是包内 `@deepseek-ai/dsh-sdk-protocol` 与 `dsh-sdk-jsonrpc-server` 的类型声明与实现：
-
-- 传输：每行一个 JSON-RPC 2.0 帧；
-- `initialize` 必须最先调用；
-- 宿主请求：`approval/request`、`user-question/ask`；
-- 没有单轮取消方法，只有 `shutdown`。
+引擎是 npm 上的 `@deepseek-ai/dsh@0.2.2-rc.1`，以 `--profile web` 启动：本工程解包官方前端，用 Web 组件加载 `dsh` 打印的 `http://127.0.0.1:<port>/?token=…`，界面与 Agent Loop 都来自官方。仓库里还保留了官方 SDK 的 JSON-RPC 适配（`core/OfficialRpc.ts`，每行一个 JSON-RPC 2.0 帧，`initialize` 必须最先调用，宿主请求有 `approval/request`、`user-question/ask`，没有单轮取消方法），供宿主机测试与旧链路使用，当前界面不走它。
 
 ## 原生工具链
 
 - HarmonyOS SDK / NDK：DevEco Studio 自带 `sdk/default/openharmony`（API 24，sysroot 与 CMake）。
-- 编译器：OpenHarmony clang 15（`/var/tmp/deepseek-harmony-native/toolchain`）用于一般工具；Node 24 的 V8 需要 C++20 与更新的内建头，改用 Ubuntu 的 LLVM 22 驱动 + OHOS sysroot。
+- 编译器：OpenHarmony clang 15 用于一般工具；Node 24 的 V8 需要 C++20 与更新的内建头，改用 Ubuntu 的 LLVM 22 驱动 + OHOS sysroot。
 - 参考上游构建脚本：Bettersh 的 `iec/scripts/optional/build_node.sh`、`build_toybox.sh`、`build_libarchive.sh` 等，本工程在其上补充 Node 24.22.1 与工具链修正。
 
 ## 许可

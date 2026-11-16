@@ -10,7 +10,7 @@ ArkUI Index（只留一个 Web 组件 + 启动状态）
           Web 组件加载 dsh 打印的 http://127.0.0.1:<port>/?token=…
 ```
 
-界面不是自己画的：HAP 里没有会话气泡、审批面板和终端页，只有官方 `@deepseek-ai/dsh` 的浏览器前端。Agent Loop、工具注册、审批、会话存储、工作区浏览、终端、设置页全部由官方 Web GUI 提供，本工程负责三件事：把官方引擎解包到应用沙箱、起一个只监听回环地址的 `dsh web`、用 Web 组件把它显示出来。
+界面不是自己画的：HAP 里没有会话气泡、审批面板和终端页，只有官方 `@deepseek-ai/dsh` 的浏览器前端。Agent Loop、工具注册、审批、会话存储、工作区浏览、设置页全部由官方 Web GUI 提供；只有**侧栏终端**由本工程用 libvterm 原生绘制。本工程负责四件事：把官方引擎解包到应用沙箱、起一个只监听回环地址的 `dsh web`、用 Web 组件把它显示出来、在右侧栏 tab 的位置叠加原生终端。
 
 ## 启动时序
 
@@ -21,7 +21,7 @@ ArkUI Index（只留一个 Web 组件 + 启动状态）
 3. `startIecServer()`：启动执行/终端服务；
 4. 首次安装时把 `rawfile/tools/official-engine.tar.gz` 解到 `filesDir/runtime-<version>/engine`，把 `tools/npm.tar.gz` 解到运行时根，成功后写 `.installed` 标记；
 5. 为每个命令写 `#IECSOv2` 启动器到 `runtime-<version>/bin`，toybox 的 applet 也逐个写；
-6. 安装内置 CA 证书，构造环境变量；
+6. 合并 CA bundle（Mozilla 根证书 + 可选附加 CA），构造环境变量；
 7. 起 `node <engine>/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --port 0 --no-open`，从 stdout 里取出 `dsh web: <url>` 那一行；
 8. 把这个 URL 交给 `Web` 组件。URL 带一次性 `?token=`，服务端用它换 cookie 后重定向到干净的 `./`。
 
@@ -34,7 +34,7 @@ filesDir/runtime-<应用版本>-<内容摘要>/{bin,engine,certs,home,tmp}
 filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭据都写在这里
 ```
 
-- 运行时目录名带内容摘要：`sha256(应用版本 + 引擎版本 + Node 版本 + official-engine.tar.gz 全文 + npm.tar.gz 全文 + entry/libs 每个 .so 全文)` 的前 12 位。换了引擎、npm 或原生库就换目录、重新解包；只改 ArkTS 时摘要不变，升级后直接复用。
+- 运行时目录名带内容摘要：`sha256(应用版本 + 引擎版本 + Node 版本 + official-engine.tar.gz 全文 + npm.tar.gz 全文 + entry/libs 每个 .so 全文)` 的前 12 位。换了引擎、npm 或原生库就换目录、重新解包；只改 ArkTS 时摘要不变，升级后直接复用。`runtime-manifest.json` 的 `version` 字段就是这个值；手动替换引擎/原生库并希望强制重解时，直接改这个字段。
 - `.installed` 标记只在引擎和 npm 都解包成功后写入；`ensure()` 成功后会删掉 `filesDir` 下其它 `runtime-*` 目录，避免每次升级多占约 450 MB。
 - 目录被改坏时的恢复分三层：三项存在性探测失败 → 整棵重解；引擎启动报 `Cannot find module` / `failed to import` → 自动重解一次（`NativeRuntime.repair()`）；仍失败 → 界面提供「重新解包运行时」按钮。`repair()` 只删 `runtime-*`，不碰 `harness-home`。
 - `harness-home` 永不被应用删除：覆盖升级保留会话与设置，卸载才清空。
@@ -77,6 +77,21 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 2. 应用沙箱和引擎自带的沙箱策略。引擎的策略（bwrap / Landlock）在鸿蒙上大概率不可用，探测失败会返回 `SANDBOX_UNAVAILABLE`。
 
 真要把模型的能力收紧，得从引擎的 permission preset / 工具开关入手，而不是在界面层拦。
+
+## 客户端插件与返回手势
+
+两个客户端插件，职责分开：
+
+- `@local/dsh-harmony-terminal`（`plugins/dsh-harmony-terminal`）：注册右侧栏终端 tab、上报 stage 矩形、`open/close/focus`，并从 `/api/session/list` 取当前会话的 `cwd` 下发，终端据此 `cd`。
+- `@deepseek-ai/dsh-harmony-compat`（`plugins/harmony-compat`）：鸿蒙平台适配——用 `MutationObserver` 采样左抽屉（`aria-modal`）、设置对话框（`role=dialog`）、菜单（`role=menu`）、右栏（`收起右侧边栏` 是否可见），变化时立即用 `DSH_TERM:{op:'ui'}` 推给壳层；同时把选区「引用文本」浮层按 `offsetParent` 移到选区下方。
+
+`Index.onBackPress()` 按浮层优先级消费返回：菜单 → 设置对话框 → 右侧栏/终端 → 左侧抽屉 → 系统。状态来自插件的 `ui` 推送，另有一个 500ms 轮询兜底，避免动画窗口期内误判。
+
+## 运行时补丁
+
+- **fetch**：鸿蒙上 Node 以 `--jitless` 运行，V8 不暴露 WebAssembly，undici 的 fetch 不可用。运行时把纯 JS 的 `harmony/fetch-polyfill.cjs` 通过 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，覆盖 JSON、SSE、重定向、压缩、AbortSignal、FormData/Blob 等语义。
+- **TLS**：启动时把 `certs/cacert.pem`（Mozilla 根证书）与可选的 `rawfile/harmony/extra-ca.pem` 合并成 `certs/bundle.pem`，`SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` 指向它；不做任何运行时放宽。附加 CA 不随仓库分发，仅供会拦截 HTTPS 的开发环境使用。
+- **缩放**：`Web` 组件设置 `zoomAccess(false)`，避免双指缩放破坏终端与侧栏的几何计算。
 
 ## 扩展顺序
 

@@ -1,153 +1,175 @@
-# DeepSeek Harness · HarmonyOS 原生版
+# Pocket Harness · HarmonyOS 原生版
+
+[English](README.en.md) | 简体中文
 
 > **非官方项目**：本项目由社区维护，与 DeepSeek 没有隶属、赞助或背书关系。"DeepSeek"、"DeepSeek Harness" 名称及鲸鱼标识归 DeepSeek 所有。许可与第三方组件声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-把**官方 DeepSeek Harness** 整个搬进鸿蒙应用：界面就是官方 Web GUI（`dsh --profile web` 的浏览器前端），Agent Loop、工具调用、审批、会话、工作区、终端全部由官方 `@deepseek-ai/dsh` 提供；Bash、Node、toybox、libarchive、ripgrep 针对 `arm64-linux-ohos` 交叉编译成原生库随 HAP 安装，不依赖 adb、Termux 或远程服务器。
+把**官方 DeepSeek Harness** 整个搬进鸿蒙应用：界面就是官方 Web GUI（`dsh --profile web` 的浏览器前端），Agent Loop、工具调用、审批、会话、工作区都由官方 `@deepseek-ai/dsh` 提供；Node、Bash、toybox、libarchive、ripgrep 针对 `aarch64-linux-ohos` 交叉编译成原生库随 HAP 安装，不依赖 adb、Termux 或远程服务器。终端由本项目用 libvterm 原生绘制，作为右侧栏里的一个 tab。
 
-> 状态：HAP 已安装到真机（SGT-AL10 / HarmonyOS 6.1）并成功启动，界面是官方 Web GUI 的壳：ArkTS 只负责解包引擎、起 `dsh --profile web`、把打印出来的 `http://127.0.0.1:<port>/?token=…` 交给 Web 组件。真机上的引擎启动、界面加载与工具调用链路正在逐项验收，进度见 [验证说明](docs/VALIDATION.md)。
+| 项目 | 值 |
+| --- | --- |
+| 应用名 | Pocket Harness |
+| 包名 | `com.snoworwind.phoh` |
+| 版本 | `0.1.0.1`（versionCode 2） |
+| 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
+| 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
+| 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1 |
+| 发布产物 | GitHub Release：未签名 HAP + arm64/x86_64 原生库；应用市场：签名 `.app` |
+
+## 功能
+
+- **官方 Web GUI**：Agent Loop、工具调用、审批、会话、工作区全部走官方引擎，界面不重写。
+- **原生终端**：右侧栏可关闭 tab，PTY + 作业控制（`Ctrl-Z`/`fg`/`bg`）、libvterm 绘制、软键盘防遮挡、横竖屏自适应；终端默认进入当前 DSH 会话的工作目录，切换会话/工作区时自动跟随。
+- **返回手势**：按浮层优先级逐层关闭——菜单 → 设置 → 右侧栏/终端 → 左侧抽屉 → 系统；终端收起时进程继续运行，只有 tab 的 × 才停止。
+- **选区引用**：选中文本时「引用文本」浮层显示在选区下方，避开系统选区工具条。
+- **禁用双指缩放**：界面按视口宽度布局，避免缩放把终端/侧栏几何算乱。
+- **无 JIT 的 fetch**：Node 以 `--jitless` 运行，undici 的 WASM 不可用，运行时注入纯 JS 的 `fetch` 补丁。
+- **TLS 信任**：Mozilla 根证书 + 可选 `extra-ca.pem`（开发环境里的 HTTPS 中间人 CA），始终做完整校验。
 
 ## 组成
 
 ```text
-ArkUI (entry/src/main/ets)
-  ├─ pages/Index.ets            Web 组件 + 启动/失败状态（唯一界面）
-  ├─ platform/NativeRuntime.ets 解包引擎、起 dsh web、管理原生命令
-  └─ core/OfficialRpc.ts        官方 SDK 的换行 JSON-RPC 适配（旧的自绘界面遗留，
-                                当前界面走 Web，保留供宿主机测试使用）
+entry/src/main/ets
+  ├─ pages/Index.ets             Web 组件、桥消息、返回手势、启动/错误状态
+  ├─ pages/Terminal.ets          libvterm 终端视图与 PTY 会话
+  └─ platform/NativeRuntime.ets  解包引擎、起 dsh web、CA bundle、命令启动器
 
-native/iec/                     端侧原生执行核（IEC，来自 Bettersh）
-  ├─ platform/ohos/har/         ArkTS 接口 + libiec_server.so
-  ├─ exec/、tty/、loader/       进程、终端、ELF 装载
-  └─ scripts/optional/          Node、bash、toybox 等交叉编译脚本
+plugins/
+  ├─ dsh-harmony-terminal/       终端 tab：注册、stage 矩形、open/close/focus、工作目录跟随
+  └─ harmony-compat/             鸿蒙适配：浮层状态上报（返回手势）、引用浮层位置
 
-scripts/pack-native.sh          把交叉编译产物、官方引擎和前端打进 HAP
-scripts/build.mjs              跨平台命令行构建 HAP（Windows / macOS / Linux）
+native/
+  ├─ iec/                        端侧执行核（IEC，来自 Bettersh）：exec/tty/fs shim、ELF 装载
+  ├─ terminal/                   libvterm 与 terminal NAPI
+  └─ toolchain/                  Node 24 / 原生插件的 OHOS 工具链脚本
+
+scripts/
+  ├─ build.mjs                   HAP 构建（Windows/macOS/Linux，自动找 DevEco）
+  ├─ build-x86-runtime.sh        x86_64 模拟器运行时的分阶段构建
+  ├─ pack-native.sh              原生库 + 引擎归档 → entry/
+  └─ test-fetch-polyfill.cjs     fetch 补丁的 15 项回归测试
 ```
-
-## 设备上真正运行的东西
-
-| 能力 | 实现 | 状态 |
-| --- | --- | --- |
-| 界面 | 官方 `dsh --profile web` 的 Web GUI，装在 HarmonyOS `Web` 组件里 | 已实现 |
-| Agent 引擎 | 官方 `@deepseek-ai/dsh@0.2.2-rc.1`，web profile（291 条插件） | 已打包 |
-| 运行时 | 交叉编译的 Node 24.22.1 `libnode.so`（V8 JIT-less，strip 后 114 MB） | 已打包 |
-| Shell | 原生 bash 5.3 `libbash.so` | 已打包 |
-| 基础命令 | toybox（`ls`、`grep`、`sed`…）、libarchive（`tar`/`cpio`/`unzip`）、`zip` | 已打包 |
-| 搜索 | ripgrep 14.1.1 从源码编译为 `librg.so`；`@vscode/ripgrep` 换成指向它的兼容包 | 已打包 |
-| 引擎原生插件 | `require_builtin.node`、`system.node`（DeepSeek 官方源码）与 `pty.node`（node-pty 源码），都用本机 OHOS 工具链编译 | 已打包 |
-| 解包器 | `libarchive.so.13`（由 `archive_extract.cpp` 在运行期 `dlopen`） | 已打包 |
-
-## 来源规则
-
-HAP 里的二进制只有三种来源：华为官方 SDK、DeepSeek 官方发布物、本机从源码编译。没有第三条来源，也没有塞入第三方预编译二进制。
-
-- 逐项清单（源码版本、构建脚本、许可）：[组件来源](docs/SOURCES.md)；
-- 自动核对：`bash scripts/audit-sources.sh`，解包 HAP、比对二进制集合、检查引擎归档里的原生插件，并确认 `npm.tar.gz` 与本次 Node 构建逐字节一致；
-- libc++ ABI：所有 C++ 产物必须与随包 `libc++_shared.so` 的 `std::__n1` 命名空间一致（libc++ 22 头文件 + `__config_site` 改成 `__n1`），否则真机 dlopen 时找不到符号。见 [架构](docs/ARCHITECTURE.md)。
 
 ## 构建
 
 ### 1. 原生运行时（WSL / Linux）
 
+arm64 真机：
+
 ```bash
-bash work/bootstrap-native.sh          # 一次性：工具链、sysroot、官方引擎
-bash work/prepare-llvm22.sh            # Node 24 的 V8 需要更新的 clang
-bash native/toolchain/build-node24.sh  # Node 24（最慢；用 libcxx-ohos 头文件）
-bash native/toolchain/build-addons.sh  # require_builtin / system / pty 三个插件
-bash scripts/pack-native.sh            # 产物 + 引擎归档 → entry/
+bash native/toolchain/build-node24.sh        # Node 24.22.1（jitless），最慢
+bash native/build-bash.sh                    # Bash 5.3（GPL-3.0）
+bash native/iec/scripts/build_toybox.sh      # toybox
+bash native/iec/scripts/build_libarchive.sh  # tar/cpio/unzip/zip
+bash scripts/pack-native.sh                  # 产物 + 引擎归档 → entry/
 ```
 
-> `work/` 里的脚本是本机交叉编译环境的历史记录，路径写死在 `/var/tmp/deepseek-harmony-native`。
+x86_64 模拟器：见 [docs/X86_64-BUILD.md](docs/X86_64-BUILD.md)，用 `scripts/build-x86-runtime.sh` 的
+`setup / node / tools / bash / addons / rg / pack` 分阶段构建。
 
-### 2. HAP 构建
+工具链、官方引擎与源码缓存默认放在构建机的 `/var/tmp/deepseek-harmony-native`（可用 `NATIVE_BASE` 覆盖）；
+`native/toolchain/README.md` 记录了 LLVM 22 + libc++ 22 `__n1` 的配置原因。
+
+### 2. HAP
 
 ```bash
-# 只需要 Node 18+；DevEco 用命令行工具包或完整安装均可（不必打开 IDE）
-node scripts/build.mjs --deveco-home "D:\D Program Files\DevEco Studio"
-# 原生库有改动时先清理，避免 hvigor 增量构建跳过打包
+# 只需要 Node 18+；DevEco 用完整安装即可（不必打开 IDE）
+node scripts/build.mjs --deveco-home "<DevEco 安装目录>"
+# 原生库有改动时先清理，避免增量构建跳过打包
 node scripts/build.mjs --clean
 ```
 
-`build-profile.json5` 已被 `.gitignore` 排除（它会含证书路径与口令）；仓库只保留 `build-profile.example.json5`。首次构建脚本会自动由模板生成前者；需要签名时在本地把 `signingConfigs` 填进去，或由 DevEco 注入。
+`build-profile.json5` 已被 `.gitignore` 排除（含证书路径与口令），仓库只保留
+`build-profile.example.json5`；首次构建由模板生成。签名在本地 `signingConfigs` 中配置。
 
-### 3. 宿主机测试
+### 3. 应用包（上架用）
 
-```bash
-npm install
-npm test
-```
-
-另外两个离线校验会解包 HAP 里的引擎归档，用宿主 Node 解析插件表：
+HAP 之外的上架包需要在 project 模式下再跑一次 `assembleApp`：
 
 ```bash
-bash scripts/check-engine-dump.sh    # sdk profile：111 个插件
-bash scripts/check-engine-web.sh     # web profile：291 个插件（Web GUI 用这套）
+# 指向 DevEco 的 SDK 与 JBR；也可以直接在 DevEco 里 Build → Build App
+DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
+  node "<DevEco>/tools/node/node.exe" "<DevEco>/tools/hvigor/bin/hvigorw.js" \
+  --mode project -p product=default -p buildMode=release assembleApp --no-daemon
 ```
 
-## 目录与产物
+产物在 `build/outputs/default/*.app`，提交应用市场；单 HAP 在
+`entry/build/default/outputs/default/entry-default-signed.hap`。
 
-运行时布局（首次启动时解包到应用私有目录）：
+## 签名与分发
+
+- **真机调试**需要 `com.snoworwind.phoh` 的 debug Profile（含设备 UDID），在 DevEco
+  Project Structure → Signing Configs 里自动生成；
+- **应用市场**使用发布证书 + release Profile，签名后的 `.app` 才能上架；
+- **release 签名的 HAP 不能 `hdc install`**（会报 `9568322 not trusted app source`），
+  也不要用来做本地调试；
+- GitHub Release 只提供**未签名**的 HAP 与预编译原生库，使用者需自行签名。
+
+## 测试与校验
+
+```bash
+node scripts/test.cjs                  # 宿主侧 28 项（会话协议、SSE、路径沙箱、JSON-RPC）
+node scripts/test-fetch-polyfill.cjs   # fetch 补丁 15 项（JSON/SSE/重定向/FormData/abort…）
+bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合与 npm.tar.gz
+bash scripts/check-engine-web.sh       # web profile 291 个插件，stderr 为空
+```
+
+真机验证范围与已知缺口见 [docs/VALIDATION.md](docs/VALIDATION.md)。
+
+## 运行时布局
+
+首次启动把 `rawfile/tools/official-engine.tar.gz` 解包到应用私有目录：
 
 ```text
 filesDir/
-  runtime-<version>/
-    bin/           命令启动器（#IECSOv2 包装，指向 bundle 里的 .so）
-    engine/        官方引擎 + 前端 dist + harmony/ 宿主脚本
-    certs/         CA 证书
-    home/ tmp/     运行时 HOME 与 TMPDIR
-  harness-home/    官方引擎的 DSH_HOME（profile、会话、设置都写这里）
+  runtime-<version>/           bin/ 命令启动器（#IECSOv2）
+                               engine/ 官方引擎 + harmony/ 宿主脚本
+                               certs/ cacert.pem + bundle.pem
+                               home/ tmp/
+  harness-home/                DSH_HOME（profile、会话、设置、凭据）
 ```
 
-## 升级与数据
-
-覆盖安装（同 bundleName、`versionCode` 递增）时，应用数据目录整体保留：
-
-| 内容 | 路径 | 覆盖更新后 |
-| --- | --- | --- |
-| 会话、模型设置、profile、凭据 | `filesDir/harness-home` | **保留**，应用从不删除这个目录 |
-| 解包出的运行时（引擎 + npm + 启动器） | `filesDir/runtime-<内容摘要>` | 按内容换新；旧目录在下次启动成功后自动删除 |
-
-运行时目录名是 `0.2.0-<12 位摘要>`。摘要 = `sha256(应用版本 + 引擎版本 + Node 版本 + official-engine.tar.gz 全文 + npm.tar.gz 全文 + entry/libs 下每个 .so 全文)` 的前 12 位（`scripts/pack-native.sh`）。所以引擎、npm、任一原生库变了都会换目录、重新解包；只改 ArkTS 代码时摘要不变，升级后直接复用，省掉一次 1–2 分钟的解包。引擎归档用固定 `mtime`/排序打包，同样的输入两次打包摘要相同（已验证两次都是同一个值）。
-
-一条必须知道的边界：
-
-- **降级**：装回旧版本会得到旧的运行时目录，需要重新解包；旧版本的 `runtime-<旧摘要>` 已被删掉，属于预期行为。
-
-### 运行时目录被改坏时
-
-启动时只做三项存在性探测（`.installed`、`engine/.../dsh/lib/bin.js`、`npm/bin/npm-cli.js`）。任一项缺失就整棵重建。如果三项都在、但引擎启动时报 `Cannot find module` / `failed to import` 这类缺文件症状，界面会自动删掉这棵目录重新解包一次（只一次，避免死循环）；仍失败则显示错误，并提供「重新解包运行时」按钮手动触发。`harness-home` 全程不动。
-
-没做的是逐文件内容校验：文件被改成语法合法的内容不会被发现——那需要每次冷启动读一遍 2.5 万个文件，代价与收益不成比例。
-
-## 已知边界
-
-- 首次启动要把 43.8 MB 的引擎归档解成 2.5 万个文件，真机上是一到两分钟，界面期间显示进度文案；
-- 后台保活用「定位」连续任务（参考 HiSH）：切后台/锁屏后引擎继续跑，需要授权模糊定位，拒绝时只影响后台存活；
-- `dsh web` 只绑 `127.0.0.1`，界面只在本机 Web 组件里可达；不要改成对外监听；
-- 引擎自带的进程级沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，能力边界靠 permission preset 与工具开关；
-- `fork` 未被拦截，是否允许由设备决定，`probeCaps().fork` 会先探测；终端 PTY 依赖 `forkpty`；
-- 未包含：Python、MCP、语音、插件市场、后台常驻执行。
+- 运行时目录名由 `pack-native.sh` 按内容摘要生成；引擎、npm 或任一原生库变化都会换目录、
+  重新解包，成功后删除旧的 `runtime-*` 目录（约 450 MB/个）；
+- `harness-home` 永不被应用删除：覆盖安装保留会话与设置，卸载才清空；
+- 目录被改坏时：三项存在性探测失败会整棵重解；引擎启动报缺文件症状会自动重解一次；
+  仍失败则界面提供「重新解包运行时」。
 
 ## 运行时补丁
 
-鸿蒙上 Node 只能以 `--jitless` 运行。V8 在 jitless 下不暴露 WebAssembly，而 Node 24 内置的 `fetch`（undici）用 WASM 解析 HTTP，直接使用会报 `WebAssembly is not defined`。
+鸿蒙上 Node 只能以 `--jitless` 运行，V8 不暴露 WebAssembly，而 Node 内置的 `fetch`
+（undici）用 WASM 解析 HTTP。运行时因此注入纯 JS 的 `harmony/fetch-polyfill.cjs`：
 
-当前采用**纯 JS 的 fetch 补丁**：`harmony/fetch-polyfill.cjs` 经 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，用 `https` + Web Streams 实现，已覆盖 DSH 用到的语义：
+- 经 `NODE_OPTIONS=--require` 预加载到宿主与终端里的 node；
+- 请求体支持 string / Buffer / TypedArray / ArrayBuffer / URLSearchParams / Blob / FormData
+  （multipart）/ ReadableStream / Node Readable；
+- 响应支持流式 body（SSE 不整块缓冲）、gzip/br/deflate；
+- 重定向 follow/error/manual 与方法改写；AbortSignal 以 `AbortError` 拒绝；
+  HEAD/204/304 的 body 为 null；带 `url/type/redirected`。
 
-- 请求体：`string` / `Buffer` / `Uint8Array` / `ArrayBuffer` / `URLSearchParams` / `Blob` / `FormData`（multipart）/ `ReadableStream` / Node `Readable`；
-- 响应：流式 body（SSE 不被整块缓冲）、gzip/br/deflate 解压；
-- 重定向 `follow` / `error` / `manual`，以及 301/302/303/307/308 的方法与 body 改写；
-- `AbortSignal` 以 `AbortError` 拒绝；`HEAD`/204/304 的 body 为 `null`；响应带 `url` / `type` / `redirected`。
+V8 DrumBrake（Wasm 解释器）在 Node 24.22.1 的源码里落后于同版本 V8 API（约 50 处编译错误），
+且解释器仍会申请可执行内存，与鸿蒙无 JIT 的限制冲突，因此不采用；
+`scripts/patch-v8-drumbrake.sh` 仅作为实验记录保留。
 
-V8 的 DrumBrake（Wasm 解释器）理论上能在无 JIT 下提供 WebAssembly，但 Node 24.22.1 随包的 DrumBrake 源码已落后于同版本 V8 的 API（50 处编译错误），而且 V8 注明解释器运行 wasm 时仍会申请可执行内存，与鸿蒙无 JIT 的限制冲突，因此不采用。`scripts/patch-v8-drumbrake.sh` 仅作为实验记录保留。
+TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可选的 `rawfile/harmony/extra-ca.pem`
+合并成 `certs/bundle.pem`，不做运行时放宽。`extra-ca.pem` 用于开发环境里会拦截 HTTPS 的
+杀毒/代理，**不随仓库分发**；需要时自行放入，公开/商店构建请保持缺省（只信 Mozilla 根证书），
+或替换成自己的企业根证书。
 
-TLS 信任由运行时的 CA bundle 决定：启动时把随包的 Mozilla 根证书与 `rawfile/harmony/extra-ca.pem` 合并成 `certs/bundle.pem`，不做任何运行时放宽。`extra-ca.pem` 用于开发环境里会拦截 HTTPS 的杀毒/代理（当前是 Kaspersky 的根证书）；发布版删掉该文件即可回退到纯 Mozilla 根证书，或替换成自己的企业根证书。
+## 已知边界
+
+- 首次启动要解包 43.8 MB 的引擎归档（约 2.5 万个文件），真机上一到两分钟；
+- 后台保活用「定位」连续任务：需要授权模糊定位，拒绝时只影响后台存活；
+- `dsh web` 只绑 `127.0.0.1`，界面只在本机 Web 组件里可达，不要改成对外监听；
+- 引擎自带的进程级沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，能力边界靠 permission
+  preset 与工具开关；
+- `fork` 未被拦截，由设备决定；终端 PTY 依赖 `forkpty` 的兼容实现；
+- 未包含：Python、MCP、语音、插件市场、后台常驻执行。
 
 ## 许可证与合规
 
-本工程原创代码为 MIT（见 [LICENSE](LICENSE)），上游 DeepSeek Harness 也是 MIT。随包分发的所有第三方组件、许可证原文和 GNU Bash 的对应源码获取方式，统一维护在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：
-
-- 许可证全文在 `LICENSES/`，同一份随 HAP 分发（`resources/rawfile/notices/`），首次启动后解出到应用沙箱 `files/notices/`；
-- 分发的 `libbash.so` 由 GNU Bash 5.3 原样源码编译（未打补丁），源码包地址与构建脚本见声明文件；
-- 官方 DSH 引擎归档内每个 npm 包自带 `LICENSE`，随归档一起分发。
-
+- 本项目原创代码：MIT，见 [LICENSE](LICENSE)；
+- 上游 DeepSeek Harness：MIT，随包保留版权与许可声明；
+- 第三方组件清单、许可证原文与 GNU Bash 对应源码获取方式：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；
+- 许可证全文在 `LICENSES/`，同一份随 HAP 分发到应用内 `files/notices/`；
+- 组件来源与构建方式：[docs/SOURCES.md](docs/SOURCES.md)。

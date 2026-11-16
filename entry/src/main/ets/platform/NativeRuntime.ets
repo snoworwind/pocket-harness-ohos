@@ -475,10 +475,9 @@ export class NativeRuntime {
   }
   // 鸿蒙上 Node 以 --jitless 运行，WebAssembly 被关掉，内置 undici 的 fetch
   // 因此不可用。把纯 JS 的 fetch 补丁写进运行时，并用 NODE_OPTIONS 预加载。
-  // TLS 信任的是「Mozilla 根证书 + 随包附加 CA」合并后的 bundle，不做任何
-  // 运行时放宽。附加 CA 用于开发环境里会拦截 HTTPS 的杀毒/代理（例如 Kaspersky
-  // 的 Web Anti-Virus）；发布版可以删掉 rawfile/harmony/extra-ca.pem 或替换成
-  // 自己的企业根证书。
+  // TLS 信任的是「Mozilla 根证书 + 可选附加 CA」合并后的 bundle，不做任何
+  // 运行时放宽。附加 CA（rawfile/harmony/extra-ca.pem）只给会拦截 HTTPS 的
+  // 开发环境使用，默认不随仓库分发；公开/商店构建保持缺省或换企业根证书。
   private installTrustBundle(): void {
     const dir = this.root + '/certs';
     try {

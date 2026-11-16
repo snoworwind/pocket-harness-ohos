@@ -2,7 +2,7 @@
 
 目标：`aarch64-linux-ohos` 的共享库，能在鸿蒙应用里由 IEC 的原生子进程装载。
 
-这些脚本是从实际构建过程里沉淀下来的，路径默认写死在 `/var/tmp/deepseek-harmony-native`（下文 `$ROOT`）。换机器先改路径。
+这些脚本是从实际构建过程里沉淀下来的，默认把工具链、源码包和构建树放在 `/var/tmp/deepseek-harmony-native`（下文 `$ROOT`，可用 `NATIVE_BASE` 覆盖）。换机器时先按本机路径生成或调整工具链目录。
 
 ## 组成
 

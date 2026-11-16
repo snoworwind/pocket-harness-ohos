@@ -1,12 +1,15 @@
 param(
-  [string]$Hap = 'D:\forGithub\deepseek-harmony\entry\build\default\outputs\default\entry-default-signed.hap',
-  [string]$OutDir = 'D:\forGithub\deepseek-harmony\.test-build',
+  [string]$Hap = (Join-Path $PSScriptRoot '..\entry\build\default\outputs\default\entry-default-signed.hap'),
+  [string]$OutDir = (Join-Path $PSScriptRoot '..\.test-build'),
   [int]$WaitSeconds = 90,
-  [switch]$CleanData
+  [switch]$CleanData,
+  [string]$Hdc = $env:HDC
 )
 # 真机验收：装、清数据、启动、等首启解包、截图、抓日志。
 $ErrorActionPreference = 'Stop'
-$hdc = 'D:\D Program Files\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe'
+if ($Hdc) { $hdc = $Hdc }
+elseif ($env:DEVECO_HOME) { $hdc = Join-Path $env:DEVECO_HOME 'sdk\default\openharmony\toolchains\hdc.exe' }
+else { $hdc = 'hdc' }
 $bundle = 'com.snoworwind.phoh'
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 
