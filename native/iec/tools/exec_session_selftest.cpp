@@ -288,6 +288,47 @@ int main(int argc, char** argv) {
                   std::to_string(r.out_dropped) + " bytes)");
     }
 
+    // A terminal has shared tty descriptors, a controlling session and a size.
+    {
+        iec::ExecOptions options;
+        options.cmd = "/bin/bash";
+        options.args = {"--noprofile", "--norc", "-i"};
+        options.pty = true;
+        options.cols = 91; options.rows = 27;
+        options.keep_stdin_open = true;
+        options.stdin_data = "test -t 0 && test -t 1 && test -t 2 && echo PTY_OK\nstty size\nexit\n";
+        const Result r = Run(options, 10000);
+        Check(r.exited && r.code == 0, "PTY shell exits cleanly");
+        Check(r.out.find("PTY_OK\r\n") != std::string::npos, "PTY is a tty with ONLCR output");
+        Check(r.out.find("27 91\r\n") != std::string::npos, "PTY exposes initial window size");
+        Check(r.out.find("no job control") == std::string::npos, "PTY shell has job control");
+        Check(r.err.empty(), "PTY combines stdout and stderr");
+    }
+    {
+        iec::ExecOptions options;
+        options.cmd = "/bin/bash";
+        options.args = {"--noprofile", "--norc", "-i"};
+        options.pty = true;
+        options.keep_stdin_open = true;
+        iec::ExecState state;
+        std::string error;
+        const int id = iec::Start(options, &state, &error);
+        Check(id > 0 && iec::ResizePty(id, 117, 19), "PTY can resize while running");
+        const std::string input = "stty size\nexit\n";
+        if (id > 0) iec::Write(id, input.data(), input.size());
+        std::string output;
+        const auto deadline = NowMs() + 10000;
+        while (id > 0 && NowMs() < deadline) {
+            iec::ExecChunk chunk;
+            iec::Poll(id, 65536, 65536, &chunk, &state);
+            output += chunk.out;
+            if (state.exited && state.out_eof) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        Check(output.find("19 117\r\n") != std::string::npos, "PTY reports resized rows and columns");
+        if (id > 0) { iec::Terminate(id, 0); iec::Release(id); }
+    }
+
     // 8. a missing program is a refusal, not a hang or a silent success.
     {
         iec::ExecOptions options;

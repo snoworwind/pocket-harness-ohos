@@ -2,9 +2,11 @@
 #include "exec_server.h"
 
 #include <fcntl.h>
+#include <dirent.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -53,6 +55,7 @@ struct ProcessInfo {
     std::string job;      // IEC_JOB at creation time; empty when the caller did not set one
     int64_t     start_time_ms = 0;
     bool        alive = true;
+    bool        terminal_root = false;
     // The raw status word waitpid() returned, which is what OP_WAIT answers with:
     // it is the only form that still carries _how_ the child ended, so the client
     // can tell an ordinary exit from a signal death. Meaningful once alive is
@@ -399,6 +402,89 @@ void ApplyRequestEnvironment(const SpawnRequest& req) {
  * not be remembered, or the next perfectly startable command pays for it. */
 static std::atomic<bool> g_ncp_refused{false};
 
+/* ------------------------------------------------------------------ */
+/* Janitor                                                            */
+/* ------------------------------------------------------------------ */
+/* A process the application's death cannot take with it, and the only thing
+ * that can end a job after that death.
+ *
+ * A SIGKILLed process runs no cleanup. Its children are reparented to init and
+ * keep running -- a terminal shell, the commands it started, whatever those
+ * started -- with nobody left to ask about them. The death signal below ends
+ * each direct child, but a shell's job is a tree: the shell's own children are
+ * in groups of their own, and a program that forked is still there when its
+ * parent is gone.
+ *
+ * So one extra process is forked here, once, with a socket to the application.
+ * Every program's process-group id is written to it as it starts. It buffers
+ * them -- a write arrives while the application is alive, and killing a group
+ * then would end a job that is still running. When the application dies the
+ * peer end of the socket closes, the read returns end-of-file, and each group is
+ * killed. It then exits; it holds nothing else open, so it cannot keep a service
+ * socket or a pty alive on its own.
+ *
+ * The janitor's own parent is the thread that forked it, but it must not take a
+ * death signal from it, and it leaves the application's process group so that a
+ * group-wide kill aimed at the app does not reach it either. */
+static int g_janitor = -1;
+
+static void StartJanitor() {
+    if (g_janitor >= 0) return;
+    int fds[2];
+    // A socket, not a pipe: send() can suppress SIGPIPE with MSG_NOSIGNAL, and a
+    // janitor that died must not take the server down on the next write.
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return;
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    if (pid == 0) {
+        close(fds[1]);
+        setpgid(0, 0);
+        prctl(PR_SET_PDEATHSIG, 0);
+        const int keep = fds[0];
+        // Only the socket is kept. The descriptors above are closed by number
+        // rather than through /proc/self/fd because this runs in a forked child
+        // of a multi-threaded process: opendir() allocates, and an allocator
+        // lock held by another thread at fork time would leave the janitor
+        // waiting forever for the application to die.
+        for (int fd = STDERR_FILENO + 1; fd < 4096; fd++)
+            if (fd != keep) close(fd);
+
+        enum { kMaxGroups = 4096 };
+        static pid_t groups[kMaxGroups];
+        size_t count = 0;
+        pid_t word = 0;
+        for (;;) {
+            const ssize_t n = read(keep, &word, sizeof word);
+            if (n == (ssize_t)sizeof word) {
+                if (count < kMaxGroups) groups[count++] = word;
+                continue;
+            }
+            if (n < 0 && errno == EINTR) continue;
+            break;  // end-of-file: the application is gone
+        }
+        for (size_t i = 0; i < count; i++)
+            if (groups[i] > 1) kill(-groups[i], SIGKILL);
+        _exit(0);
+    }
+    close(fds[0]);
+    g_janitor = fds[1];
+}
+
+/* Names one program's process group to the janitor. Recorded for every spawn,
+ * including a native-child-process launch whose pid may not lead a group: a pid
+ * that is not a leader has no group of that number, so the cleanup kill is a
+ * harmless no-op rather than a wrong signal. */
+static void RecordJobGroup(pid_t pid) {
+    if (g_janitor < 0 || pid <= 0) return;
+    const pid_t word = pid;
+    (void)!send(g_janitor, &word, sizeof word, MSG_NOSIGNAL);
+}
+
 static pid_t StartChild(SpawnRequest* req, LaunchKind kind, std::string* why) {
     // The launcher may name the relationship it needs; 0 leaves the choice here.
     if (kind == LaunchKind::kSo) {
@@ -444,6 +530,7 @@ static pid_t StartChild(SpawnRequest* req, LaunchKind kind, std::string* why) {
         (requested == PrimaryLaunchKind::kAuto && Caps().fork == 1)) {
         req->prikind = PrimaryLaunchKind::kFork;
 
+        const pid_t parent_pid = getpid();
         pid_t pid = fork();
         if (pid < 0) {
             const int err = errno;
@@ -453,10 +540,21 @@ static pid_t StartChild(SpawnRequest* req, LaunchKind kind, std::string* why) {
         }
         if (pid != 0) return pid;
 
+        // The application dying must end this program, whether it is the shell or
+        // one command in it. The death signal is the immediate answer; the janitor
+        // is the one that also reaches the process group and the jobs started
+        // after this one. The descriptor to the janitor is closed first: a child
+        // holding it would keep the janitor waiting for an end-of-file that never
+        // comes, and no cleanup would ever run.
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (g_janitor >= 0) close(g_janitor);
+        if (getppid() != parent_pid) _exit(kExecFailedExit);
+
         ClearInheritedSignalMask();
         ResetSignalDispositions();
 
-        setpgid(0, 0);
+        if (req->controlling_tty) setsid();
+        else setpgid(0, 0);
 
         if (!InstallInheritedFds(*req)) {
             static const char msg[] = "[exec] inherited fd setup failed\n";
@@ -464,6 +562,22 @@ static pid_t StartChild(SpawnRequest* req, LaunchKind kind, std::string* why) {
             _exit(kExecFailedExit);
         }
         ApplyRequestEnvironment(*req);
+        // A real PTY needs a controlling terminal. IEC's virtual slave is a
+        // socket; its tty shim supplies the equivalent session operations.
+        if (req->controlling_tty) {
+            ioctl(STDIN_FILENO, TIOCSCTTY, 0);
+            // dlopen does not close CLOEXEC descriptors. In particular, keeping
+            // a master/server socket in this child prevents PTY hangup forever.
+            DIR* dir = opendir("/proc/self/fd");
+            if (dir) {
+                const int keep = dirfd(dir);
+                while (dirent* entry = readdir(dir)) {
+                    const int fd = atoi(entry->d_name);
+                    if (fd > 2 && fd != keep) close(fd);
+                }
+                closedir(dir);
+            }
+        }
         StartByKind(kind, *req);
     }
 
@@ -522,7 +636,12 @@ SpawnResult Spawn(SpawnRequest req) {
     info.job = req.job;
     info.start_time_ms = NowMillis();
     info.alive = true;
+    info.terminal_root = req.controlling_tty;
     procmap[info.pid] = info;
+    // The janitor keeps the list of groups to end if the application dies; see
+    // StartJanitor(). Recorded for every route, including one whose pid may not
+    // lead a group: the group form then answers ESRCH and nothing is killed.
+    RecordJobGroup(info.pid);
 
     // sync_wait is still not honoured here: this call returns to the client as soon
     // as the fork is done. The waiting is done by the client, which polls OP_WAIT
@@ -612,11 +731,16 @@ static void SignalPids(const std::vector<pid_t>& pids, int sig) {
 
 ExecServer::ExecServer(const std::string& path) : SockServer(path) {
     using namespace std::placeholders;
+    // Before the first fork: the janitor has to be an only child of the
+    // application, not a child of something this server starts.
+    StartJanitor();
     registerHandler(OP_PING,       std::bind(&ExecServer::onPing,       this, _1, _2));
     registerHandler(OP_PONG,       std::bind(&ExecServer::onPong,       this, _1, _2));
     registerHandler(OP_EXECUTE,    std::bind(&ExecServer::onExecute,    this, _1, _2));
     registerHandler(OP_WAIT,       std::bind(&ExecServer::onWait,       this, _1, _2));
     registerHandler(OP_SIGNAL,     std::bind(&ExecServer::onSignal,     this, _1, _2));
+    registerHandler(OP_PTY_SIGNAL, std::bind(&ExecServer::onPtySignal, this, _1, _2));
+    registerHandler(OP_PTY_PGRP,   std::bind(&ExecServer::onPtyPgrp,   this, _1, _2));
     registerHandler(OP_TERMINATE_JOB,
                     std::bind(&ExecServer::onTerminateJob, this, _1, _2));
     registerHandler(OP_SIGNAL_JOB,
@@ -758,6 +882,11 @@ bool ExecServer::onExecute(const Packet& req, Reply& reply) {
         return false;
     }
     flags = get32(b);
+    // Bits 0 and 1 are the shim's (EXEC_FLAG_WAIT, EXEC_FLAG_STDIO); this one is
+    // set only by exec_session for a PTY shell. Reading bit 0 here made every
+    // command the shim launched a session leader of its own, which silently broke
+    // the shell's job control: the program left the session the terminal signals.
+    sr.controlling_tty = (flags & 4u) != 0;
     // Which exec the client called. Every value the shim can send is known here,
     // and anything else is a request this server cannot interpret: the field picks
     // the rule that decides where the program is filed, so guessing a method would
@@ -1086,6 +1215,68 @@ bool ExecServer::onWait(const Packet& req, Reply& reply) {
 // a request for pid -1 or 0 would reach the server's whole process group, and any
 // child of the server could be named. procmap is the authority on which pids this
 // server may be asked about, not the kernel.
+// Answers a foreground-group claim with the group the shell really foregrounded.
+//
+// A program started here runs in this server's session, but its shell put a
+// stand-in -- a local child of the shell, in the shell's session -- in the
+// terminal's foreground group. The client shim's start-up claim names the
+// program's own group, which no terminal signal can be aimed at: it is not in
+// the shell's session, so the tty service would have to reject it. Translating
+// the claim to the stand-in's group (and the stand-in's session) is the only
+// answer that keeps ^C, ^Z and SIGWINCH working for real programs.
+bool ExecServer::onPtyPgrp(const Packet& req, Reply& reply) {
+    if (req.body.size() != 8) return false;
+    pid_t group = static_cast<pid_t>(get32(req.body.data()));
+    pid_t sid = static_cast<pid_t>(get32(req.body.data() + 4));
+
+    const auto it = procmap.find(group);
+    if (it != procmap.end() && !it->second.terminal_root &&
+        it->second.standin_pid > 0 && it->second.standin_pid != group) {
+        const pid_t real_sid = getsid(it->second.standin_pid);
+        if (real_sid > 0) {
+            group = it->second.standin_pid;
+            sid = real_sid;
+        }
+    }
+    put32(reply.body, static_cast<uint32_t>(group));
+    put32(reply.body, static_cast<uint32_t>(sid));
+    return true;
+}
+
+bool ExecServer::onPtySignal(const Packet& req, Reply& reply) {
+    if (req.body.size() != 12) return false;
+    const pid_t group = get32(req.body.data());
+    const pid_t sid = get32(req.body.data() + 4);
+    const int sig = get32(req.body.data() + 8);
+    if (sig != SIGTSTP || group <= 0 || sid <= 0 || group == getpgrp() || getsid(group) != sid)
+        return false;
+    bool found = false;
+    for (auto& item : procmap) {
+        const auto& process = item.second;
+        if (!process.alive || process.terminal_root) continue;
+        // The group the shell put in the foreground is the stand-in's group, and
+        // the stand-in is exactly the caller that asked for this program: its pid
+        // is the group id the terminal names. Matching the program's own group
+        // would never find it -- the program runs as this server's child with a
+        // group of its own, which is the very thing the stand-in exists to fix.
+        if (process.standin_pid != group) continue;
+        // SIGTSTP cannot do the job in either place: the program's group is
+        // orphaned in this session and the kernel discards the stop, and the
+        // stand-in has to end up stopped for the shell to report the job as
+        // stopped. SIGSTOP cannot be caught or discarded, so stop the program
+        // first (it cannot run on without the stand-in noticing) and then the
+        // stand-in. bg/fg sends SIGCONT, which the stand-in catches and relays.
+        kill(process.pid, SIGSTOP);
+        kill(process.standin_pid, SIGTSTP);
+        kill(process.standin_pid, SIGSTOP);
+        found = true;
+    }
+    if (found) put32(reply.body, 1);
+    Logger::GetInstance()->LogI("[exec] pty stop: group %d %s", (int)group,
+                                found ? "matched a stand-in" : "matched nothing");
+    return found;
+}
+
 bool ExecServer::onSignal(const Packet& req, Reply& reply) {
     if (req.body.size() < 8) {
         Logger::GetInstance()->LogE("[exec] signal request too short: %zu bytes", req.body.size());

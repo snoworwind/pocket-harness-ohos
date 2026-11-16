@@ -22,6 +22,8 @@ private:
     bool onExecute(const Packet& req, Reply& reply);
     bool onWait(const Packet& req, Reply& reply);
     bool onSignal(const Packet& req, Reply& reply);
+    bool onPtySignal(const Packet& req, Reply& reply);
+    bool onPtyPgrp(const Packet& req, Reply& reply);
 
     // Ends every process started under one job id; see OP_TERMINATE_JOB. The
     // request names the job rather than a pid because a job is the only handle

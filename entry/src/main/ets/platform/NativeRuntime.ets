@@ -94,11 +94,14 @@ export class NativeRuntime {
   private webUrl: string = '';
   private owned: Set<string> = new Set<string>();
   private env: Record<string, string> = {};
+  private installing: boolean = false;
   engineVersion: string = '';
   // 终端页复用同一个运行时实例：ensure() 已经做过 probeCaps/startIecServer，
   // 再 new 一个实例会在 UI 线程重复探测，造成输入阻塞。
   get rootDir(): string { return this.root; }
   get environment(): Record<string, string> { return this.env; }
+  // 当前是否在整棵解包/重装运行时：启动页据此决定要不要提示「首次启动」。
+  get isInstalling(): boolean { return this.installing; }
   constructor(context: common.UIAbilityContext) { this.context = context; }
   async ensure(): Promise<void> {
     if (this.ready) { return; }
@@ -115,6 +118,11 @@ export class NativeRuntime {
     initIecResourceManager(this.context.resourceManager);
     const caps = probeCaps();
     if (caps.fork === 0) { throw new Error('此设备未通过原生进程创建探针，不启动替代运行时'); }
+    // 上次进程被强杀/覆盖安装时，原生执行服务可能还活着并占着 socket；
+    // 先删掉残留的 socket 文件，新进程就能重新 bind（旧进程只是守着旧 inode）。
+    for (const name of ['iec-tty.sock', 'iec-exec.sock']) {
+      try { fs.unlinkSync(`/data/storage/el2/base/files/${name}`); } catch (error) { /* 不存在即可 */ }
+    }
     if (!startIecServer()) { throw new Error('原生终端执行服务启动失败'); }
     this.ensureDir(this.root);
     this.ensureDir(this.root + '/bin');
@@ -130,6 +138,8 @@ export class NativeRuntime {
     const complete = fs.accessSync(this.root + '/.installed') &&
       fs.accessSync(this.root + '/engine/node_modules/@deepseek-ai/dsh/lib/bin.js') &&
       fs.accessSync(this.root + '/npm/bin/npm-cli.js');
+    // 启动页据此决定是否提示「首次启动需要解包」，只有这里为 true 时才是真在解包。
+    this.installing = !complete;
     if (!complete) {
       // 标记与解包结果对不上：整棵运行时重来，而不是只补 engine。
       this.removeTree(this.root);
@@ -147,6 +157,7 @@ export class NativeRuntime {
       if (npmCode !== 0) { throw new Error('npm 解包失败（unpackResource=' + npmCode.toString() + '）'); }
       if (writeTxtFile(this.root + '/.installed', manifest.version) !== 0) { throw new Error('运行时安装标记写入失败'); }
     }
+    this.installing = false;
     for (const command of manifest.commands) {
       // bash 的入口是 main(argc, argv, envp) 三参形状；按 2 参调用会把 envp 留成
       // 寄存器垃圾，bash 初始化变量时立刻崩溃。其余命令都是两参入口。
@@ -166,6 +177,7 @@ export class NativeRuntime {
     }
     this.engineVersion = manifest.engineVersion; this.ready = true;
     this.installHarmonyPlugin();
+    this.installTerminalPlugin();
     this.migrateLegacyHomePaths();
     // 新版运行时已经就绪，旧版本目录没有保留价值（一个版本约 450 MB）。
     // 放在成功之后做：本次解包失败时不动旧的，用户还能降级回上一个包。
@@ -372,6 +384,55 @@ export class NativeRuntime {
         fs.closeSync(file);
       }
     } catch (error) { /* 同步失败只是插件不出现，不影响引擎 */ }
+  }
+  // 原生终端插件：随 HAP 以 rawfile 分发，启动时同步进 profile 的 node_modules，
+  // 并往 cordis.patch.yml 写一行插入。它只在浏览器侧注册右侧栏的终端 tab，
+  // 画面和会话都归壳层（见 plugins/dsh-harmony-terminal）。
+  private installTerminalPlugin(): void {
+    const name = '@local/dsh-harmony-terminal';
+    const profileDir = this.context.filesDir + '/harness-home/profiles/web';
+    const dest = profileDir + '/node_modules/@local/dsh-harmony-terminal';
+    const files: string[] = ['package.json', 'index.js', 'client.js', 'cordis.patch.yml'];
+    try {
+      this.removeTree(dest);
+      this.ensureDir(profileDir + '/node_modules/@local');
+      this.ensureDir(dest);
+      const decoder = util.TextDecoder.create('utf-8');
+      for (const file of files) {
+        const content = this.context.resourceManager.getRawFileContentSync('tools/harmony-terminal/' + file);
+        const text = decoder.decodeToString(content);
+        const out = fs.openSync(dest + '/' + file, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        fs.writeSync(out.fd, text);
+        fs.closeSync(out);
+      }
+
+      const patchPath = profileDir + '/cordis.patch.yml';
+      const row = "- insert:\n    - id: harmony-native-terminal\n      name: '" + name + "'\n";
+      // 自带的终端 tab 换成原生终端：上游那条只提供 Web 终端界面，它的 PTY 在
+      // 鸿蒙沙箱里起不来。行 id 取自 web-app bundle 的 cordis.patch.yml
+      // （ui-sidebar-terminal），按 package 名写是匹配不到的。
+      const upstreamName = '@deepseek-ai/dsh-client-ui-sidebar-terminal';
+      const upstream = "- id: 'ui-sidebar-terminal'\n  disabled: true\n";
+      const stale = "- id: '" + upstreamName + "'\n  disabled: true\n";
+      let text = fs.accessSync(patchPath) ? fs.readTextSync(patchPath) : '';
+      if (text.indexOf(stale) >= 0) { text = text.split(stale).join(''); }
+      let changed = false;
+      if (text.indexOf(name) < 0) {
+        if (text.length > 0 && !text.endsWith('\n')) { text += '\n'; }
+        text += row;
+        changed = true;
+      }
+      if (text.indexOf(upstream) < 0) {
+        if (text.length > 0 && !text.endsWith('\n')) { text += '\n'; }
+        text += upstream;
+        changed = true;
+      }
+      if (changed) {
+        const file = fs.openSync(patchPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        fs.writeSync(file.fd, text);
+        fs.closeSync(file);
+      }
+    } catch (error) { /* 插件没装上只是没有侧栏终端入口 */ }
   }
   private copyTree(from: string, to: string): void {
     for (const name of fs.listFileSync(from)) {

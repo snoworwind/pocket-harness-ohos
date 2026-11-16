@@ -71,6 +71,10 @@ export interface ExecStartOptions {
    *  unless keepStdinOpen is true. */
   stdin?: string;
   keepStdinOpen?: boolean;
+    /** Allocate an interactive PTY; stdout/stderr form one ordered stream. */
+    pty?: boolean;
+    cols?: number;
+    rows?: number;
   /** Wall-clock deadline enforced by the engine, even if nobody is polling.
    *  0 or absent = none. On expiry the job is terminated and timedOut is set. */
   timeoutMs?: number;
@@ -133,7 +137,8 @@ export const execPoll: (id: number, maxOut?: number, maxErr?: number,
 export const execWait: (id: number, timeoutMs?: number) => Promise<ExecWaitResult>;
 
 /** Writes to stdin without blocking. Bytes accepted, 0 = full, -1 = closed. */
-export const execWrite: (id: number, data: string) => number;
+export const execWrite: (id: number, data: string | Uint8Array) => number;
+export const execResize: (id: number, cols: number, rows: number) => boolean;
 
 export const execCloseStdin: (id: number) => boolean;
 

@@ -57,6 +57,10 @@
 
 #include "logger/logger.h"
 #include "proc.h"
+#include "constant.h"
+extern "C" {
+#include "rpc.h"
+}
 
 namespace {
 
@@ -218,7 +222,23 @@ bool trustedFgPgrp(pid_t pgrp, pid_t sid) {
 }
 
 void signalFg(Pty& e, int sig) {
-    if (trustedFgPgrp(e.fg_pgrp, e.fg_sid)) kill(-e.fg_pgrp, sig);
+    if (!trustedFgPgrp(e.fg_pgrp, e.fg_sid)) {
+        Logger::GetInstance()->LogW("[tty] signal %d for untrusted group %d",
+                                    sig, (int)e.fg_pgrp);
+        return;
+    }
+    if (sig == SIGTSTP) {
+        uint8_t req[12], reply[4];
+        iec_put32(req, e.fg_pgrp);
+        iec_put32(req + 4, e.fg_sid);
+        iec_put32(req + 8, sig);
+        const int rc = iec_rpc_fixed(EXEC_SOCK_PATH, OP_PTY_SIGNAL, req,
+                                     sizeof req, reply, sizeof reply);
+        Logger::GetInstance()->LogI("[tty] stop group %d: exec server %s",
+                                    (int)e.fg_pgrp, rc == 0 ? "stopped it" : "did not match");
+        if (rc == 0) return;
+    }
+    kill(-e.fg_pgrp, sig);
 }
 
 // ------------------------------------------------------------------
@@ -557,9 +577,25 @@ bool TtyServer::onTcsetpgrp(const Packet& req, Reply& reply) {
     Pty* e = ptyOfRequest(req, req.body.size());
     if (!e) return false;
 
-    e->fg_pgrp = static_cast<pid_t>(get32(req.body.data() + 4));
-    e->fg_sid = req.body.size() >= 12
+    pid_t group = static_cast<pid_t>(get32(req.body.data() + 4));
+    pid_t sid = req.body.size() >= 12
                     ? static_cast<pid_t>(get32(req.body.data() + 8)) : 0;
+    // A program the exec server started names its own group here, not the one
+    // its shell foregrounded. The exec server knows the stand-in that really is
+    // that group, so ask it rather than storing a group no terminal signal could
+    // ever be aimed at.
+    if (group > 0) {
+        uint8_t ask[8], answer[8];
+        iec_put32(ask, static_cast<uint32_t>(group));
+        iec_put32(ask + 4, static_cast<uint32_t>(sid));
+        if (iec_rpc_fixed(EXEC_SOCK_PATH, OP_PTY_PGRP, ask, sizeof ask,
+                          answer, sizeof answer) == 0) {
+            group = static_cast<pid_t>(iec_get32(answer));
+            sid = static_cast<pid_t>(iec_get32(answer + 4));
+        }
+    }
+    e->fg_pgrp = group;
+    e->fg_sid = sid;
     return true;
 }
 
@@ -579,6 +615,8 @@ bool TtyServer::onSetWinsz(const Packet& req, Reply& reply) {
     winsize ws;
     memcpy(&ws, req.body.data() + 4, sizeof ws);
     bool changed = ws.ws_row != e->ws.ws_row || ws.ws_col != e->ws.ws_col;
+    Logger::GetInstance()->LogI("[tty] winsz pts %d -> %u x %u (changed %d)",
+                                e->pts_n, (unsigned)ws.ws_row, (unsigned)ws.ws_col, changed);
     // Stored before signalling: a program that handles SIGWINCH by asking for
     // the new size must not be able to see the old one.
     e->ws = ws;

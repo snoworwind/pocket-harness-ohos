@@ -99,8 +99,8 @@ $(DIST) $(BUILD):
 # ── server ────────────────────────────────────────────────
 server: $(SERVER_BIN)
 
-$(SERVER_BIN): $(SERVER_SRCS) $(SERVER_HDR) | $(DIST)
-	$(CXX) $(CXXFLAGS) -pthread $(SERVER_SRCS) -o $@ -ldl
+$(SERVER_BIN): $(SERVER_SRCS) $(SERVER_HDR) $(BUILD)/rpc.o $(BUILD)/sock_client.o | $(DIST)
+	$(CXX) $(CXXFLAGS) -pthread $(SERVER_SRCS) $(BUILD)/rpc.o $(BUILD)/sock_client.o -o $@ -ldl
 
 run-server: $(SERVER_BIN)
 	./$(SERVER_BIN)

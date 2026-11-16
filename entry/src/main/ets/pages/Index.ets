@@ -7,14 +7,8 @@ import { NativeRuntime } from '../platform/NativeRuntime';
 import { BackgroundKeepAlive } from '../platform/BackgroundKeepAlive';
 import { PluginGuard } from '../platform/PluginGuard';
 
-// 网页侧调用原生终端的桥。ArkWeb 的 javaScriptProxy 把这类实例方法暴露成
-// window.harmonyTerminal.open()，页面里的按钮因此可以打开 libvterm 终端浮层。
-class TerminalBridge {
-  onOpen: () => void = () => {};
-  open(): void {
-    this.onOpen();
-  }
-}
+// 页面里的终端入口把 location.hash 改成 #dshterm，原生轮询 controller.getUrl() 读取，
+// 不依赖 javascriptProxy 注册，避免桥上偶发失效。
 
 // 界面就是官方 Web GUI：设备内跑 `dsh --profile web`，Web 组件加载它打印的
 // http://127.0.0.1:<port>。这里只保留启动/等待/失败三种状态，不再自绘会话界面。
@@ -23,16 +17,24 @@ class TerminalBridge {
 struct Index {
   @State private url: string = '';
   @State private showTerminal: boolean = false;
+  // 右侧栏终端 tab 的矩形（页面 CSS 像素 == vp），由页面的桥消息更新。
+  @State private termLeft: number = 0;
+  @State private termTop: number = 0;
+  @State private termWidth: number = 0;
+  @State private termHeight: number = 0;
+  @State private termVisible: boolean = false;
   @State private status: string = '正在准备原生运行时';
   @State private detail: string = '';
   @State private failed: string = '';
   @State private busy: boolean = false;
+  // 只有真的在解包时才提示「首次启动需要 1–2 分钟」；普通冷启动不该看到这句。
+  @State private unpacking: boolean = false;
+  private bootTimer: number = -1;
   private runtime?: NativeRuntime;
   private guard?: PluginGuard;
   private keepAlive: BackgroundKeepAlive = new BackgroundKeepAlive();
   private context?: common.UIAbilityContext;
   private controller: webview.WebviewController = new webview.WebviewController();
-  private bridge: TerminalBridge = new TerminalBridge();
   private barTimer: number = -1;
   private keepAliveTimer: number = -1;
   private keepAliveOn: boolean = false;
@@ -41,7 +43,6 @@ struct Index {
   @State private barBg: string = '';
 
   aboutToAppear(): void {
-    this.bridge.onOpen = () => { this.showTerminal = true; };
     try { this.context = this.getUIContext().getHostContext() as common.UIAbilityContext; } catch (error) { /* 取不到上下文时延后处理 */ }
     this.followSystemBars();
     this.boot();
@@ -50,9 +51,26 @@ struct Index {
   aboutToDisappear(): void {
     if (this.barTimer >= 0) { clearInterval(this.barTimer); this.barTimer = -1; }
     if (this.keepAliveTimer >= 0) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = -1; }
+    this.stopUnpackingWatch();
     this.runtime?.stopWebUI();
     const context = this.context;
     if (context) { this.keepAlive.stop(context); }
+  }
+
+  // 系统返回键先收起右侧栏，终端继续跑；只有 tab 的 × 才停止会话。
+  // 优先用插件暴露的服务方法（不依赖界面语言），再退回按 aria-label 点按钮。
+  onBackPress(): boolean {
+    if (!this.showTerminal) { return false; }
+    try {
+      this.controller.runJavaScript(
+        "(function(){try{if(window.__dshCollapseRightSidebar)return window.__dshCollapseRightSidebar();}catch(e){}" +
+        "var es=[].slice.call(document.querySelectorAll('[aria-label]'));" +
+        "for(var i=0;i<es.length;i++){var a=es[i].getAttribute('aria-label')||'';" +
+        "if(/^(collapse|收起)\\b.*(right sidebar|右侧边栏)$/i.test(a)){es[i].click();return true;}}" +
+        "return false;})()"
+      ).catch(() => {});
+    } catch (error) { /* Web 未挂载 */ }
+    return true;
   }
 
   // 后台保活由 DSH 插件（设置 → 通用 → 鸿蒙适配）控制：插件把开关镜像到
@@ -90,8 +108,7 @@ struct Index {
     } catch (error) { /* 取系统主题失败就保持默认 */ }
   }
 
-  // 官方 Web GUI 的主题可以手动切换，所以真正可靠的做法是读页面里
-  // prefers-color-scheme 与 html 背景色，用它来刷系统栏，而不是只跟系统走。
+  // 官方 Web GUI 的主题可以手动切换，读取页面主题来同步系统栏。
   private syncBarsFromPage(): void {
     if (this.url === '') { return; }
     try {
@@ -144,32 +161,39 @@ struct Index {
     return '';
   }
 
-  // 页面里的终端入口：ArkWeb 表面会吞掉 ArkUI 浮层的触摸，所以按钮放进页面本身，
-  // 点击后经 javaScriptProxy 回到原生，打开 libvterm 终端页。
-  // 同时截住侧栏“New terminal”的点击：不让它再走宿主 PTY（forkpty 会崩掉整个宿主），
-  // 直接打开原生终端页。
-  private injectNativeTerminal(): void {
-    const script =
-      "(function(){" +
-      "if(!window.__dshTermHook){window.__dshTermHook=true;" +
-      "document.addEventListener('click',function(e){" +
-      "var el=e.target&&e.target.closest?e.target.closest('button,[role=menuitem]'):null;" +
-      "if(!el){return;}" +
-      "var t=(el.getAttribute('aria-label')||'')+' '+(el.textContent||'');" +
-      "if(t.indexOf('New terminal')<0){return;}" +
-      "e.preventDefault();e.stopPropagation();" +
-      "try{window.harmonyTerminal.open();}catch(err){}" +
-      "},true);}" +
-      "if(document.getElementById('dsh-native-term')){return;}" +
-      "var b=document.createElement('button');b.id='dsh-native-term';b.textContent='>_';" +
-      "b.title='原生终端';" +
-      "b.style.cssText='position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:2147483647;" +
-      "height:26px;min-width:44px;border:0;border-radius:13px;background:rgba(255,255,255,0.14);" +
-      "color:#d6d6d6;font:12px monospace;padding:0 10px';" +
-      "b.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();" +
-      "try{window.harmonyTerminal.open();}catch(err){}});" +
-      "document.body.appendChild(b);})()";
-    try { this.controller.runJavaScript(script).catch(() => {}); } catch (error) { /* Web 未挂载 */ }
+  // 页面 → 壳层：DSH 客户端插件把终端 tab 的 open/bounds/visible/close 以
+  // `console.log('DSH_TERM:' + json)` 发过来，没有 JS 代理也能用。
+  private onTermBridge(text: string): void {
+    if (text.indexOf('DSH_TERM:') !== 0) { return; }
+    try {
+      const message = JSON.parse(text.slice(9)) as Record<string, Object>;
+      const op = message['op'] as string;
+      if (op === 'open') {
+        this.showTerminal = true;
+        this.termVisible = false;
+      } else if (op === 'bounds') {
+        const left = Number(message['left']);
+        const top = Number(message['top']);
+        const width = Number(message['width']);
+        const height = Number(message['height']);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+          !Number.isFinite(width) || !Number.isFinite(height)) { return; }
+        this.termLeft = left;
+        this.termTop = top;
+        this.termWidth = Math.max(1, width);
+        this.termHeight = Math.max(1, height);
+        this.termVisible = message['visible'] === true && this.termWidth > 1 && this.termHeight > 1;
+        this.showTerminal = true;
+      } else if (op === 'visible') {
+        this.termVisible = message['visible'] === true;
+      } else if (op === 'focus') {
+        // 页面要求聚焦终端输入框时再弹键盘：终端 tab 打开本身不抢焦点，
+        // 否则横屏下键盘一上来就把仅剩的几行终端压没了。
+        try { this.getUIContext().getFocusController().requestFocus('term-input'); } catch (error) { /* 未挂载 */ }
+      } else if (op === 'close') {
+        this.showTerminal = false;
+      }
+    } catch (error) { /* 不是桥消息，忽略 */ }
   }
 
   private applyBars(dark: boolean, background: string): void {
@@ -206,8 +230,25 @@ struct Index {
     this.failed = '';
     this.url = '';
     this.detail = '';
-    this.status = '正在解包官方引擎与 npm';
+    this.status = '正在准备本地运行时';
+    this.watchUnpacking();
     this.start(1);
+  }
+  // 解包状态由运行时告诉我们：它在 ensure() 里判断运行时目录是否完整。
+  // 启动页每 300ms 跟一次，避免把「首次启动」的提示常驻在普通冷启动上。
+  private watchUnpacking(): void {
+    if (this.bootTimer >= 0) { return; }
+    this.bootTimer = setInterval(() => {
+      const now = this.runtime?.isInstalling === true;
+      if (now !== this.unpacking) {
+        this.unpacking = now;
+        if (now) { this.status = '正在解包官方引擎与 npm'; }
+      }
+    }, 300);
+  }
+  private stopUnpackingWatch(): void {
+    if (this.bootTimer >= 0) { clearInterval(this.bootTimer); this.bootTimer = -1; }
+    if (this.unpacking) { this.unpacking = false; }
   }
 
   // 运行时目录被改坏（少文件、半棵树）时的两种症状：模块找不到、启动器写不进去。
@@ -244,6 +285,7 @@ struct Index {
       guard.markBootSucceeded();
       this.status = '正在加载官方界面';
       this.url = url;
+      this.stopUnpackingWatch();
       // onPageEnd 不一定每次都触发；启动后先同步一次并挂上轮询，避免背景色一直停在启动回退色。
       this.syncBarsFromPage();
       if (this.barTimer < 0) {
@@ -268,6 +310,7 @@ struct Index {
           } catch (second) {
             this.failed = '停用插件后仍失败：' + (second as Error).message;
             this.status = '启动失败';
+            this.stopUnpackingWatch();
             this.busy = false;
             return;
           }
@@ -284,12 +327,14 @@ struct Index {
         } catch (second) {
           this.failed = '自动重新解包后仍失败：' + (second as Error).message;
           this.status = '启动失败';
+          this.stopUnpackingWatch();
           this.busy = false;
           return;
         }
       }
       this.failed = message;
       this.status = '启动失败';
+      this.stopUnpackingWatch();
       this.busy = false;
     }
   }
@@ -302,12 +347,14 @@ struct Index {
     this.url = '';
     this.detail = '';
     this.status = '正在删除并重新解包运行时';
+    this.watchUnpacking();
     try {
       await this.runtime?.repair();
       await this.start(2);
     } catch (error) {
       this.failed = (error as Error).message;
       this.status = '启动失败';
+      this.stopUnpackingWatch();
       this.busy = false;
     }
   }
@@ -326,24 +373,24 @@ struct Index {
           // forceDarkAccess 必须关掉，否则 ArkWeb 会把页面再反色一遍。
           .darkMode(WebDarkMode.Auto)
           .forceDarkAccess(false)
-          // 页面里的按钮通过它调用原生 libvterm 终端页。
-          .javaScriptProxy({
-            object: this.bridge,
-            name: 'harmonyTerminal',
-            methodList: ['open'],
-            controller: this.controller
-          })
           .width('100%')
           .height('100%')
           .backgroundColor(this.barBg)
           .onPageEnd(() => {
             this.status = '';
+            this.stopUnpackingWatch();
             this.busy = false;
             this.syncBarsFromPage();
-            this.injectNativeTerminal();
             if (this.barTimer < 0) {
               this.barTimer = setInterval(() => { this.syncBarsFromPage(); }, 2000);
             }
+          })
+          // 页面里的终端插件用 console.log('DSH_TERM:' + json) 上报 tab 的状态。
+          .onConsole((event: OnConsoleEvent) => {
+            try {
+              this.onTermBridge(event.message.getMessage());
+            } catch (error) { /* 控制台消息不是桥消息 */ }
+            return false;
           })
           .onErrorReceive((event: OnErrorReceiveEvent) => {
             if (event && event.error && event.error.getErrorInfo()) {
@@ -389,7 +436,10 @@ struct Index {
               .width(48)
               .height(48)
               .color(this.barDark ? '#7FC79B' : '#1F5D3A')
-            Text('首次启动要把官方引擎解包到应用沙箱，需要一到两分钟。')
+            // 只有真的在解包时才说「首次启动」；普通冷启动只是等 Web 服务起来。
+            Text(this.unpacking
+              ? '首次启动要把官方引擎解包到应用沙箱，需要一到两分钟。'
+              : '正在启动本地运行时…')
               .fontSize(12)
               .fontColor(this.barDark ? '#8FA396' : '#7A8F81')
               .textAlign(TextAlign.Center)
@@ -409,10 +459,17 @@ struct Index {
         .justifyContent(FlexAlign.Center)
         .backgroundColor(this.barBg)
       }
-      // 原生终端入口由页面里的注入按钮触发（见 injectNativeTerminal），
-      // ArkUI 浮层会被 Web 表面吞掉触摸。终端本身是覆盖式原生视图，不占路由栈。
-      if (this.showTerminal) {
-        TerminalView({ runtime: this.runtime, onClose: () => { this.showTerminal = false; } })
+      // 右侧栏 tab 的终端画面：只铺在页面报上来的矩形上，侧栏和 dock 仍是页面的。
+      if (this.showTerminal && this.termWidth > 0 && this.termHeight > 0) {
+        TerminalView({
+          runtime: this.runtime,
+          stageLeft: this.termLeft,
+          stageTop: this.termTop,
+          stageWidth: this.termWidth,
+          stageHeight: this.termHeight,
+          visible: this.termVisible,
+          onClose: () => { this.showTerminal = false; }
+        })
       }
     }
     .width('100%')

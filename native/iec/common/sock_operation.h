@@ -135,6 +135,17 @@ enum OpExec {
     // it. A job name may be a sub-job ("<parent>/t<pid>"); JobPids() matches
     // those as part of the parent, so a tool-level cancel still reaches them.
     OP_SIGNAL_JOB = OP_EXEC_START + 5,
+    // [foreground group][session][signal]: relay PTY job-control to stand-ins.
+    OP_PTY_SIGNAL = OP_EXEC_START + 6,
+    // [group][session] -> [group][session]: translate a foreground claim.
+    //
+    // A program the server started reports its own group when it takes the
+    // terminal (the client shim's start-up claim). That group lives in the
+    // server's session, not the shell's, so it can never be the terminal's
+    // foreground group: the shell put the program's stand-in there. Answering
+    // with the stand-in's group and session turns the claim into the one the
+    // shell actually made, which is what ^C, ^Z and SIGWINCH must be aimed at.
+    OP_PTY_PGRP = OP_EXEC_START + 7,
 
     OP_EXEC_END,
 };

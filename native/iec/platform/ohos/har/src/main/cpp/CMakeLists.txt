@@ -91,3 +91,20 @@ target_compile_definitions(ncploader PRIVATE _GNU_SOURCE)
 set_target_properties(ncploader PROPERTIES OUTPUT_NAME ncploader)
 target_link_libraries(ncploader PRIVATE dl)
 
+# Build the terminal from source as part of every HAP build. Otherwise a stale
+# library left in obj/ can silently ship without changes to the NAPI wrapper.
+set(DSH_TERMINAL_ROOT "${IEC_ROOT}/../terminal")
+add_library(dsh_terminal SHARED
+    "${DSH_TERMINAL_ROOT}/terminal_napi.cpp"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/encoding.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/keyboard.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/mouse.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/parser.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/pen.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/screen.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/state.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/unicode.c"
+    "${DSH_TERMINAL_ROOT}/libvterm/src/vterm.c")
+target_include_directories(dsh_terminal PRIVATE "${DSH_TERMINAL_ROOT}/libvterm/include")
+target_link_libraries(dsh_terminal PRIVATE libace_napi.z.so)
+

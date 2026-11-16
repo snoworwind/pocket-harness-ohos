@@ -340,6 +340,9 @@ napi_value ExecStart(napi_env env, napi_callback_info info) {
         !ReadBool(env, argv[0], "envReplace", &options.env_replace, "") ||
         !ReadString(env, argv[0], "stdin", &options.stdin_data, false, "") ||
         !ReadBool(env, argv[0], "keepStdinOpen", &options.keep_stdin_open, "") ||
+        !ReadBool(env, argv[0], "pty", &options.pty, "") ||
+        !ReadInt(env, argv[0], "cols", &options.cols, "") ||
+        !ReadInt(env, argv[0], "rows", &options.rows, "") ||
         !ReadInt(env, argv[0], "timeoutMs", &options.timeout_ms, "") ||
         !ReadString(env, argv[0], "job", &options.job, false, "")) {
         return nullptr;
@@ -518,6 +521,20 @@ napi_value ExecWait(napi_env env, napi_callback_info info) {
 /* ------------------------------------------------------------------ */
 
 // execWrite(id, data): number of bytes accepted (0 = pipe full, -1 = no stdin)
+napi_value ExecResize(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t id, cols, rows;
+    if (argc != 3 || napi_get_value_int32(env, argv[0], &id) != napi_ok ||
+        napi_get_value_int32(env, argv[1], &cols) != napi_ok ||
+        napi_get_value_int32(env, argv[2], &rows) != napi_ok) {
+        napi_throw_type_error(env, nullptr, "execResize(id, cols, rows) expects numbers");
+        return nullptr;
+    }
+    return MakeBool(env, iec::ResizePty(id, cols, rows));
+}
+
 napi_value ExecWrite(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value argv[2] = {nullptr, nullptr};
@@ -531,6 +548,20 @@ napi_value ExecWrite(napi_env env, napi_callback_info info) {
 
     std::string data;
     size_t length = 0;
+    bool typed = false;
+    napi_is_typedarray(env, argv[1], &typed);
+    if (typed) {
+        napi_typedarray_type type;
+        void* bytes = nullptr;
+        napi_value buffer;
+        size_t offset = 0;
+        if (napi_get_typedarray_info(env, argv[1], &type, &length, &bytes, &buffer, &offset) != napi_ok ||
+            type != napi_uint8_array) {
+            napi_throw_type_error(env, nullptr, "execWrite: expected Uint8Array");
+            return nullptr;
+        }
+        return MakeInt(env, iec::Write(id, bytes, length));
+    }
     if (napi_get_value_string_utf8(env, argv[1], nullptr, 0, &length) != napi_ok) {
         napi_throw_type_error(env, nullptr, "execWrite: data must be a string");
         return nullptr;
@@ -672,6 +703,7 @@ void RegisterExecNapi(napi_env env, napi_value exports) {
         {"execPoll",       nullptr, ExecPoll,       nullptr, nullptr, nullptr, napi_default, nullptr},
         {"execWait",       nullptr, ExecWait,       nullptr, nullptr, nullptr, napi_default, nullptr},
         {"execWrite",      nullptr, ExecWrite,      nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"execResize",     nullptr, ExecResize,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"execCloseStdin", nullptr, ExecCloseStdin, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"execTerminate",  nullptr, ExecTerminate,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"execSignal",     nullptr, ExecSignal,     nullptr, nullptr, nullptr, napi_default, nullptr},

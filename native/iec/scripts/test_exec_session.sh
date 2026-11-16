@@ -33,7 +33,7 @@ cc -std=gnu11 -I. -Icommon -D_GNU_SOURCE -c common/sock_client.c \
     -o "$BUILD/test/sock_client.o"
 
 c++ -std=c++17 -Wall -Wextra -I. -Icommon -D_GNU_SOURCE -pthread \
-    tools/exec_session_selftest.cpp exec/exec_session.cpp \
+    tools/exec_session_selftest.cpp exec/exec_session.cpp logger/logger.cpp \
     "$BUILD/test/rpc.o" "$BUILD/test/sock_client.o" \
     -o "$BUILD/test/exec_session_selftest"
 

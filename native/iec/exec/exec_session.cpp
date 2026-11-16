@@ -17,6 +17,7 @@
 #include "exec_session.h"
 
 #include "constant.h"
+#include "logger/logger.h"
 #include "sock_operation.h"
 
 // The client and the wire helpers are C: the service is a C++ translation unit,
@@ -40,6 +41,8 @@ extern char** environ;
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <pty.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -116,6 +119,7 @@ struct Session {
     size_t      cap = kDefaultOutputCap;
 
     int in_w = -1;       // parent end of the child's stdin
+    int pty_number = -1; // -1: pipe, -2: kernel PTY, >=0: IEC PTY
 
     std::mutex mu;
     std::condition_variable cv;
@@ -535,12 +539,45 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
         return -1;
     };
 
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0)
+    int pty_number = -1;
+    if (options.pty) {
+        if (options.cols < 2 || options.cols > 1000 || options.rows < 1 || options.rows > 1000)
+            return fail("invalid PTY dimensions");
+        int master = -1, slave = -1;
+        winsize ws {};
+        ws.ws_col = options.cols;
+        ws.ws_row = options.rows;
+        if (openpty(&master, &slave, nullptr, nullptr, &ws) == 0) {
+            pty_number = -2;
+        } else {
+            uint32_t number = 0;
+            master = iec_rpc_take_fd(TTY_SOCK_PATH, OP_OPENPTMX, nullptr, 0, &number);
+            if (master < 0) return fail("cannot allocate PTY: " + Strerror(errno));
+            uint8_t req[4 + sizeof ws];
+            iec_put32(req, number);
+            slave = iec_rpc_take_fd(TTY_SOCK_PATH, OP_OPENPTS, req, 4, nullptr);
+            if (slave < 0) { close(master); return fail("cannot open PTY slave"); }
+            memcpy(req + 4, &ws, sizeof ws);
+            if (iec_rpc_call(TTY_SOCK_PATH, OP_SETWINSZ, req, sizeof req, nullptr, 0, nullptr) < 0) {
+                close(master); close(slave); return fail("cannot set PTY size");
+            }
+            pty_number = static_cast<int>(number);
+        }
+        // Independent descriptors, one ordered output stream for stdout/stderr.
+        in_pipe[0] = slave;
+        in_pipe[1] = master;
+        out_pipe[0] = dup(master);
+        out_pipe[1] = dup(slave);
+        err_pipe[1] = dup(slave);
+        if (out_pipe[0] < 0 || out_pipe[1] < 0 || err_pipe[1] < 0)
+            return fail("dup PTY: " + Strerror(errno));
+    } else if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
         return fail("pipe: " + Strerror(errno));
+    }
 
     for (int fd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1],
                    err_pipe[0], err_pipe[1]})
-        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
 
     // Where the program starts. The fake root's home is the useful default on a
     // device; a build host (and a first boot before the home exists) has no such
@@ -562,7 +599,10 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
     const uint32_t envc = static_cast<uint32_t>(env.size());
     const uint32_t fd_count = 3;   // stdin, stdout, stderr -- always all three
 
-    Append32(body, 0);                          // flags: nothing extra asked for
+    // Bit 0 belongs to the shim's "caller waits" flag and bit 1 to its stdio
+    // flag; bit 2 is this request's own: give the program a controlling terminal
+    // session. See onExecute().
+    Append32(body, options.pty ? 4u : 0u);       // new terminal session
     Append32(body, static_cast<uint32_t>(CALL_EXECVP));
     Append32(body, argc);
     Append32(body, envc);
@@ -644,6 +684,8 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
     session->pid = pid;
     session->job = job;
     session->in_w = in_pipe[1];
+    session->pty_number = pty_number;
+    session->err_eof = options.pty;
     session->cap = options.max_output_bytes == 0
                        ? kDefaultOutputCap
                        : std::min(std::max(options.max_output_bytes, kMinOutputCap),
@@ -679,7 +721,7 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
         CloseStdin(id);
 
     session->reader_out = std::thread(ReadLoop, session, out_fd, false);
-    session->reader_err = std::thread(ReadLoop, session, err_fd, true);
+    if (err_fd >= 0) session->reader_err = std::thread(ReadLoop, session, err_fd, true);
     session->waiter = std::thread(WaitLoop, session);
     if (options.timeout_ms > 0)
         session->watchdog = std::thread(WatchLoop, session, options.timeout_ms);
@@ -690,7 +732,7 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
     // holds the pipe -- see ReadLoop.
     if (session->feeder.joinable()) session->feeder.detach();
     session->reader_out.detach();
-    session->reader_err.detach();
+    if (session->reader_err.joinable()) session->reader_err.detach();
     session->waiter.detach();
     if (session->watchdog.joinable()) session->watchdog.detach();
 
@@ -702,6 +744,31 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
         state->running = true;
     }
     return id;
+}
+
+bool ResizePty(int id, int cols, int rows) {
+    auto s = Find(id);
+    if (!s || cols < 2 || cols > 1000 || rows < 1 || rows > 1000) {
+        Logger::GetInstance()->LogW("[exec] resize %d x %d: no session or bad size", cols, rows);
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(s->mu);
+    if (s->in_w < 0 || s->pty_number == -1) return false;
+    winsize ws {};
+    ws.ws_col = cols; ws.ws_row = rows;
+    if (s->pty_number == -2) {
+        const bool ok = ioctl(s->in_w, TIOCSWINSZ, &ws) == 0;
+        Logger::GetInstance()->LogI("[exec] kernel resize %d x %d -> %d", cols, rows, ok);
+        return ok;
+    }
+    uint8_t req[4 + sizeof ws];
+    iec_put32(req, s->pty_number);
+    memcpy(req + 4, &ws, sizeof ws);
+    const int rc = iec_rpc_call(TTY_SOCK_PATH, OP_SETWINSZ, req, sizeof req,
+                                nullptr, 0, nullptr);
+    Logger::GetInstance()->LogI("[exec] resize %d x %d (pty %d) -> %d",
+                                cols, rows, s->pty_number, rc);
+    return rc == 0;
 }
 
 bool Poll(int id, size_t max_out, size_t max_err, ExecChunk* chunk,

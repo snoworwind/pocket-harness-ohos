@@ -1,7 +1,9 @@
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { display } from '@kit.ArkUI';
-import { execStart, execPoll, execRelease, execWrite } from 'iec';
+import { window } from '@kit.ArkUI';
+import { KeyboardAvoidMode as UIKeyboardAvoidMode } from '@ohos.arkui.UIContext';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { execStart, execPoll, execRelease, execWrite, execResize, execTerminate } from 'iec';
 import { NativeRuntime } from '../platform/NativeRuntime';
 import terminal from 'libdsh_terminal.so';
 
@@ -15,6 +17,7 @@ interface TerminalNative {
   copyScrollback(handle: number, index: number, buffer: ArrayBuffer): number;
   cursor(handle: number): number;
   cellBytes(): number;
+  readOutput(handle: number): string;
 }
 
 interface CellData {
@@ -27,21 +30,17 @@ interface CellData {
 
 const term = terminal as TerminalNative;
 
-interface TerminalManifest { version: string }
-
 const CELL_BYTES = 16;
 const FONT_SIZE = 14;
 const DEFAULT_FG = '#d6d6d6';
 const DEFAULT_BG = '#101113';
-const COLORS: string[] = [
-  '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
-  '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'
-];
 
 class TerminalSession {
   private id: number = -1;
   private timer: number = -1;
   private base64 = new util.Base64Helper();
+  private encoder = new util.TextEncoder();
+  private pending: Uint8Array = new Uint8Array(0);
   private onOutput: (bytes: Uint8Array) => void;
   private onExit: (code: number) => void;
   ended: boolean = false;
@@ -51,7 +50,7 @@ class TerminalSession {
     this.onOutput = onOutput;
     this.onExit = onExit;
     const handle = execStart({ cmd: command, args: args, cwd: cwd, env: env, envReplace: true,
-      keepStdinOpen: true, timeoutMs: 0, maxOutputBytes: 67108864 });
+      keepStdinOpen: true, pty: true, cols: 80, rows: 24, timeoutMs: 0, maxOutputBytes: 67108864 });
     this.id = handle.id;
     this.timer = setInterval(() => this.poll(), 25);
   }
@@ -59,6 +58,7 @@ class TerminalSession {
   private poll(): void {
     if (this.ended) return;
     try {
+      this.flushInput();
       const chunk = execPoll(this.id, 65536, 65536, 'base64');
       if (chunk.out) this.onOutput(this.base64.decodeSync(chunk.out));
       if (chunk.err) this.onOutput(this.base64.decodeSync(chunk.err));
@@ -77,14 +77,29 @@ class TerminalSession {
 
   write(text: string): void {
     if (this.ended || text.length === 0) return;
-    try { execWrite(this.id, text); } catch (error) { /* 已结束 */ }
+    const data = this.encoder.encodeInto(text);
+    const joined = new Uint8Array(this.pending.length + data.length);
+    joined.set(this.pending); joined.set(data, this.pending.length);
+    this.pending = joined;
+    this.flushInput();
+  }
+
+  private flushInput(): void {
+    if (this.pending.length === 0) return;
+    const count = execWrite(this.id, this.pending.subarray(0, 16384));
+    if (count > 0) this.pending = this.pending.slice(count);
+    else if (count < 0) this.pending = new Uint8Array(0);
+  }
+
+  resize(cols: number, rows: number): void {
+    if (!this.ended) execResize(this.id, cols, rows);
   }
 
   close(): void {
     if (this.ended) return;
-    this.ended = true;
-    clearInterval(this.timer);
-    try { execRelease(this.id); } catch (error) { /* 忽略 */ }
+    this.onOutput = () => {};
+    this.onExit = () => {};
+    try { execTerminate(this.id, 0); } catch (error) { /* 已退出 */ }
   }
 }
 
@@ -92,11 +107,15 @@ class TerminalSession {
 export struct TerminalView {
   runtime?: NativeRuntime;
   onClose: () => void = () => {};
+  // 页面 tab body 的矩形（vp == CSS 像素）与可见性，由 Index 从桥消息里更新。
+  // 名字带 stage 前缀：width/height 与组件自身的同名属性方法冲突。
+  @Prop stageLeft: number = 0;
+  @Prop stageTop: number = 0;
+  @Prop stageWidth: number = 0;
+  @Prop stageHeight: number = 0;
+  @Prop visible: boolean = true;
   @State private status: string = '正在启动终端';
   @State private ready: boolean = false;
-  @State private canvasReady: boolean = false;
-  @State private dbg: string = '';
-  private received: number = 0;
   @State private keyBar: boolean = true;
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
@@ -112,26 +131,42 @@ export struct TerminalView {
   private timer: number = -1;
   private sbOffset: number = 0;
   private scrollbackCount: number = 0;
-  private input: string = '';
+  @State private input: string = '';
   private lastY: number = 0;
-  @State private viewW: number = 360;
-  @State private viewH: number = 720;
+  private viewW: number = 0;
+  private viewH: number = 0;
+  @State private keyboardHeight: number = 0;
+  private win?: window.Window;
+  private previousKeyboardMode: UIKeyboardAvoidMode = UIKeyboardAvoidMode.OFFSET;
+  private active: boolean = false;
+  private keyboardChanged = (height: number): void => {
+    this.keyboardHeight = this.getUIContext().px2vp(height);
+    this.sbOffset = 0;
+    this.dirty = true;
+  };
   private context?: common.UIAbilityContext;
   private root: string = '';
 
   aboutToAppear(): void {
+    this.active = true;
     try { this.context = this.getUIContext().getHostContext() as common.UIAbilityContext; } catch (error) { /* 无上下文 */ }
-    // Canvas 不依赖 onAreaChange：直接用窗口尺寸定死，避免首帧 0×0。
-    try {
-      const win = display.getDefaultDisplaySync();
-      this.viewW = px2vp(win.width);
-      this.viewH = px2vp(win.height) - 90;
-    } catch (error) { /* 取不到窗口尺寸时保持 0，draw 里再兜底 */ }
+    this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
+    this.getUIContext().setKeyboardAvoidMode(UIKeyboardAvoidMode.NONE);
+    const context = this.context;
+    if (context) window.getLastWindow(context).then((win: window.Window) => {
+      if (!this.active) return;
+      this.win = win;
+      win.on('keyboardHeightChange', this.keyboardChanged);
+      this.keyboardChanged(win.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD).bottomRect.height);
+    }).catch(() => {});
     this.start();
     this.timer = setInterval(() => this.tick(), 33);
   }
 
   aboutToDisappear(): void {
+    this.active = false;
+    this.win?.off('keyboardHeightChange', this.keyboardChanged);
+    this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardMode);
     if (this.timer >= 0) { clearInterval(this.timer); this.timer = -1; }
     this.session?.close();
     if (this.handle !== 0) { term.destroy(this.handle); this.handle = 0; }
@@ -150,22 +185,33 @@ export struct TerminalView {
     if (!runtime) { this.status = '运行时未就绪'; return; }
     try {
       // 复用 Index 的运行时：probeCaps/startIecServer 已经在 ensure() 里做过。
+      hilog.info(0, 'DSH_TERM', 'ensure runtime');
       await runtime.ensure();
+      if (!this.active) return;
       this.root = runtime.rootDir;
       if (this.root === '') { this.status = '运行时目录为空'; return; }
       this.status = '正在启动 bash';
+      hilog.info(0, 'DSH_TERM', 'create screen');
       this.handle = term.create(this.cols, this.rows) as number;
+      hilog.info(0, 'DSH_TERM', 'screen created: %{public}s', this.handle.toString());
       if (this.handle === 0) { this.status = 'libvterm 初始化失败'; return; }
       this.screenBuf = new ArrayBuffer(this.cols * this.rows * CELL_BYTES);
-      term.input(this.handle, new Uint8Array([82, 69, 65, 68, 89, 13, 10]));
+      hilog.info(0, 'DSH_TERM', 'start bash');
       const env: Record<string, string> = runtime.environment;
       env['TERM'] = 'xterm-256color';
+      env['COLORTERM'] = 'truecolor';
       env['SHELL'] = this.root + '/bin/bash';
       this.session = new TerminalSession(this.root + '/bin/bash', ['-i'], context.filesDir, env,
-        (bytes: Uint8Array) => { this.received += bytes.length; term.input(this.handle, bytes); this.dirty = true; },
+        (bytes: Uint8Array) => {
+          term.input(this.handle, bytes);
+          const reply = term.readOutput(this.handle);
+          if (reply !== '') this.session?.write(reply);
+          this.dirty = true;
+        },
         (code: number) => { this.status = 'bash 已退出（' + code.toString() + '）'; });
       this.status = '';
       this.ready = true;
+      hilog.info(0, 'DSH_TERM', 'bash started');
       this.dirty = true;
     } catch (error) {
       this.status = '终端启动失败：' + (error as Error).message;
@@ -178,25 +224,33 @@ export struct TerminalView {
   }
 
   private drawCell(x: number, y: number, ch: string, fg: number, bg: number, attrs: number, width: number): void {
-    if (bg !== 0xFFFFFFFF) {
-      this.ctx.fillStyle = this.colorOf(bg, DEFAULT_BG);
+    let foreground = this.colorOf(fg, DEFAULT_FG);
+    let background = this.colorOf(bg, DEFAULT_BG);
+    if ((attrs & 8) !== 0) {
+      const swap = foreground; foreground = background; background = swap;
+    }
+    if (background !== DEFAULT_BG) {
+      this.ctx.fillStyle = background;
       this.ctx.fillRect(x, y, this.cellW * width, this.cellH);
     }
     if (ch === '' || ch === '\u0000') return;
     if (ch === ' ' && bg === 0xFFFFFFFF && attrs === 0) return;
-    this.ctx.fillStyle = (attrs & 8) !== 0 ? this.colorOf(bg, DEFAULT_BG) : this.colorOf(fg, DEFAULT_FG);
+    this.ctx.fillStyle = foreground;
+    this.ctx.font = ((attrs & 4) !== 0 ? 'italic ' : '') + ((attrs & 1) !== 0 ? 'bold ' : '') +
+      this.getUIContext().vp2px(FONT_SIZE).toString() + 'px monospace';
     this.ctx.fillText(ch, x, y + this.cellH - 4);
     if ((attrs & 2) !== 0) {
       const w = this.cellW * width;
       this.ctx.fillRect(x, y + this.cellH - 2, w, 1);
     }
+    if ((attrs & 32) !== 0) this.ctx.fillRect(x, y + this.cellH / 2, this.cellW * width, 1);
   }
 
   private decodeCell(buffer: ArrayBuffer, index: number): CellData {
     const view = new DataView(buffer);
     const off = index * CELL_BYTES;
     const code = view.getUint32(off, true);
-    const ch = code > 0 ? String.fromCodePoint(code) : '';
+    const ch = code > 0 && code <= 0x10FFFF ? String.fromCodePoint(code) : '';
     return {
       ch: ch, fg: view.getUint32(off + 4, true), bg: view.getUint32(off + 8, true),
       attrs: view.getUint8(off + 12), width: Math.max(1, view.getUint8(off + 13))
@@ -205,36 +259,36 @@ export struct TerminalView {
 
   private draw(): void {
     if (this.handle === 0) return;
-    let width = this.viewW > 0 ? this.viewW : this.ctx.width;
-    let height = this.viewH > 0 ? this.viewH : this.ctx.height;
-    // Canvas 的 onAreaChange 在部分入口下不会触发；用窗口尺寸兜底，保证首帧就能画。
-    if (width < 10 || height < 10) {
-      try {
-        const win = display.getDefaultDisplaySync();
-        width = px2vp(win.width);
-        height = px2vp(win.height) - 96;
-      } catch (error) {
-        width = 360;
-        height = 720;
-      }
-      this.viewW = width;
-      this.viewH = height;
+    // The canvas is the authority on the usable area. Resizing it is reported
+    // through onAreaChange while the soft keyboard is up, but the change back
+    // when the keyboard closes is not, and a stale height would leave the PTY
+    // with the rows it had while the keyboard covered the screen.
+    if (this.ctx.width > 0 && this.ctx.height > 0) {
+      this.viewW = this.ctx.width;
+      this.viewH = this.ctx.height;
     }
+    const width = this.viewW;
+    const height = this.viewH;
     if (width < 10 || height < 10) { this.dirty = true; return; }
     this.ctx.fillStyle = DEFAULT_BG;
     this.ctx.fillRect(0, 0, width, height);
-    this.ctx.fillStyle = '#ff0000';
-    this.ctx.fillRect(20, 90, 120, 30);
-    this.ctx.fillStyle = '#ffffff';
-    this.ctx.font = '12px monospace';
-    this.ctx.fillText('TICK', 26, 110);
-    this.ctx.font = FONT_SIZE.toString() + 'px monospace';
-    this.ctx.font = FONT_SIZE.toString() + 'px monospace';
+    this.ctx.font = vp2px(FONT_SIZE).toString() + 'px monospace';
     this.ctx.textBaseline = 'alphabetic';
     this.cellW = Math.max(1, this.ctx.measureText('M').width);
     this.cellH = Math.round(FONT_SIZE * 1.35);
     const visibleRows = Math.max(1, Math.floor(height / this.cellH));
     const visibleCols = Math.max(2, Math.floor(width / this.cellW));
+
+    if (visibleCols !== this.cols || visibleRows !== this.rows) {
+      this.cols = visibleCols;
+      this.rows = visibleRows;
+      hilog.info(0, 'DSH_TERM', 'resize view %{public}s x %{public}s -> %{public}d x %{public}d',
+        this.viewW.toString(), this.viewH.toString(), this.cols, this.rows);
+      term.resize(this.handle, this.cols, this.rows);
+      this.session?.resize(this.cols, this.rows);
+      this.sbOffset = 0;
+      this.screenBuf = new ArrayBuffer(this.cols * this.rows * CELL_BYTES);
+    }
 
     const cells = term.copyScreen(this.handle, this.screenBuf) as number;
     if (cells <= 0) return;
@@ -279,13 +333,17 @@ export struct TerminalView {
   }
 
   private send(text: string): void {
+    this.sbOffset = 0;
     this.session?.write(text);
     this.dirty = true;
   }
 
   private onTextChange(value: string): void {
-    if (value.length === 0) return;
-    const added = value.startsWith(this.input) ? value.slice(this.input.length) : value;
+    let common = 0;
+    while (common < value.length && common < this.input.length && value[common] === this.input[common]) common++;
+    const removed = this.input.length - common;
+    if (removed > 0) this.send('\u007f'.repeat(removed));
+    const added = value.slice(common);
     this.input = value;
     if (added.length > 0) this.send(added);
   }
@@ -295,17 +353,10 @@ export struct TerminalView {
       Column() {
         Stack() {
           Canvas(this.ctx)
-            .width(this.viewW)
-            .height(this.viewH)
+            .width('100%')
+            .height('100%')
             .backgroundColor(DEFAULT_BG)
             .onReady(() => {
-              this.canvasReady = true;
-              this.dbg = 'rdy ' + Math.round(this.ctx.width).toString() + 'x' + Math.round(this.ctx.height).toString();
-              this.ctx.fillStyle = '#00ff00';
-              this.ctx.fillRect(20, 20, 180, 60);
-              this.ctx.fillStyle = '#000000';
-              this.ctx.font = '14px monospace';
-              this.ctx.fillText('ONREADY', 28, 56);
               if (this.ctx.width > 0) { this.viewW = this.ctx.width; this.viewH = this.ctx.height; }
               this.dirty = true;
             })
@@ -329,9 +380,7 @@ export struct TerminalView {
         }
         .width('100%')
         .layoutWeight(1)
-        Text('dbg=' + this.dbg + ' w=' + Math.round(this.viewW).toString() + ' h=' +
-          Math.round(this.viewH).toString() + ' hnd=' + this.handle.toString() + ' rx=' +
-          this.received.toString() + ' ' + this.status)
+        Text(this.status)
           .fontSize(10)
           .fontColor('#80ff80')
           .width('100%')
@@ -343,34 +392,32 @@ export struct TerminalView {
               this.keyButton('Tab', '\t')
               this.keyButton('Ctrl-C', '\u0003')
               this.keyButton('Ctrl-D', '\u0004')
+              this.keyButton('Ctrl-Z', '\u001a')
               this.keyButton('←', '\u001b[D')
               this.keyButton('↑', '\u001b[A')
               this.keyButton('↓', '\u001b[B')
               this.keyButton('→', '\u001b[C')
-              this.keyButton('Enter', '\r')
+              this.keyButton('Enter', '\n')
               Button('输入')
                 .fontSize(12)
                 .height(30)
                 .backgroundColor('#26282c')
                 .fontColor('#d6d6d6')
                 .onClick(() => { this.getUIContext().getFocusController().requestFocus('term-input'); })
-              Button('关闭')
-                .fontSize(12)
-                .height(30)
-                .backgroundColor('#3a2a2a')
-                .fontColor('#f0a0a0')
-                .onClick(() => this.onClose())
             }.padding({ left: 8, right: 8, top: 6, bottom: 6 })
           }
           .scrollable(ScrollDirection.Horizontal)
           .width('100%')
           .backgroundColor('#17181b')
         }
-        TextInput({ text: this.input })
-          .width(1).height(1).opacity(0.01)
+        TextInput({ text: this.input, placeholder: '输入命令，回车执行' })
+          .width('100%').height(40)
+          .fontSize(14)
+          .fontColor(DEFAULT_FG)
+          .backgroundColor('#17181b')
           .id('term-input')
           .onChange((value: string) => this.onTextChange(value))
-          .onSubmit(() => { this.send('\r'); this.input = ''; })
+          .onSubmit(() => { this.send('\n'); this.input = ''; })
       }
       .width('100%')
       .height('100%')
@@ -387,8 +434,14 @@ export struct TerminalView {
         .backgroundColor(DEFAULT_BG)
       }
     }
-    .width('100%')
-    .height('100%')
+    // The page owns the tab and its geometry: this view is only the surface that
+    // fills the rectangle the tab body reported, so the sidebar and the dock
+    // around it stay the page's business.
+    .width(this.stageWidth)
+    .height(this.stageHeight)
+    .position({ x: this.stageLeft, y: this.stageTop })
+    .visibility(this.visible ? Visibility.Visible : Visibility.Hidden)
+    .padding({ bottom: this.keyboardHeight })
     .backgroundColor(DEFAULT_BG)
   }
 

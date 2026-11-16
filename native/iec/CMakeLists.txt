@@ -70,6 +70,8 @@ add_executable(iec_server
     exec/exec_shebang.cpp
     exec/elf.cpp
     common/proc.c
+    common/rpc.c
+    common/sock_client.c
     common/sock_server.cpp)
 
 target_include_directories(iec_server PRIVATE ${IEC_INCLUDES})

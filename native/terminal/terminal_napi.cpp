@@ -18,6 +18,7 @@
 
 typedef struct {
     unsigned char* cells;
+    int cols;
 } DshScrollbackLine;
 
 typedef struct {
@@ -83,7 +84,7 @@ static void DshWriteCell(unsigned char* out, const VTermScreenCell* cell, uint32
 
 static int DshSbPushline(int cols, const VTermScreenCell* cells, void* user) {
     DshTerminal* term = (DshTerminal*)user;
-    if (term == NULL || cols <= 0 || cols != term->cols) return 0;
+    if (term == NULL || cols <= 0) return 0;
     unsigned char* line = (unsigned char*)malloc((size_t)cols * DSH_CELL_BYTES);
     if (line == NULL) return 0;
     for (int col = 0; col < cols; col++) {
@@ -100,6 +101,7 @@ static int DshSbPushline(int cols, const VTermScreenCell* cells, void* user) {
     }
     int slot = (term->sb_head + term->sb_count) % DSH_SCROLLBACK_MAX;
     term->sb[slot].cells = line;
+    term->sb[slot].cols = cols;
     term->sb_count += 1;
     return 1;
 }
@@ -230,7 +232,6 @@ static napi_value Resize(napi_env env, napi_callback_info info) {
         return out;
     }
     if (cols < 2 || rows < 1) return out;
-    if (cols != term->cols) DshScrollbackClear(term);
     vterm_set_size(term->vt, rows, cols);
     term->rows = rows;
     term->cols = cols;
@@ -296,7 +297,13 @@ static napi_value CopyScrollback(napi_env env, napi_callback_info info) {
         return MakeInt(env, -1);
     }
     if (length < (size_t)term->cols * DSH_CELL_BYTES) return MakeInt(env, -1);
-    memcpy(raw, cells, (size_t)term->cols * DSH_CELL_BYTES);
+    memset(raw, 0, (size_t)term->cols * DSH_CELL_BYTES);
+    for (int col = 0; col < term->cols; ++col) {
+        uint32_t defaults[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        memcpy((unsigned char*)raw + col * DSH_CELL_BYTES + 4, defaults, sizeof defaults);
+    }
+    const int count = term->sb[slot].cols < term->cols ? term->sb[slot].cols : term->cols;
+    memcpy(raw, cells, (size_t)count * DSH_CELL_BYTES);
     return MakeInt(env, term->cols);
 }
 
@@ -309,6 +316,17 @@ static napi_value Cursor(napi_env env, napi_callback_info info) {
     int value = (term->cursor_visible ? 1 : 0) | ((term->cursor_col & 0x7FFF) << 1) |
                 ((term->cursor_row & 0xFFFF) << 16);
     return MakeInt(env, value);
+}
+
+static napi_value ReadOutput(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {NULL}, result = NULL;
+    napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    DshTerminal* term = argc ? DshFrom(env, argv[0]) : NULL;
+    char buffer[4096];
+    size_t size = term ? vterm_output_read(term->vt, buffer, sizeof buffer) : 0;
+    napi_create_string_utf8(env, buffer, size, &result);
+    return result;
 }
 
 static napi_value CellBytes(napi_env env, napi_callback_info info) {
@@ -327,6 +345,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"copyScrollback", NULL, CopyScrollback, NULL, NULL, NULL, napi_default, NULL},
         {"cursor", NULL, Cursor, NULL, NULL, NULL, napi_default, NULL},
         {"cellBytes", NULL, CellBytes, NULL, NULL, NULL, napi_default, NULL},
+        {"readOutput", NULL, ReadOutput, NULL, NULL, NULL, napi_default, NULL},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

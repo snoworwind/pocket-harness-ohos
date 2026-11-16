@@ -62,6 +62,7 @@ struct SpawnRequest {
     std::vector<InheritedFd> stdio_fds;     // target ∈ {0,1,2}
     std::vector<InheritedFd> extra_fds;     // target > 2; no request fills this yet
     int         sid = 0;
+    bool controlling_tty = false;
     bool        sync_wait = true;           // A foreground terminal command always waits.
     std::string proc_name;                  // prctl(PR_SET_NAME)
     CallMethod  call_method = CALL_METHOD_END;

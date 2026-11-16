@@ -58,6 +58,9 @@ struct ExecOptions {
     // makes a program that reads to EOF see one.
     std::string stdin_data;
     bool keep_stdin_open = false;
+    bool pty = false;
+    int cols = 80;
+    int rows = 24;
 
     // Wall-clock deadline. 0 means none. When it passes the job is terminated --
     // SIGTERM, then SIGKILL after an internal grace period -- and the state says
@@ -123,6 +126,7 @@ bool Wait(int id, int timeout_ms, ExecState* state);
 // Writes to the child's stdin without blocking: returns the number of bytes
 // accepted (0 when the pipe is full), or -1 when the session has no stdin left.
 long Write(int id, const void* data, size_t size);
+bool ResizePty(int id, int cols, int rows);
 
 // Closes the child's stdin, which is how a program that reads to EOF is told
 // there is no more. Idempotent.
