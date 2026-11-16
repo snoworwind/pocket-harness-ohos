@@ -19,7 +19,7 @@ native/iec/                     端侧原生执行核（IEC，来自 Bettersh）
   └─ scripts/optional/          Node、bash、toybox 等交叉编译脚本
 
 scripts/pack-native.sh          把交叉编译产物、官方引擎和前端打进 HAP
-scripts/build.ps1               Windows 命令行构建 HAP
+scripts/build.mjs              跨平台命令行构建 HAP（Windows / macOS / Linux）
 ```
 
 ## 设备上真正运行的东西
@@ -59,13 +59,18 @@ bash scripts/pack-native.sh            # 产物 + 引擎归档 → entry/
 
 ### 2. HAP 构建
 
-```powershell
-pwsh -File scripts/build.ps1 -DevEcoHome 'D:\D Program Files\DevEco Studio'
+```bash
+# 只需要 Node 18+；DevEco 用命令行工具包或完整安装均可（不必打开 IDE）
+node scripts/build.mjs --deveco-home "D:\D Program Files\DevEco Studio"
+# 原生库有改动时先清理，避免 hvigor 增量构建跳过打包
+node scripts/build.mjs --clean
 ```
+
+签名材料写在 `build-profile.json5` 的 `signingConfigs` 里（本地填写，不要提交），或由 DevEco 注入。脚本只调用 hvigor，不会改动任何构建配置文件。
 
 ### 3. 宿主机测试
 
-```powershell
+```bash
 npm install
 npm test
 ```

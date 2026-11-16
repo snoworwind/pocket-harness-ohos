@@ -9,7 +9,7 @@
 | 项目 | 操作 | 结果 |
 | --- | --- | --- |
 | 调试签名 | DevEco 自动签名生成 `~/.ohos/config/default_deepseek-harmony_…{cer,p12,p7b}` | Profile `bundle-name` = `dev.snoworwind.phoh`、`type` = debug、device-ids 含本机 UDID |
-| 构建签名 HAP | `pwsh scripts/build.ps1` + `signingConfig` | `entry-default-signed.hap`，169,452,498 字节 |
+| 构建签名 HAP | `node scripts/build.mjs` + `signingConfig` | `entry-default-signed.hap`，169,452,498 字节 |
 | 本地验签 | `hap-sign-tool.jar verify-app` | `Verify success`，SHA-256 摘要一致 |
 | 安装 | `hdc install -r` | `install bundle successfully`，`bm dump` 显示 `appProvisionType: debug`、`versionName 0.2.0` |
 | 启动 | `aa start -a EntryAbility -b dev.snoworwind.phoh` | `start ability successfully`，应用进程存活，首屏渲染正常 |
@@ -31,7 +31,7 @@
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| ArkTS 编译 | `pwsh -File scripts/build.ps1 -DevEcoHome '…'` | `BUILD SUCCESSFUL` |
+| ArkTS 编译 | `node scripts/build.mjs --deveco-home '…'` | `BUILD SUCCESSFUL` |
 | 宿主机测试 | `node scripts/test.cjs` | 28 项通过（会话协议、SSE、路径沙箱、官方 JSON-RPC 适配） |
 | sdk profile 解析 | `bash scripts/check-engine-dump.sh` | 退出码 0、111 个插件、stderr 为空 |
 | web profile 解析 | `bash scripts/check-engine-web.sh` | 退出码 0、291 个插件、stderr 为空（官方 Web GUI 的插件表） |

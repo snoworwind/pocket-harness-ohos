@@ -27,7 +27,7 @@ HAR 的 `native/iec/platform/ohos/har/build-profile.json5` 应使用 `abiFilters
 Windows 打包：
 
 ```powershell
-pwsh -NoProfile -File scripts/build.ps1 -DevEcoHome 'D:\D Program Files\DevEco Studio'
+node scripts/build.mjs --deveco-home 'D:\D Program Files\DevEco Studio'
 ```
 
 安装时必须显式指定模拟器 `hdc -t 127.0.0.1:5555`，避免操作真机。
