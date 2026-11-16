@@ -68,7 +68,8 @@ struct Index {
       "var nav=!!d&&getComputedStyle(d).visibility!=='hidden'&&d.getBoundingClientRect().x>=0;" +
       "var other=document.querySelector('[role=dialog]:not([aria-label=\"导航\"])');" +
       "var menu=!!document.querySelector('[role=menu]');" +
-      "var right=!!document.querySelector('[aria-label=\"收起右侧边栏\"]');" +
+      "var rb=document.querySelector('[aria-label=\"收起右侧边栏\"]');" +
+      "var right=!!rb&&getComputedStyle(rb).visibility!=='hidden'&&rb.getBoundingClientRect().width>0;" +
       "return JSON.stringify({nav:nav,dialog:!!other,menu:menu,right:right});" +
       "}catch(e){return '{}';}})()";
     this.uiTimer = setInterval(() => {
