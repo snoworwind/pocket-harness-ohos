@@ -65,7 +65,7 @@ struct Index {
     const script =
       "(function(){try{" +
       "var d=document.querySelector('[role=dialog][aria-label=\"导航\"]');" +
-      "var nav=!!d&&getComputedStyle(d).visibility!=='hidden'&&d.getBoundingClientRect().x>=0;" +
+      "var nav=!!d&&d.getAttribute('aria-modal')==='true';" +
       "var other=document.querySelector('[role=dialog]:not([aria-label=\"导航\"])');" +
       "var menu=!!document.querySelector('[role=menu]');" +
       "var rb=document.querySelector('[aria-label=\"收起右侧边栏\"]');" +
@@ -284,6 +284,12 @@ struct Index {
         // 页面从宿主 API 拿到当前会话的工作目录后补发过来，终端跟随它。
         const cwd = message['cwd'] as string;
         if (typeof cwd === 'string' && cwd !== '') { this.termCwd = cwd; }
+      } else if (op === 'ui') {
+        // 页面在浮层变化时立即推送（比轮询快），返回手势用这份状态。
+        this.webNav = message['nav'] === true;
+        this.webDialog = message['dialog'] === true;
+        this.webMenu = message['menu'] === true;
+        this.webRight = message['right'] === true;
       } else if (op === 'bounds') {
         const left = Number(message['left']);
         const top = Number(message['top']);

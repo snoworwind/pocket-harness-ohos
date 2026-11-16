@@ -198,6 +198,39 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /** 浮层状态变化时立刻同步给壳层（返回手势要用同步状态，轮询会有窗口期）。 */
+    function watchOverlays() {
+      if (window.__dshOverlayWatch) return;
+      window.__dshOverlayWatch = true;
+      let last = '';
+      const sample = function () {
+        try {
+          const drawer = document.querySelector('[role=dialog][aria-label="导航"]');
+          // 左抽屉的 aria-modal 在动画开始的瞬间就加减，比 x/visibility 可靠。
+          const nav = drawer !== null && drawer.getAttribute('aria-modal') === 'true';
+          const dialog = document.querySelector('[role=dialog]:not([aria-label="导航"])') !== null;
+          const menu = document.querySelector('[role=menu]') !== null;
+          const collapse = document.querySelector('[aria-label="收起右侧边栏"]');
+          const right = collapse !== null && window.getComputedStyle(collapse).visibility !== 'hidden'
+            && collapse.getBoundingClientRect().width > 0;
+          const state = JSON.stringify({ nav: nav, dialog: dialog, menu: menu, right: right });
+          if (state !== last) {
+            last = state;
+            send('ui', { nav: nav, dialog: dialog, menu: menu, right: right });
+          }
+        } catch (error) { /* 页面结构变化时静默 */ }
+      };
+      const observer = new MutationObserver(sample);
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['aria-modal', 'aria-expanded', 'aria-hidden', 'class', 'style', 'role'],
+      });
+      window.setInterval(sample, 300);
+      sample();
+    }
+
     /* ------------------------------------------------------------------ */
     /* 选区「引用文本」浮层：系统选区工具条在选区上方，会盖住它，移到下方   */
     /* ------------------------------------------------------------------ */
@@ -360,6 +393,7 @@ window.__ModuleLoader__.load({
         window.__dshHarmonyTerminalReady = true;
         installQuoteToolbarFix();
         watchActiveSession();
+        watchOverlays();
         } catch (error) {
           window.__dshHarmonyTerminalError = String(error && error.stack || error);
           throw error;
