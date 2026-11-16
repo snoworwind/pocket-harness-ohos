@@ -198,89 +198,6 @@ window.__ModuleLoader__.load({
       });
     }
 
-    /** 浮层状态变化时立刻同步给壳层（返回手势要用同步状态，轮询会有窗口期）。 */
-    function watchOverlays() {
-      if (window.__dshOverlayWatch) return;
-      window.__dshOverlayWatch = true;
-      let last = '';
-      const sample = function () {
-        try {
-          const drawer = document.querySelector('[role=dialog][aria-label="导航"]');
-          // 左抽屉的 aria-modal 在动画开始的瞬间就加减，比 x/visibility 可靠。
-          const nav = drawer !== null && drawer.getAttribute('aria-modal') === 'true';
-          const dialog = document.querySelector('[role=dialog]:not([aria-label="导航"])') !== null;
-          const menu = document.querySelector('[role=menu]') !== null;
-          const collapse = document.querySelector('[aria-label="收起右侧边栏"]');
-          const right = collapse !== null && window.getComputedStyle(collapse).visibility !== 'hidden'
-            && collapse.getBoundingClientRect().width > 0;
-          const state = JSON.stringify({ nav: nav, dialog: dialog, menu: menu, right: right });
-          if (state !== last) {
-            last = state;
-            send('ui', { nav: nav, dialog: dialog, menu: menu, right: right });
-          }
-        } catch (error) { /* 页面结构变化时静默 */ }
-      };
-      const observer = new MutationObserver(sample);
-      observer.observe(document.documentElement, {
-        subtree: true,
-        childList: true,
-        attributes: true,
-        attributeFilter: ['aria-modal', 'aria-expanded', 'aria-hidden', 'class', 'style', 'role'],
-      });
-      window.setInterval(sample, 300);
-      sample();
-    }
-
-    /* ------------------------------------------------------------------ */
-    /* 选区「引用文本」浮层：系统选区工具条在选区上方，会盖住它，移到下方   */
-    /* ------------------------------------------------------------------ */
-    function installQuoteToolbarFix() {
-      if (window.__dshQuoteToolbarFix) return;
-      window.__dshQuoteToolbarFix = true;
-      const place = function () {
-        try {
-          const button = document.querySelector('button[aria-label="引用文本"]');
-          if (button === null) return;
-          const selection = window.getSelection();
-          if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) return;
-          const rect = selection.getRangeAt(0).getBoundingClientRect();
-          if (rect.width === 0 && rect.height === 0) return;
-          let node = button;
-          while (node !== null && node !== document.body) {
-            const style = window.getComputedStyle(node);
-            if (style.position === 'fixed' || style.position === 'absolute') break;
-            node = node.parentElement;
-          }
-          if (node === null || node === document.body) return;
-          // 浮层的 top/left 是相对 offsetParent（消息列）的坐标，不能直接用视口坐标。
-          const parent = node.offsetParent || node.parentElement;
-          if (parent === null) return;
-          const parentRect = parent.getBoundingClientRect();
-          const width = node.offsetWidth || button.offsetWidth;
-          const height = node.offsetHeight || 32;
-          const gap = 8;
-          let top;
-          if (rect.bottom + gap + height <= window.innerHeight) {
-            top = rect.bottom + gap - parentRect.top;
-          } else {
-            top = rect.top - gap - height - parentRect.top;
-          }
-          let left = rect.left + rect.width / 2 - parentRect.left - width / 2;
-          left = Math.max(4, Math.min(parentRect.width - width - 4, left));
-          node.style.setProperty('top', Math.round(top) + 'px', 'important');
-          node.style.setProperty('left', Math.round(left) + 'px', 'important');
-          node.style.setProperty('bottom', 'auto', 'important');
-        } catch (error) { /* 页面结构变化时静默 */ }
-      };
-      ['selectionchange', 'mouseup', 'touchend', 'scroll'].forEach(function (name) {
-        document.addEventListener(name, function () {
-          window.setTimeout(place, 60);
-          window.setTimeout(place, 200);
-        }, true);
-      });
-      window.addEventListener('resize', function () { window.setTimeout(place, 60); });
-    }
-
     /* ------------------------------------------------------------------ */
     /* 关于（设置里的一个分区）                                             */
     /* ------------------------------------------------------------------ */
@@ -391,9 +308,7 @@ window.__ModuleLoader__.load({
           return false;
         };
         window.__dshHarmonyTerminalReady = true;
-        installQuoteToolbarFix();
         watchActiveSession();
-        watchOverlays();
         } catch (error) {
           window.__dshHarmonyTerminalError = String(error && error.stack || error);
           throw error;
