@@ -51,9 +51,11 @@ vgcore.*
 /thirdparty/git/
 /thirdparty/dropbear/
 /thirdparty/pcre2/
+/thirdparty/pcre2-*/
 /thirdparty/zlib-*/
 /thirdparty/libarchive-*/
 /thirdparty/openssl-*/
+/thirdparty/openssl/
 /thirdparty/curl-*/
 /thirdparty/node-*/
 /thirdparty/ncurses/

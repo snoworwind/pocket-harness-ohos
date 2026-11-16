@@ -13,7 +13,7 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 | Version | `0.1.0.1` (versionCode 2) |
 | Min / target API | HarmonyOS 5.1.0 (API 18) / API 24 |
 | Engine | `@deepseek-ai/dsh` 0.2.2-rc.1 (web profile, 291 plugins) |
-| Runtime | Node 24.22.1 (`--jitless`), Bash 5.3, toybox 0.8.14, libarchive 3.7.7, ripgrep 14.1.1 |
+| Runtime | Node 24.22.1 (`--jitless`), Bash 5.3, Git 2.56.0 (with HTTPS), toybox 0.8.14, libarchive 3.7.7, ripgrep 14.1.1 |
 | Distribution | GitHub Release: unsigned HAP + arm64/x86_64 native libraries (**no AppGallery release is planned for now**) |
 
 > This project is **not intended for Huawei AppGallery** for now. It is distributed only through
@@ -25,6 +25,7 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 
 - **Official web GUI**: agent loop, tools, approvals, sessions and workspaces are the upstream engine; the UI is not reimplemented.
 - **Native terminal**: a closable right-sidebar tab with PTY and job control (`Ctrl-Z`, `fg`, `bg`), libvterm rendering, IME-aware layout and orientation support. It starts in the current DSH session's working directory and follows session/workspace switches.
+- **Built-in Git**: `git` and `git-remote-http(s)` are cross-compiled from source into IEC shared libraries and use the app's CA bundle, so `clone`/`fetch`/`push` over HTTPS work without an external toolchain.
 - **Back gesture**: closes overlays in priority order — menu → settings dialog → right sidebar/terminal → left drawer → system. Collapsing the terminal keeps the process running; only the tab's × stops it.
 - **Quote popover**: the "quote text" button is placed below the selection, clear of the system selection toolbar.
 - **Pinch zoom disabled**: the layout is viewport-based; zoom would break terminal/sidebar geometry.
@@ -52,6 +53,7 @@ scripts/
   ├─ build.mjs                   HAP build (Windows/macOS/Linux, auto-detects DevEco)
   ├─ build-x86-runtime.sh        staged x86_64 emulator runtime build
   ├─ pack-native.sh              native libs + engine archive → entry/
+  ├─ runtime-manifest.mjs        compute/verify runtime version from shipped bytes
   └─ test-fetch-polyfill.cjs     15 fetch-polyfill regression tests
 ```
 
@@ -66,8 +68,14 @@ bash native/toolchain/build-node24.sh        # Node 24.22.1 (jitless), the slow 
 bash native/build-bash.sh                    # Bash 5.3 (GPL-3.0)
 bash native/iec/scripts/build_toybox.sh      # toybox
 bash native/iec/scripts/build_libarchive.sh  # tar/cpio/unzip/zip
+bash native/iec/scripts/optional/build_git.sh # Git 2.56.0 (GPL-2.0, with HTTPS)
 bash scripts/pack-native.sh                  # libs + engine archive → entry/
 ```
+
+The Git target statically links zlib, PCRE2, OpenSSL and libcurl into two `.so` files; the script
+downloads and builds missing dependencies on the first run. For cross-compiling on macOS, set
+`OHOS_SDK`, `CLANG` and `JOBS` as shown in `native/iec/scripts/env.sh.example`, and make the SDK's
+`llvm-ar`/`llvm-nm` tools available on `PATH`.
 
 x86_64 emulator: see [docs/X86_64-BUILD.md](docs/X86_64-BUILD.md) and the `setup / node / tools /
 bash / addons / rg / pack` phases of `scripts/build-x86-runtime.sh`.
@@ -83,6 +91,12 @@ libc++ 22 `__n1` setup.
 node scripts/build.mjs --deveco-home "<DevEco install dir>"
 node scripts/build.mjs --clean   # after changing native libs
 ```
+
+Before packaging, `build.mjs` recomputes `runtime-manifest.json`'s `version` from the exact engine,
+npm and native libraries that will ship, so no manual bump is needed. `pack-native.sh` also calls the
+same `scripts/runtime-manifest.mjs`, which means it now requires Node 18+ on the build host. Release
+pipelines should add `--strict-runtime-manifest` to fail on a stale manifest instead of writing it
+back; `npm run runtime:check` runs the same gate standalone.
 
 `build-profile.json5` is gitignored (it contains signing paths and passwords); only
 `build-profile.example.json5` is committed. Signing is configured locally.
@@ -136,13 +150,44 @@ filesDir/
   harness-home/                DSH_HOME (profiles, sessions, settings, credentials)
 ```
 
-- The runtime directory name is derived from a content digest; changing the engine, npm or any
-  native library triggers a fresh unpack, and stale `runtime-*` directories are removed after a
-  successful start (~450 MB each).
+- The runtime directory name comes from the content digest computed by
+  `scripts/runtime-manifest.mjs`; `build.mjs` recomputes and writes it before every build, so
+  changing the engine, npm or any native library triggers a fresh unpack. Stale `runtime-*`
+  directories are removed after a successful start (~450 MB each).
+- An OTA update that only changes ArkTS/UI keeps the same runtime and reuses the old directory.
+  Its startup then behaves exactly like a normal cold start; no unpack prompt is expected.
+- `.installed` must contain the current `manifest.version`, otherwise the whole runtime is rebuilt.
 - `harness-home` is never deleted by the app: upgrades keep sessions and settings.
 - Corrupted runtimes are rebuilt automatically once, then the UI offers a "re-unpack" action.
 
+### Startup phases
+
+| Case | What the launch screen shows |
+| --- | --- |
+| First install / cleared data / changed runtime | "Unpacking the official engine and npm" plus first-launch copy. Unpacking is synchronous, so the spinner may pause |
+| OTA update with an unchanged runtime | Same as a normal cold start; no unpack prompt |
+| Normal cold start | Starting local runtime → starting the official web service → restoring the previous session and workspace; the screen is removed only after the first session mounts |
+
+The official Web GUI's `onPageEnd` only means static assets are loaded; the composer and right
+sidebar are not ready yet. The launch screen covers the WebView and blocks touches until
+`[data-conversation-session]` appears, with a 60-second fallback measured from the moment the home UI appears (plus a 120-second absolute fallback for a WebView that never mounts).
+
+After the optimization below, this device reaches a usable screen in about **11–15 s**; the first install still spends extra time unpacking the ~47 MB engine archive.
+
 ## Runtime patches
+
+### Startup performance
+
+On HarmonyOS, `process.report.getReport()` is extremely expensive because it enumerates CPU and
+network details. The native addon loader only calls it to distinguish musl from glibc, but that
+call blocks the Node event loop for about 30 seconds. `harmony/runtime-preload.cjs` returns a
+minimal report for **no-argument** `getReport()` calls, so the loader proceeds as musl immediately.
+
+Measured cold start to usable dropped from about **50–55 s to 11–15 s**, and
+`/api/session/create` from 32.4 s to about 0.3 s. Set `DSH_LITE_REPORT=0` to restore the full
+report when diagnosing.
+
+### fetch / TLS
 
 Node runs with `--jitless` on HarmonyOS, so V8 does not expose WebAssembly and the built-in
 `fetch` (undici) cannot parse HTTP. The runtime injects a pure-JS
@@ -167,7 +212,7 @@ in this repository**; provide it yourself if needed. Public/store builds should 
 
 ## Known limitations
 
-- First launch unpacks a 43.8 MB engine archive (~25k files), about 1–2 minutes on a phone.
+- First launch unpacks a 47 MB engine archive (~27k files), about 1–2 minutes on a phone.
 - Background keep-alive uses a location continuous task; it needs approximate-location permission
   and only affects background survival.
 - `dsh web` binds `127.0.0.1` only; the UI is reachable only from the in-app Web component.

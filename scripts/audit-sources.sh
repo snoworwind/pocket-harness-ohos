@@ -12,7 +12,7 @@ find "$WA/libs" -name '*.so*' -printf '%f %s\n' 2>/dev/null | sort
 
 echo
 echo '=== 2. 预期集合核对 ==='
-EXPECTED='libnode.so libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so librg.so libarchive.so.13 libiec_server.so libncploader.so libc++_shared.so'
+EXPECTED='libnode.so libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so librg.so libarchive.so.13 libgit.so libgit-remote-http.so libiec_server.so libncploader.so libdsh_terminal.so libc++_shared.so'
 for name in $EXPECTED; do
   if [ -f "$WA/libs/arm64-v8a/$name" ]; then echo "ok   $name"; else echo "MISS $name"; fi
 done

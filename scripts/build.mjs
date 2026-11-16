@@ -2,6 +2,11 @@
 // 跨平台构建入口（Windows / macOS / Linux 通用），替代原来的 build.ps1。
 //
 //   node scripts/build.mjs [--deveco-home <path>] [--clean] [--force-ohpm]
+//                          [--strict-runtime-manifest]
+//
+// 每次构建前都会按实际随包的引擎/npm/原生库重算 runtime-manifest.version；
+// --strict-runtime-manifest（或 DSH_STRICT_RUNTIME_MANIFEST=1）只校验不写回，
+// 供 CI/发布门禁使用：清单与产物不一致时直接失败。
 //
 // 只需要一个 Node 18+ 来跑这个脚本；hvigor、ohpm、SDK、JDK 都从 DevEco 安装目录里取，
 // 所以 DevEco 可以用命令行工具包或完整安装，不必打开 IDE。
@@ -107,6 +112,17 @@ if (!existsSync(join(root, 'entry', 'oh_modules', 'iec')) || flag('force-ohpm'))
   if (!existsSync(ohpm)) fail(`找不到 ohpm：${ohpm}`);
   run(ohpm, ['install', '--all'], 'ohpm install');
 }
+
+// ── 运行时清单 ────────────────────────────────────────────────────────────
+// 版本号必须由本次真正打进 HAP 的字节算出：手动改清单、替换了引擎或 .so 却
+// 忘了改 version 时，设备会命中旧 runtime 目录的 .installed，继续用旧运行时。
+const runtimeManifest = join(root, 'scripts', 'runtime-manifest.mjs');
+const strictRuntimeManifest = flag('strict-runtime-manifest') || process.env.DSH_STRICT_RUNTIME_MANIFEST === '1';
+run(
+  process.execPath,
+  [runtimeManifest, strictRuntimeManifest ? 'check' : 'sync'],
+  strictRuntimeManifest ? 'runtime manifest check' : 'runtime manifest sync'
+);
 
 // ── 构建 ──────────────────────────────────────────────────────────────────
 if (flag('clean')) {

@@ -13,7 +13,7 @@
 | 版本 | `0.1.0.1`（versionCode 2） |
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
-| 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1 |
+| 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1 |
 | 发布产物 | GitHub Release：未签名 HAP + arm64/x86_64 原生库（**本项目暂不打算上架华为应用市场**） |
 
 > 本项目**暂不打算上架华为应用市场**，只通过 GitHub Release 分发未签名的 HAP 与预编译原生库；使用者需要自行用调试证书签名后安装。下文的应用包（`.app`）构建步骤仅作为将来可能上架时的参考保留。
@@ -22,6 +22,7 @@
 
 - **官方 Web GUI**：Agent Loop、工具调用、审批、会话、工作区全部走官方引擎，界面不重写。
 - **原生终端**：右侧栏可关闭 tab，PTY + 作业控制（`Ctrl-Z`/`fg`/`bg`）、libvterm 绘制、软键盘防遮挡、横竖屏自适应；终端默认进入当前 DSH 会话的工作目录，切换会话/工作区时自动跟随。
+- **内置 Git**：`git` 及 `git-remote-http(s)` 由源码交叉编译成 IEC 共享库，直接使用应用内的 CA bundle，可执行 `clone`/`fetch`/`push` 等 HTTPS 操作。
 - **返回手势**：按浮层优先级逐层关闭——菜单 → 设置 → 右侧栏/终端 → 左侧抽屉 → 系统；终端收起时进程继续运行，只有 tab 的 × 才停止。
 - **选区引用**：选中文本时「引用文本」浮层显示在选区下方，避开系统选区工具条。
 - **禁用双指缩放**：界面按视口宽度布局，避免缩放把终端/侧栏几何算乱。
@@ -49,6 +50,7 @@ scripts/
   ├─ build.mjs                   HAP 构建（Windows/macOS/Linux，自动找 DevEco）
   ├─ build-x86-runtime.sh        x86_64 模拟器运行时的分阶段构建
   ├─ pack-native.sh              原生库 + 引擎归档 → entry/
+  ├─ runtime-manifest.mjs        按实际随包字节计算/校验运行时版本
   └─ test-fetch-polyfill.cjs     fetch 补丁的 15 项回归测试
 ```
 
@@ -63,8 +65,13 @@ bash native/toolchain/build-node24.sh        # Node 24.22.1（jitless），最�
 bash native/build-bash.sh                    # Bash 5.3（GPL-3.0）
 bash native/iec/scripts/build_toybox.sh      # toybox
 bash native/iec/scripts/build_libarchive.sh  # tar/cpio/unzip/zip
+bash native/iec/scripts/optional/build_git.sh # Git 2.56.0（GPL-2.0，含 HTTPS）
 bash scripts/pack-native.sh                  # 产物 + 引擎归档 → entry/
 ```
+
+Git 目标会把 zlib、PCRE2、OpenSSL、libcurl 静态链接进两个 `.so`，首次构建时脚本会自动下载并
+编译这些依赖。在 macOS 上交叉编译时，先按 `native/iec/scripts/env.sh.example` 设置 `OHOS_SDK`、
+`CLANG` 与 `JOBS`，并让 `PATH` 里能找到 SDK 的 `llvm-ar`/`llvm-nm` 等工具。
 
 x86_64 模拟器：见 [docs/X86_64-BUILD.md](docs/X86_64-BUILD.md)，用 `scripts/build-x86-runtime.sh` 的
 `setup / node / tools / bash / addons / rg / pack` 分阶段构建。
@@ -83,6 +90,12 @@ node scripts/build.mjs --clean
 
 `build-profile.json5` 已被 `.gitignore` 排除（含证书路径与口令），仓库只保留
 `build-profile.example.json5`；首次构建由模板生成。签名在本地 `signingConfigs` 中配置。
+
+`build.mjs` 在打包前会按本次真正放进 HAP 的引擎、npm 和原生库自动重算
+`runtime-manifest.json` 的 `version`，不需要手动改。`pack-native.sh` 末尾也调用同一个
+`scripts/runtime-manifest.mjs`，因此它现在要求构建机有 Node 18+。发布流水线建议加
+`--strict-runtime-manifest`，让清单与产物不一致时直接失败而不是写回；也可以单独运行
+`npm run runtime:check`。
 
 ### 3. 应用包（可选，仅将来上架时）
 
@@ -133,13 +146,41 @@ filesDir/
   harness-home/                DSH_HOME（profile、会话、设置、凭据）
 ```
 
-- 运行时目录名由 `pack-native.sh` 按内容摘要生成；引擎、npm 或任一原生库变化都会换目录、
-  重新解包，成功后删除旧的 `runtime-*` 目录（约 450 MB/个）；
+- 运行时目录名由 `scripts/runtime-manifest.mjs` 按内容摘要生成；`build.mjs` 每次构建前会自动
+  重算并写回 `runtime-manifest.json`，引擎、npm 或任一原生库变化都会换目录、重新解包，
+  成功后删除旧的 `runtime-*` 目录（约 450 MB/个）；
+- 只改 ArkTS/UI 的覆盖升级不会换运行时；manifest 版本不变时复用旧目录，启动行为与普通
+  冷启动完全一致，这是刻意设计，不是漏解包；
+- `.installed` 的内容必须等于当前 `manifest.version`，否则整棵重解；
 - `harness-home` 永不被应用删除：覆盖安装保留会话与设置，卸载才清空；
 - 目录被改坏时：三项存在性探测失败会整棵重解；引擎启动报缺文件症状会自动重解一次；
   仍失败则界面提供「重新解包运行时」。
 
+### 启动阶段
+
+| 场景 | 启动页表现 |
+| --- | --- |
+| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎与 npm」和首次启动说明；解包是同步操作，进度圈可能短暂停住 |
+| 覆盖升级但运行时未变 | 与普通冷启动相同，不出现解包提示 |
+| 普通冷启动 | 「正在启动本地运行时…」→「正在启动官方 Web 服务」→「正在恢复上次会话与工作区…」；首个会话挂载后才撤掉启动页 |
+
+官方 Web GUI 的 `onPageEnd` 只代表静态资源加载完，此时输入框和右栏仍未就绪。启动页会一直
+盖住 Web 并拦截触摸，直到 `[data-conversation-session]` 出现；首页出现后 60 秒仍无会话才放行；另有 120 秒绝对兜底，避免 Web 页面完全挂死时永久停在启动页。
+
+本机优化后的冷启动到可用约 **11–15 秒**；首次安装仍要额外解包约 47 MB 引擎归档。
+
 ## 运行时补丁
+
+### 启动性能
+
+鸿蒙上 `process.report.getReport()` 枚举 CPU/网络信息的开销极大；原生插件加载器只用它
+区分 musl/glibc，却会因此把 Node 事件循环阻塞约 30 秒。`harmony/runtime-preload.cjs`
+只对**无参**的 `getReport()` 返回最小报告，让加载器直接按 musl 继续，不再生成完整报告。
+
+实测冷启动到可用从约 **50–55 秒降到约 11–15 秒**，`/api/session/create` 从 32.4 秒降到
+约 0.3 秒。需要完整报告做诊断时，可在运行环境里设 `DSH_LITE_REPORT=0` 关闭短路。
+
+### fetch / TLS
 
 鸿蒙上 Node 只能以 `--jitless` 运行，V8 不暴露 WebAssembly，而 Node 内置的 `fetch`
 （undici）用 WASM 解析 HTTP。运行时因此注入纯 JS 的 `harmony/fetch-polyfill.cjs`：
@@ -162,7 +203,7 @@ TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可�
 
 ## 已知边界
 
-- 首次启动要解包 43.8 MB 的引擎归档（约 2.5 万个文件），真机上一到两分钟；
+- 首次启动要解包 47 MB 的引擎归档（约 2.7 万个文件），真机上一到两分钟；
 - 后台保活用「定位」连续任务：需要授权模糊定位，拒绝时只影响后台存活；
 - `dsh web` 只绑 `127.0.0.1`，界面只在本机 Web 组件里可达，不要改成对外监听；
 - 引擎自带的进程级沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，能力边界靠 permission

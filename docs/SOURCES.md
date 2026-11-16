@@ -19,6 +19,10 @@
 | `system.node` | `@deepseek-ai/node-addon-system` 包内 `src/flock.c`（DeepSeek 官方） | 同上脚本编译 | BSD-3-Clause |
 | `pty.node` | node-pty 1.2.0-beta.15 源码里的 `src/unix/pty.cc`（微软，MIT） | `native/toolchain/build-addons.sh` 用 OHOS 工具链 + node-addon-api 编译成 NAPI 插件，加载路径为 `node-pty/build/Release/pty.node` | MIT |
 | `librg.so` | ripgrep 14.1.1 源码（crates.io） | `scripts/rg/build-ripgrep.sh`，cargo 目标 `aarch64-unknown-linux-ohos`，编译成导出 `iec_rg_main` 的 cdylib，`llvm-strip` 后 4.9 MB | Unlicense OR MIT |
+| `libgit.so` | Git 2.56.0 源码（github.com/git/git） | `native/iec/scripts/optional/build_git.sh`：`-fPIC` 编译 git.o + builtin + libgit.a，`llvm-objcopy --redefine-sym main=iec_git_main`，再链 IEC shim 与静态 zlib/PCRE2/OpenSSL/libcurl 成共享库；只导出 `iec_git_main` | GPL-2.0 |
+| `libgit-remote-http.so` | Git 2.56.0 的 `remote-curl.c` + `http.c` + `http-walker.c` | 同上脚本，入口 `iec_git_remote_http_main`；同时供 `git-remote-http` 与 `git-remote-https` 两个启动器使用，静态链 libcurl/OpenSSL/zlib | GPL-2.0；静态依赖见 `LICENSES/curl.txt`、`LICENSES/Apache-2.0-OpenSSL.txt`、`LICENSES/zlib.txt` |
+
+> 两个 git 库静态链接了 zlib 1.3.1、PCRE2 10.49、OpenSSL 3.0.22、libcurl 8.22.0；它们不单独随包分发，许可证原文分别在 `LICENSES/zlib.txt`、`LICENSES/pcre2.txt`、`LICENSES/Apache-2.0-OpenSSL.txt`、`LICENSES/curl.txt`。
 
 ## 数据归档
 

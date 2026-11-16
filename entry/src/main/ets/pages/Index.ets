@@ -29,9 +29,15 @@ struct Index {
   @State private detail: string = '';
   @State private failed: string = '';
   @State private busy: boolean = false;
+  // Web GUI 自己也是异步启动的：页面 onPageEnd 只代表静态资源加载完，
+  // 此时工作区/会话还在恢复，输入框和右栏按钮都还没就绪。先由原生启动页
+  // 盖住 Web，等首个会话真正挂载后再露出界面，避免用户点到半成品 UI。
+  @State private webReady: boolean = false;
   // 只有真的在解包时才提示「首次启动需要 1–2 分钟」；普通冷启动不该看到这句。
   @State private unpacking: boolean = false;
   private bootTimer: number = -1;
+  private readyTimer: number = -1;
+  private absoluteTimer: number = -1;
   private runtime?: NativeRuntime;
   private guard?: PluginGuard;
   private keepAlive: BackgroundKeepAlive = new BackgroundKeepAlive();
@@ -65,12 +71,16 @@ struct Index {
     const script =
       "(function(){try{" +
       "var d=document.querySelector('[role=dialog][aria-label=\"导航\"]');" +
+      "var s=document.querySelector('[data-conversation-session]');" +
+      "var ready=!!s&&(s.getAttribute('data-conversation-session')||'').length>0;" +
+      "var boot=!!document.querySelector('[data-dsh-boot]');" +
+      "var home=!boot&&!!document.querySelector('[data-composer-seat]');" +
       "var nav=!!d&&d.getAttribute('aria-modal')==='true';" +
       "var other=document.querySelector('[role=dialog]:not([aria-label=\"导航\"])');" +
       "var menu=!!document.querySelector('[role=menu]');" +
       "var rb=document.querySelector('[aria-label=\"收起右侧边栏\"]');" +
       "var right=!!rb&&getComputedStyle(rb).visibility!=='hidden'&&rb.getBoundingClientRect().width>0;" +
-      "return JSON.stringify({nav:nav,dialog:!!other,menu:menu,right:right});" +
+      "return JSON.stringify({nav:nav,dialog:!!other,menu:menu,right:right,ready:ready,home:home});" +
       "}catch(e){return '{}';}})()";
     this.uiTimer = setInterval(() => {
       if (this.url === '') { return; }
@@ -80,6 +90,8 @@ struct Index {
             let text = String(result);
             if (text.startsWith('"')) { text = JSON.parse(text) as string; }
             const state = JSON.parse(text) as Record<string, boolean>;
+            if (state['ready'] === true) { this.markWebReady(); }
+            else if (state['home'] === true) { this.armReadyFallback(); }
             this.webNav = state['nav'] === true;
             this.webDialog = state['dialog'] === true;
             this.webMenu = state['menu'] === true;
@@ -122,6 +134,8 @@ struct Index {
 
   aboutToDisappear(): void {
     if (this.barTimer >= 0) { clearInterval(this.barTimer); this.barTimer = -1; }
+    if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
+    if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
     if (this.keepAliveTimer >= 0) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = -1; }
     if (this.uiTimer >= 0) { clearInterval(this.uiTimer); this.uiTimer = -1; }
     this.stopUnpackingWatch();
@@ -356,6 +370,9 @@ struct Index {
     this.failed = '';
     this.url = '';
     this.detail = '';
+    this.webReady = false;
+    if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
+    if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
     this.status = '正在准备本地运行时';
     this.watchUnpacking();
     this.start(1);
@@ -365,16 +382,53 @@ struct Index {
   private watchUnpacking(): void {
     if (this.bootTimer >= 0) { return; }
     this.bootTimer = setInterval(() => {
-      const now = this.runtime?.isInstalling === true;
-      if (now !== this.unpacking) {
-        this.unpacking = now;
-        if (now) { this.status = '正在解包官方引擎与 npm'; }
-      }
+      this.applyUnpacking(this.runtime?.isInstalling === true);
     }, 300);
+  }
+  // 解包会同步阻塞 UI 线程：回调在阻塞前先把状态交出来，轮询只作为兜底。
+  private applyUnpacking(active: boolean): void {
+    if (active === this.unpacking) { return; }
+    this.unpacking = active;
+    if (active) {
+      this.status = '正在解包官方引擎与 npm';
+    } else if (this.status === '正在解包官方引擎与 npm') {
+      this.status = '正在启动本地运行时';
+    }
   }
   private stopUnpackingWatch(): void {
     if (this.bootTimer >= 0) { clearInterval(this.bootTimer); this.bootTimer = -1; }
     if (this.unpacking) { this.unpacking = false; }
+  }
+
+  // 首个会话挂载 = 工作区恢复完成，输入框、右栏按钮和返回手势的 DOM 都已稳定。
+  private markWebReady(): void {
+    if (this.webReady) { return; }
+    this.webReady = true;
+    this.status = '';
+    this.busy = false;
+    if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
+    if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
+  }
+
+  // 兜底只从「官方前端已经挂载出首页」开始计时，不能从 URL 就绪时计时：
+  // 冷启动时 Node/JITless + 插件加载本身可能超过 20 秒，过早放行会把
+  // 「选择一个工作区开始」的半成品页露出来。首页出现后 60 秒仍无会话才放行。
+  private armReadyFallback(): void {
+    if (this.readyTimer >= 0) { return; }
+    this.readyTimer = setTimeout(() => {
+      this.readyTimer = -1;
+      if (this.url !== '' && this.failed === '') { this.markWebReady(); }
+    }, 60000);
+  }
+
+  // 极端兜底：Web 页面连首页都没挂出来（无 onErrorReceive 的挂死）时，
+  // 不能让启动页无限盖住界面。只在 URL 就绪后计时，正常冷启动远早于此。
+  private armAbsoluteFallback(): void {
+    if (this.absoluteTimer >= 0) { return; }
+    this.absoluteTimer = setTimeout(() => {
+      this.absoluteTimer = -1;
+      if (this.url !== '' && this.failed === '') { this.markWebReady(); }
+    }, 120000);
   }
 
   // 运行时目录被改坏（少文件、半棵树）时的两种症状：模块找不到、启动器写不进去。
@@ -407,10 +461,14 @@ struct Index {
       const url = await this.runtime.startWebUI((text: string) => {
         this.status = '正在启动官方 Web 服务';
         this.detail = (this.detail + text).slice(-1200);
+      }, (active: boolean) => {
+        this.applyUnpacking(active);
       });
       guard.markBootSucceeded();
       this.status = '正在加载官方界面';
       this.url = url;
+      this.webReady = false;
+      this.armAbsoluteFallback();
       this.stopUnpackingWatch();
       // onPageEnd 不一定每次都触发；启动后先同步一次并挂上轮询，避免背景色一直停在启动回退色。
       this.syncBarsFromPage();
@@ -447,7 +505,9 @@ struct Index {
         this.status = '运行时目录损坏，正在重新解包';
         this.detail = message;
         try {
-          await this.runtime?.repair();
+          await this.runtime?.repair((active: boolean) => {
+            this.applyUnpacking(active);
+          });
           await this.start(2);
           return;
         } catch (second) {
@@ -472,10 +532,15 @@ struct Index {
     this.failed = '';
     this.url = '';
     this.detail = '';
+    this.webReady = false;
+    if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
+    if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
     this.status = '正在删除并重新解包运行时';
     this.watchUnpacking();
     try {
-      await this.runtime?.repair();
+      await this.runtime?.repair((active: boolean) => {
+        this.applyUnpacking(active);
+      });
       await this.start(2);
     } catch (error) {
       this.failed = (error as Error).message;
@@ -508,7 +573,9 @@ struct Index {
           .height('100%')
           .backgroundColor(this.barBg)
           .onPageEnd(() => {
-            this.status = '';
+            // 静态页面加载完不等于界面可用：继续压着启动页，等 startUiWatch
+            // 看到首个会话挂载后再放行。
+            if (!this.webReady) { this.status = '正在准备界面'; }
             this.stopUnpackingWatch();
             this.busy = false;
             this.syncBarsFromPage();
@@ -529,7 +596,8 @@ struct Index {
               this.failed = event.error.getErrorInfo();
             }
           })
-      } else {
+      }
+      if (this.url === '' || !this.webReady) {
         Column({ space: 16 }) {          Text('Pocket Harness')
             .fontSize(28)
             .fontWeight(FontWeight.Medium)
@@ -571,7 +639,7 @@ struct Index {
             // 只有真的在解包时才说「首次启动」；普通冷启动只是等 Web 服务起来。
             Text(this.unpacking
               ? '首次启动要把官方引擎解包到应用沙箱，需要一到两分钟。'
-              : '正在启动本地运行时…')
+              : (this.url === '' ? '正在启动本地运行时…' : '正在恢复上次会话与工作区…'))
               .fontSize(12)
               .fontColor(this.barDark ? '#8FA396' : '#7A8F81')
               .textAlign(TextAlign.Center)
@@ -590,6 +658,8 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .backgroundColor(this.barBg)
+        // 启动页必须真正吃掉触摸：否则用户仍能点到下面半就绪的 Web UI。
+        .hitTestBehavior(HitTestMode.Block)
       }
       // 右侧栏 tab 的终端画面：只铺在页面报上来的矩形上，侧栏和 dock 仍是页面的。
       if (this.showTerminal && this.termWidth > 0 && this.termHeight > 0) {

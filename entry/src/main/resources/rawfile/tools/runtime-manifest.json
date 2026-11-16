@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0-uicompat1",
+  "version": "0.2.2-rc.1-ad5723a7d8ef",
   "engineVersion": "0.2.2-rc.1",
   "nodeVersion": "24.22.1",
   "commands": [
@@ -14,6 +14,9 @@
     { "name": "cpio", "library": "libbsdcpio.so", "entry": "iec_bsdcpio_main" },
     { "name": "unzip", "library": "libbsdunzip.so", "entry": "iec_bsdunzip_main" },
     { "name": "zip", "library": "libzipcmd.so", "entry": "iec_zip_main" },
-    { "name": "rg", "library": "librg.so", "entry": "iec_rg_main" }
+    { "name": "rg", "library": "librg.so", "entry": "iec_rg_main" },
+    { "name": "git", "library": "libgit.so", "entry": "iec_git_main" },
+    { "name": "git-remote-http", "library": "libgit-remote-http.so", "entry": "iec_git_remote_http_main" },
+    { "name": "git-remote-https", "library": "libgit-remote-http.so", "entry": "iec_git_remote_http_main" }
   ]
 }

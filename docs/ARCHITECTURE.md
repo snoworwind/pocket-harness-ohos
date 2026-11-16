@@ -4,7 +4,7 @@
 ArkUI Index（只留一个 Web 组件 + 启动状态）
   └─ NativeRuntime
       ├─ IEC HAR（libiec_server.so）── execStart/execPoll/execWrite/unpackResource
-      │     └─ 原生子进程：bash / node / toybox / tar / unzip / rg
+      │     └─ 原生子进程：bash / node / toybox / tar / unzip / rg / git
       └─ node bin.js --profile web --port 0 --no-open
             ↕ HTTP + SSE/WebSocket（仅 127.0.0.1）
           Web 组件加载 dsh 打印的 http://127.0.0.1:<port>/?token=…
@@ -19,29 +19,70 @@ ArkUI Index（只留一个 Web 组件 + 启动状态）
 1. `ensure()`：读 `rawfile/tools/runtime-manifest.json`，校验每个命令的 `.so` 已随包安装；
 2. `initIecResourceManager` + `probeCaps()`：确认设备允许创建原生子进程，不允许就直接报错，不做降级运行时；
 3. `startIecServer()`：启动执行/终端服务；
-4. 首次安装时把 `rawfile/tools/official-engine.tar.gz` 解到 `filesDir/runtime-<version>/engine`，把 `tools/npm.tar.gz` 解到运行时根，成功后写 `.installed` 标记；
+4. 首次安装时把 `rawfile/tools/official-engine.tar.gz` 解到 `filesDir/runtime-<version>/engine`，把 `tools/npm.tar.gz` 解到运行时根，成功后写 `.installed` 标记；解包是同步阻塞调用，动手前先经 `onInstalling` 回调把「正在解包」交给界面并让出一帧，否则 300ms 轮询永远观察不到 `installing=true`，首次启动提示不会出现；
 5. 为每个命令写 `#IECSOv2` 启动器到 `runtime-<version>/bin`，toybox 的 applet 也逐个写；
 6. 合并 CA bundle（Mozilla 根证书 + 可选附加 CA），构造环境变量；
 7. 起 `node <engine>/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --port 0 --no-open`，从 stdout 里取出 `dsh web: <url>` 那一行；
-8. 把这个 URL 交给 `Web` 组件。URL 带一次性 `?token=`，服务端用它换 cookie 后重定向到干净的 `./`。
+8. 把这个 URL 交给 `Web` 组件。URL 带一次性 `?token=`，服务端用它换 cookie 后重定向到干净的 `./`；
+9. **首屏门控**：`onPageEnd` 只说明静态资源加载完，此时官方前端还在恢复工作区/会话，输入框会被禁用以「选择一个工作区开始」，右栏也还没渲染。原生启动页继续盖住 Web，`Index.startUiWatch()` 每 500ms 检查 `[data-conversation-session]`，看到首个会话挂载后才撤掉启动页；兜底从官方首页挂载后开始计时（60 秒），另有 120 秒绝对兜底；页面已报错时不放行。
 
 端口用 `0` 让内核挑，避免和其他进程抢固定端口；`--no-open` 阻止引擎试图拉起系统浏览器。
 
 ## 进程与文件
 
 ```text
-filesDir/runtime-<应用版本>-<内容摘要>/{bin,engine,certs,home,tmp}
+filesDir/runtime-<engineVersion>-<内容摘要>/{bin,engine,certs,home,tmp}
 filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭据都写在这里
 ```
 
-- 运行时目录名带内容摘要：`sha256(应用版本 + 引擎版本 + Node 版本 + official-engine.tar.gz 全文 + npm.tar.gz 全文 + entry/libs 每个 .so 全文)` 的前 12 位。换了引擎、npm 或原生库就换目录、重新解包；只改 ArkTS 时摘要不变，升级后直接复用。`runtime-manifest.json` 的 `version` 字段就是这个值；手动替换引擎/原生库并希望强制重解时，直接改这个字段。
-- `.installed` 标记只在引擎和 npm 都解包成功后写入；`ensure()` 成功后会删掉 `filesDir` 下其它 `runtime-*` 目录，避免每次升级多占约 450 MB。
+- 运行时目录名、版本自动化和 `.installed` 校验见下文「启动页与阶段提示」「运行时版本自动化」两节。
 - 目录被改坏时的恢复分三层：三项存在性探测失败 → 整棵重解；引擎启动报 `Cannot find module` / `failed to import` → 自动重解一次（`NativeRuntime.repair()`）；仍失败 → 界面提供「重新解包运行时」按钮。`repair()` 只删 `runtime-*`，不碰 `harness-home`。
 - `harness-home` 永不被应用删除：覆盖升级保留会话与设置，卸载才清空。
 
 - 解包用的是 HAR 里的 `unpackResource()`：先把 rawfile 读进内存，再用 libarchive 的 write-disk 解到目标目录。`libarchive.so.13` 是运行期 `dlopen` 的共享库，必须随 HAP 打进 `libs/arm64-v8a/`。
 - 解包失败会留下半棵树，所以失败时清掉 `engine/` 再抛出；`fs.mkdirSync` 在目录已存在时会抛 `13900015 File exists`（即使 `recursion=true`），所以所有建目录都先 `accessSync` 判断。
-- `.installed` 只在引擎和 npm 都解包成功后写入；升级引擎版本会换一个 `runtime-<version>` 目录，旧目录可以整删。
+
+### 启动页与阶段提示
+
+`Index` 用一个 `webReady` 状态控制原生启动页，按三段时间推进：
+
+1. **运行时准备**：`NativeRuntime.ensure()` 检查 manifest、原生工具、IEC 能力和 `.installed`。需要解包时，先经 `onInstalling` 回调把「正在解包」状态交给界面，`await` 一帧后才执行同步的 `unpackResource()`；否则 300ms 轮询永远看不到 `installing=true`，首次启动提示不会出现。
+2. **Web 服务启动**：启动 Node、从 stdout 抓 `dsh web: <url>`，状态变为「正在启动官方 Web 服务」。
+3. **首屏门控**：`onPageEnd` 只代表静态资源加载完，官方前端还在恢复工作区/会话，输入框此时是 `inert` 的「选择一个工作区开始」，右栏也还没渲染。启动页继续盖住 Web（`HitTestMode.Block`），`startUiWatch()` 每 500ms 检查 `[data-conversation-session]`，首个非空会话挂载后才撤掉启动页。兜底不能从 URL 就绪时开始计时：冷启动的 Node/JITless 与插件加载本身可能超过 20 秒，过早放行会露出「选择一个工作区开始」的半成品页。现在的兜底是「官方首页挂载后 60 秒仍无会话」才放行，另有 120 秒绝对兜底处理 WebView 完全挂死；`failed` 非空时都不放行。
+
+| 场景 | 启动页表现 |
+| --- | --- |
+| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎与 npm」和首次启动说明；解包期间 UI 线程被同步调用占住，进度圈可能停住，但文字提示保留 |
+| 覆盖升级但 manifest 版本未变 | 与普通冷启动相同，不出现解包提示；这是复用旧运行时的正确行为 |
+| 普通冷启动 | 「正在启动本地运行时…」→「正在启动官方 Web 服务」→「正在恢复上次会话与工作区…」，首个会话挂载后显示界面 |
+
+本机优化后普通冷启动到可用约 **11–15 秒**；首次安装额外解包约 47 MB 引擎归档，不计入这个数字。定位过程：Node CPU profile 显示 `process.report.getReport()` 占约 32 秒，短路后 `/api/session/create` 从 32.4 秒降到约 0.3 秒。
+
+### 运行时版本自动化
+
+`scripts/runtime-manifest.mjs` 是唯一的摘要实现：
+
+- 输入：`engineVersion`、`nodeVersion`、按命令名排序的 `commands`、`official-engine.tar.gz`、`npm.tar.gz`、`entry/libs` 下所有 `*.so*` 的**内容**；
+- 输出：`<engineVersion>-<sha256 前 12 位>`，写回 `entry/src/main/resources/rawfile/tools/runtime-manifest.json` 的 `version`；
+- 不包含应用 `versionName`：只改 ArkTS/UI 时复用旧运行时；
+- 不包含绝对路径：换构建目录或构建机不会误换版本。
+
+工作流：
+
+```bash
+# 生成归档后（pack-native.sh 末尾会自动调用）
+node scripts/runtime-manifest.mjs sync
+
+# 只校验，不写回；CI/发布门禁用
+node scripts/runtime-manifest.mjs check
+
+# 发布构建：清单与本次产物不一致时直接失败
+node scripts/build.mjs --strict-runtime-manifest --deveco-home "<DevEco>"
+```
+
+`scripts/build.mjs` 默认在 hvigor 前执行 `sync`，`pack-native.sh` 也调用同一脚本，不再手算摘要；因此 `pack-native.sh` 现在要求构建机有 Node 18+。设备端 `ensure()` 读取 `.installed` 的内容并与当前 `manifest.version` 比较，内容不符时整棵重解，而不是只看标记是否存在。
+
+注意：直接点 DevEco IDE 的 Build 不经过 `build.mjs`，不会自动 sync/check。发布流程应统一走命令行入口，或后续给 hvigor 增加预构建任务。
 
 ## 官方 Web 服务
 
@@ -54,6 +95,8 @@ filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭
 IEC 的 `execStart` 拿到的不是普通 `fork`：鸿蒙应用进程不能直接 `fork/exec`，`.so` 由原生子进程装载，`.so` 里导出 `iec_bash_main` / `iec_node_main` 之类的 C 入口。命令行启动器是一个文本包装文件，记录目标 `.so`、入口符号和启动方式（本工程统一用 `2`，即鸿蒙原生子进程）。
 
 `libnode.so` 重链接时用 `--wrap` 把 exec 家族换成了 IEC 的 RPC 版本（导出 64 个 `__wrap_*`），所以官方引擎里的 `child_process`（工具调用、终端、子代理）在设备上落到执行服务。`fork` 本身没有被拦截，是否允许由设备决定，`probeCaps().fork` 会先探测。
+
+**Git**：`libgit.so` 用同一套 `--wrap` shim 接管文件与进程调用，静态链接 zlib/PCRE2；`libgit-remote-http.so` 额外静态链接 libcurl/OpenSSL，因此运行时只依赖 `libc.so`。`GIT_EXEC_PATH` 指到 `<sysroot>/bin`，`GIT_SSL_CAINFO` 指到合并后的 CA bundle，HTTPS 不做任何证书放宽。`git init` 不依赖模板目录，缺省模板警告可忽略。
 
 **libc++ ABI**：随 HAP 打包的 `libc++_shared.so` 来自 DevEco SDK，只导出 `std::__n1` 命名空间的符号。所以所有 C++ 产物（`libnode.so`、`pty.node`、`require_builtin.node`）都必须用「libc++ 22 头文件 + `_LIBCPP_ABI_NAMESPACE __n1`」编译：V8 需要 libc++ 22 的 `<ranges>`，而 SDK 自带那套 `__n1` 头文件太旧、没有 ranges。用默认 `__1` 头文件编出来的 `.so` 在真机上 dlopen 会报 `_ZNSt3__119__shared_weak_count14__release_weakEv: symbol not found`。
 
@@ -89,6 +132,7 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 
 ## 运行时补丁
 
+- **启动性能**：`node-addon-native-custom-loader` 在 OHOS 上无法从 ELF interpreter / `/proc/self/maps` 识别 libc，会退回 `process.report.getReport()` 判断 musl/glibc。该报告枚举 CPU/网络，真机上阻塞 Node 事件循环约 32 秒，连带把 `/api/session/create` 和 account 请求拖到同一时刻返回。`harmony/runtime-preload.cjs` 通过 `NODE_OPTIONS` 预加载，只对**无参** `getReport()` 返回最小报告（`header` 为空即按 musl），带 options 的调用仍走 Node 原实现；`DSH_LITE_REPORT=0` 可关闭。真机 CPU profile 确认该调用从 32 秒降到毫秒级，冷启动到可用从约 50–55 秒降到约 11–15 秒。
 - **fetch**：鸿蒙上 Node 以 `--jitless` 运行，V8 不暴露 WebAssembly，undici 的 fetch 不可用。运行时把纯 JS 的 `harmony/fetch-polyfill.cjs` 通过 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，覆盖 JSON、SSE、重定向、压缩、AbortSignal、FormData/Blob 等语义。
 - **TLS**：启动时把 `certs/cacert.pem`（Mozilla 根证书）与可选的 `rawfile/harmony/extra-ca.pem` 合并成 `certs/bundle.pem`，`SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` 指向它；不做任何运行时放宽。附加 CA 不随仓库分发，仅供会拦截 HTTPS 的开发环境使用。
 - **缩放**：`Web` 组件设置 `zoomAccess(false)`，避免双指缩放破坏终端与侧栏的几何计算。

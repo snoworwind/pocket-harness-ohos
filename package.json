@@ -2,6 +2,10 @@
   "name": "deepseek-harmony-core-tests",
   "private": true,
   "version": "0.1.0",
-  "scripts": { "test": "node scripts/test.cjs" },
+  "scripts": {
+    "test": "node scripts/test.cjs",
+    "runtime:sync": "node scripts/runtime-manifest.mjs sync",
+    "runtime:check": "node scripts/runtime-manifest.mjs check"
+  },
   "devDependencies": { "typescript": "5.9.3" }
 }

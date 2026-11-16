@@ -103,7 +103,7 @@ export class NativeRuntime {
   // 当前是否在整棵解包/重装运行时：启动页据此决定要不要提示「首次启动」。
   get isInstalling(): boolean { return this.installing; }
   constructor(context: common.UIAbilityContext) { this.context = context; }
-  async ensure(): Promise<void> {
+  async ensure(onInstalling?: (active: boolean) => void): Promise<void> {
     if (this.ready) { return; }
     const manifest = JSON.parse(util.TextDecoder.create('utf-8').decodeToString(
       this.context.resourceManager.getRawFileContentSync('tools/runtime-manifest.json'))) as RuntimeManifest;
@@ -131,16 +131,29 @@ export class NativeRuntime {
     this.ensureDir(this.context.filesDir + '/harness-home');
     this.ensureDir(this.context.filesDir + '/home');
     this.ensureDir(this.context.filesDir + '/tmp');
-    // 启动时的检查只看「标记在不在 + 两棵关键子树在不在」，不做哈希：
-    // 摘要只在打包时算一次（pack-native.sh），设备上不重复校验内容。
+    // 启动时的检查只看「标记内容 + 两棵关键子树在不在」，不做内容哈希：
+    // 摘要由构建期 scripts/runtime-manifest.mjs 按实际字节算好，设备上不重复校验。
     // 加这两条存在性检查是为了半棵树（解包中断、沙箱被清了一部分）能自愈，
     // 否则 .installed 会让每次启动都跳过重解，直接卡在同一个错误上。
-    const complete = fs.accessSync(this.root + '/.installed') &&
+    // 标记内容必须等于 manifest.version：目录被复用/标记被旧包留下时也能重解。
+    let installedVersion = '';
+    try {
+      if (fs.accessSync(this.root + '/.installed')) {
+        installedVersion = fs.readTextSync(this.root + '/.installed').trim();
+      }
+    } catch (error) { /* 标记不可读按未安装处理 */ }
+    const complete = installedVersion === manifest.version &&
       fs.accessSync(this.root + '/engine/node_modules/@deepseek-ai/dsh/lib/bin.js') &&
       fs.accessSync(this.root + '/npm/bin/npm-cli.js');
     // 启动页据此决定是否提示「首次启动需要解包」，只有这里为 true 时才是真在解包。
     this.installing = !complete;
     if (!complete) {
+      // 解包是同步阻塞调用，会卡住 UI 线程；先把「正在解包」状态交给界面并
+      // 让出一帧，否则 300ms 的轮询永远看不到 installing=true，提示就成了死代码。
+      if (onInstalling !== undefined) {
+        onInstalling(true);
+        await pause(300);
+      }
       // 标记与解包结果对不上：整棵运行时重来，而不是只补 engine。
       this.removeTree(this.root);
       this.ensureDir(this.root);
@@ -158,6 +171,7 @@ export class NativeRuntime {
       if (writeTxtFile(this.root + '/.installed', manifest.version) !== 0) { throw new Error('运行时安装标记写入失败'); }
     }
     this.installing = false;
+    if (onInstalling !== undefined) { onInstalling(false); }
     for (const command of manifest.commands) {
       // bash 的入口是 main(argc, argv, envp) 三参形状；按 2 参调用会把 envp 留成
       // 寄存器垃圾，bash 初始化变量时立刻崩溃。其余命令都是两参入口。
@@ -169,6 +183,7 @@ export class NativeRuntime {
     installCaBundle(this.root + '/certs');
     this.installTrustBundle();
     this.installFetchPolyfill();
+    this.installRuntimePreload();
     this.env = this.buildEnv();
     const applets = await this.capture('toybox', ['--long']);
     for (const item of applets.split(/\s+/)) {
@@ -249,13 +264,17 @@ export class NativeRuntime {
       'NODE_EXTRA_CA_CERTS': caFile,
       'SSL_CERT_FILE': caFile,
       'GIT_SSL_CAINFO': caFile,
+      // git 的 remote helper 与内建子命令都从 <sysroot>/bin 的启动器找；
+      // 不设这个变量时会去 /usr/libexec/git-core（假根里没有），HTTPS 会失败。
+      'GIT_EXEC_PATH': this.root + '/bin',
       'CURL_CA_BUNDLE': caFile,
       'DSH_HOME': this.context.filesDir + '/harness-home',
       'DSH_PRIMARY_RUNTIME': '',
       'DSH_TELEMETRY_DISABLED': '1',
       // Node 在鸿蒙上跑在 --jitless 下，没有 WebAssembly；undici 的 fetch 需要它。
       // 预加载纯 JS 补丁，宿主与终端里的 node 都会用上。
-      'NODE_OPTIONS': '--require ' + this.root + '/harmony/fetch-polyfill.cjs'
+      'NODE_OPTIONS': '--require ' + this.root + '/harmony/runtime-preload.cjs' +
+        ' --require ' + this.root + '/harmony/fetch-polyfill.cjs'
     };
 
     return env;
@@ -314,8 +333,9 @@ export class NativeRuntime {
   }
   // 官方 Web 界面：设备内起的就是 `dsh --profile web`，界面原样加载它打印的
   // http://127.0.0.1:<port>。端口用 0 让内核挑，避免和别的进程抢固定端口。
-  async startWebUI(onLog: (text: string) => void): Promise<string> {
-    await this.ensure();
+  async startWebUI(onLog: (text: string) => void,
+    onInstalling?: (active: boolean) => void): Promise<string> {
+    await this.ensure(onInstalling);
     if (this.webUrl) { return this.webUrl; }
     const env: Record<string, string> = this.buildEnv();
     return new Promise<string>((resolve, reject) => {
@@ -456,9 +476,11 @@ export class NativeRuntime {
     const files: string[] = [
       'THIRD_PARTY_NOTICES.md',
       'LICENSES/Apache-2.0-LLVM.txt', 'LICENSES/Artistic-2.0.txt', 'LICENSES/DSH-MIT.txt',
-      'LICENSES/GPL-3.0.txt', 'LICENSES/libarchive.txt', 'LICENSES/libvterm.txt',
-      'LICENSES/Node-MIT.txt', 'LICENSES/ripgrep-MIT.txt', 'LICENSES/ripgrep-UNLICENSE.txt',
-      'LICENSES/toybox.txt'
+      'LICENSES/GPL-2.0.txt', 'LICENSES/GPL-3.0.txt', 'LICENSES/libarchive.txt',
+      'LICENSES/libvterm.txt', 'LICENSES/Node-MIT.txt', 'LICENSES/ripgrep-MIT.txt',
+      'LICENSES/ripgrep-UNLICENSE.txt', 'LICENSES/toybox.txt',
+      'LICENSES/Apache-2.0-OpenSSL.txt', 'LICENSES/curl.txt', 'LICENSES/pcre2.txt',
+      'LICENSES/zlib.txt'
     ];
     try {
       this.ensureDir(dest);
@@ -509,6 +531,19 @@ export class NativeRuntime {
       fs.closeSync(out);
     } catch (error) { /* 补丁缺失时退回原生 fetch（有 WASM 的设备不受影响） */ }
   }
+  // 鸿蒙上 process.report.getReport() 的 CPU 枚举会阻塞事件循环约 30 秒；
+  // 原生插件加载器只用它判断 musl/glibc，这里提前短路成最小报告。
+  private installRuntimePreload(): void {
+    const dir = this.root + '/harmony';
+    try {
+      this.ensureDir(dir);
+      const content = this.context.resourceManager.getRawFileContentSync('harmony/runtime-preload.cjs');
+      const text = util.TextDecoder.create('utf-8').decodeToString(content);
+      const out = fs.openSync(dir + '/runtime-preload.cjs', fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(out.fd, text);
+      fs.closeSync(out);
+    } catch (error) { /* 补丁缺失时退回原始 process.report 行为 */ }
+  }
   private copyTree(from: string, to: string): void {
     for (const name of fs.listFileSync(from)) {
       const src = from + '/' + name;
@@ -519,13 +554,21 @@ export class NativeRuntime {
   }
   // 运行时目录被改坏时的整棵重建：停掉子进程、删掉这棵目录、把状态归零，
   // 然后重新走 ensure()（它会重新解包并写 .installed）。
-  async repair(): Promise<void> {
+  async repair(onInstalling?: (active: boolean) => void): Promise<void> {
     this.stopWebUI();
-    if (this.root) { this.removeTree(this.root); }
+    if (this.root) {
+      // 删除旧运行时同样要遍历整棵目录树，先让界面切到「正在解包」再动手。
+      if (onInstalling !== undefined) {
+        onInstalling(true);
+        await pause(300);
+      }
+      this.removeTree(this.root);
+    }
     this.ready = false;
     this.root = '';
     this.env = {};
     await this.ensure();
+    if (onInstalling !== undefined) { onInstalling(false); }
   }
   // 引擎的 stdout/stderr 追加写文件，排查终端/API 报错时能直接看。
   private appendLog(name: string, text: string): void {

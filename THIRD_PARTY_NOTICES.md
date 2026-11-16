@@ -16,6 +16,11 @@ HAP 分发（应用内路径 `resources/rawfile/notices/`，首次启动后解�
 | `@local/dsh-harmony-terminal`（原生终端 tab） | `plugins/dsh-harmony-terminal` | MIT | `LICENSE` |
 | `@deepseek-ai/dsh-harmony-compat`（鸿蒙适配：返回手势状态、引用浮层） | `plugins/harmony-compat` | MIT | `LICENSE` |
 | GNU Bash | 5.3，<https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz>，未打补丁 | GPL-3.0 | `LICENSES/GPL-3.0.txt` |
+| GNU Git（`libgit.so`、`libgit-remote-http.so`） | 2.56.0，<https://github.com/git/git>，未打补丁 | GPL-2.0 | `LICENSES/GPL-2.0.txt` |
+| OpenSSL（静态链接进 `libgit-remote-http.so`） | 3.0.22，<https://github.com/openssl/openssl> | Apache-2.0 | `LICENSES/Apache-2.0-OpenSSL.txt` |
+| libcurl（静态链接进 `libgit-remote-http.so`） | 8.22.0，<https://curl.se/download/curl-8.22.0.tar.gz> | curl | `LICENSES/curl.txt` |
+| PCRE2（静态链接进 `libgit.so`） | 10.49，<https://github.com/PCRE2Project/pcre2> | BSD-3-Clause | `LICENSES/pcre2.txt` |
+| zlib（静态链接进两个 git 库） | 1.3.1，<https://zlib.net> | zlib | `LICENSES/zlib.txt` |
 | Node.js | v24.22.1，<https://nodejs.org>（源码包） | MIT | `LICENSES/Node-MIT.txt` |
 | npm | 11.19.1（Node.js 源码树 `deps/npm`） | Artistic-2.0 | `LICENSES/Artistic-2.0.txt` |
 | toybox | 0.8.14 | 0BSD | `LICENSES/toybox.txt` |
@@ -41,6 +46,20 @@ HAP 分发（应用内路径 `resources/rawfile/notices/`，首次启动后解�
 - 如果上述地址不可用，可通过本仓库的 Issue 向维护者索取对应源码。
 
 GPL-3.0 全文见 `LICENSES/GPL-3.0.txt`。
+
+## GNU Git 的对应源码
+
+分发的 `libgit.so` 与 `libgit-remote-http.so` 由 GNU Git 2.56.0 的**原样源码**交叉编译得到，
+没有修改上游源码：
+
+- 源码包：<https://github.com/git/git/archive/refs/tags/v2.56.0.tar.gz>；
+- 编译脚本：`native/iec/scripts/optional/build_git.sh`（把 Git 编成导出 `iec_git_main` 的共享库）；
+- 同时静态链接的依赖源码：OpenSSL 3.0.22、libcurl 8.22.0、PCRE2 10.49、zlib 1.3.1，
+  下载地址见上表；许可证原文在 `LICENSES/`；
+- 与该二进制一起链接的 IEC shim 源码在本仓库 `native/iec`（MIT）；
+- 如果上述地址不可用，可通过本仓库的 Issue 向维护者索取对应源码。
+
+GPL-2.0 全文见 `LICENSES/GPL-2.0.txt`。
 
 ## 对上游 DSH 的修改
 

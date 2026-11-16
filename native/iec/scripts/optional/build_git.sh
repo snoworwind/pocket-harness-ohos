@@ -48,6 +48,7 @@ AR="${AR:-$CLANG_DIR/llvm-ar}"
 RANLIB="${RANLIB:-$CLANG_DIR/llvm-ranlib}"
 NM="${NM:-$CLANG_DIR/llvm-nm}"
 READELF="${READELF:-$CLANG_DIR/llvm-readelf}"
+STRIP="${STRIP:-$CLANG_DIR/llvm-strip}"
 OBJCOPY="${OBJCOPY:-$CLANG_DIR/llvm-objcopy}"
 
 DEPS_LIB="${IEC_DEPS_LIB:-$IEC_DEPS_DIR/usr/lib/aarch64-linux-ohos}"
@@ -91,7 +92,9 @@ $CC_TARGET -O2 -fPIC -c "$IEC_ROOT/compat/exit_wrap.c" \
 	-o "$BUILD/exit_wrap.o"
 
 log "build git objects (-fPIC)"
-make -C "$GIT_SRC" -j"$JOBS" \
+# uname_S=Linux：交叉编译时不能让 git 按构建机（macOS）选 config.mak.uname，
+# 否则会打开 HAVE_BSD_SYSCTL 等只适用于 Darwin 的开关。
+make -C "$GIT_SRC" -j"$JOBS" uname_S=Linux \
 	prefix=/usr \
 	gitexecdir=/usr/libexec/git-core \
 	template_dir=/usr/share/git-core/templates \
@@ -203,6 +206,9 @@ if "$NM" -D -u "$OUT_HELPER" | grep -E '__wrap_|__real_' >/dev/null; then
 	err "unresolved __wrap_/__real_ symbols in the remote helper"
 fi
 "$READELF" -d "$OUT_HELPER" | grep -E 'NEEDED|SONAME' >&2
+
+log "strip"
+"$STRIP" --strip-unneeded "$OUT" "$OUT_HELPER"
 
 log "done: $OUT ($(du -h "$OUT" | cut -f1))"
 log "done: $OUT_HELPER ($(du -h "$OUT_HELPER" | cut -f1))"

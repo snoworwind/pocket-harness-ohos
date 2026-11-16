@@ -28,7 +28,6 @@ WORK="$NATIVE_ROOT/pack"
 PARTIAL=0
 [ "${1:-}" = "--partial" ] && PARTIAL=1
 
-APP_VERSION="0.2.0"
 ENGINE_VERSION="0.2.2-rc.1"
 NODE_VERSION="24.22.1"
 
@@ -47,11 +46,15 @@ tar|libbsdtar.so|iec_bsdtar_main
 cpio|libbsdcpio.so|iec_bsdcpio_main
 unzip|libbsdunzip.so|iec_bsdunzip_main
 zip|libzipcmd.so|iec_zip_main
-rg|librg.so|iec_rg_main'
+rg|librg.so|iec_rg_main
+git|libgit.so|iec_git_main
+git-remote-http|libgit-remote-http.so|iec_git_remote_http_main
+git-remote-https|libgit-remote-http.so|iec_git_remote_http_main'
 
 # libarchive.so.13 不是命令行工具，而是 archive_extract.cpp 用 dlopen 加载的共享库：
 # 设备上的 unpackResource()（首次启动解官方引擎和 npm）少了它就会返回非 0。
-LIBS='libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so libnode.so librg.so libarchive.so.13'
+# libgit-remote-http.so 同时承载 git-remote-http 与 git-remote-https 两个启动器。
+LIBS='libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so libnode.so librg.so libarchive.so.13 libgit.so libgit-remote-http.so'
 
 mkdir -p "$PROJECT/entry/libs/$LIB_ARCH" \
          "$PROJECT/entry/src/main/resources/rawfile/tools"
@@ -174,22 +177,13 @@ else
   note "警告：未找到 Node 构建产出的 npm.tar.gz，沿用仓库内副本"
 fi
 
-# 运行时清单与目录名。摘要覆盖：三个版本号 + 引擎归档全文 + npm 归档全文 +
-# 每个随包 .so 全文。所以引擎、npm 或任一原生库变了都会换目录、重新解包。
-RUNTIME_DIGEST=$(
-  {
-    printf 'app=%s\nengine=%s\nnode=%s\n' "$APP_VERSION" "$ENGINE_VERSION" "$NODE_VERSION"
-    [ -f "$ENGINE_TAR" ] && sha256sum "$ENGINE_TAR"
-    [ -f "$PROJECT_NPM" ] && sha256sum "$PROJECT_NPM"
-    for lib in $LIBS; do
-      [ -f "$PROJECT/entry/libs/$LIB_ARCH/$lib" ] && sha256sum "$PROJECT/entry/libs/$LIB_ARCH/$lib"
-    done
-  } | sha256sum | cut -c1-12
-)
-RUNTIME_VERSION="$APP_VERSION-$RUNTIME_DIGEST"
+# 运行时清单。version 不在这里手算：交给 scripts/runtime-manifest.mjs 按实际
+# 随包字节（引擎/npm 归档、entry/libs 下所有 .so、commands 列表）计算。这样
+# 换引擎、换 npm、重编任一原生库，甚至换一台构建机，版本都会自动变化；不再
+# 依赖绝对路径的 sha256sum 输出，也不会出现「产物变了但清单没变」。
 {
-  printf '{\n  "version": "%s",\n  "engineVersion": "%s",\n  "nodeVersion": "%s",\n  "commands": [\n' \
-    "$RUNTIME_VERSION" "$ENGINE_VERSION" "$NODE_VERSION"
+  printf '{\n  "version": "",\n  "engineVersion": "%s",\n  "nodeVersion": "%s",\n  "commands": [\n' \
+    "$ENGINE_VERSION" "$NODE_VERSION"
   first=1
   while IFS='|' read -r name library entry; do
     [ -z "$name" ] && continue
@@ -200,5 +194,11 @@ RUNTIME_VERSION="$APP_VERSION-$RUNTIME_DIGEST"
   done <<< "$COMMANDS"
   printf '\n  ]\n}\n'
 } > "$MANIFEST"
+if ! command -v node >/dev/null 2>&1; then
+  fail "找不到 node，无法计算 runtime-manifest.version；请先安装 Node 18+ 后重跑，或直接运行 node scripts/runtime-manifest.mjs sync"
+fi
+node "$PROJECT/scripts/runtime-manifest.mjs" sync
+RUNTIME_VERSION=$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$MANIFEST" | head -1)
+[ -n "$RUNTIME_VERSION" ] || fail "runtime-manifest.version 回读失败"
 note "runtime-manifest.json 已写入：version=$RUNTIME_VERSION（$(grep -c '"name"' "$MANIFEST") 个命令）"
 note "完成"
