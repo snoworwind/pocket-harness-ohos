@@ -186,6 +186,12 @@ export class NativeRuntime {
     // 放在成功之后做：本次解包失败时不动旧的，用户还能降级回上一个包。
     this.pruneOldRuntimes();
   }
+  // 终端默认落在用户的工作区（DSH 的 home 工作区）而不是沙箱根目录。
+  workspaceDirectory(): string {
+    const home = this.context.filesDir + '/home';
+    try { if (fs.accessSync(home)) { return home; } } catch (error) { /* 未创建 */ }
+    return this.context.filesDir;
+  }
   private nativeLibraryDirectory(): string {
     // The package manager selects the ABI; the emulator installs x86_64 while
     // physical devices normally install arm64. Older systems may omit this field.

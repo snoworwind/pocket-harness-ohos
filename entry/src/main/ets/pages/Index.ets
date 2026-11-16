@@ -426,7 +426,7 @@ struct Index {
             }
           })
       } else {
-        Column({ space: 16 }) {          Text('DeepSeek Harness')
+        Column({ space: 16 }) {          Text('Pocket Harness')
             .fontSize(28)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.barDark ? '#DCEFE2' : '#1F3D2E')

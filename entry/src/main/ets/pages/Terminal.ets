@@ -201,7 +201,11 @@ export struct TerminalView {
       env['TERM'] = 'xterm-256color';
       env['COLORTERM'] = 'truecolor';
       env['SHELL'] = this.root + '/bin/bash';
-      this.session = new TerminalSession(this.root + '/bin/bash', ['-i'], context.filesDir, env,
+      // 终端要落在项目/工作区目录：exec 的 cwd 偶尔会被沙箱改写成根目录，
+      // 这里再显式 cd 一次兜底（PWD 也一并设好，避免提示符显示 /）。
+      const workspace = runtime.workspaceDirectory();
+      env['PWD'] = workspace;
+      this.session = new TerminalSession(this.root + '/bin/bash', ['-i'], workspace, env,
         (bytes: Uint8Array) => {
           term.input(this.handle, bytes);
           const reply = term.readOutput(this.handle);
@@ -209,6 +213,7 @@ export struct TerminalView {
           this.dirty = true;
         },
         (code: number) => { this.status = 'bash 已退出（' + code.toString() + '）'; });
+      this.session.write("cd '" + workspace.replace(/'/g, "'\\''") + "'\n");
       this.status = '';
       this.ready = true;
       hilog.info(0, 'DSH_TERM', 'bash started');
