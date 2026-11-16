@@ -39,8 +39,13 @@ struct Index {
   private controller: webview.WebviewController = new webview.WebviewController();
   private barTimer: number = -1;
   private keepAliveTimer: number = -1;
-  private homeTimer: number = -1;
-  private webAtHome: boolean = true;
+  private uiTimer: number = -1;
+  // 页面浮层状态（返回手势按优先级逐层关闭）：
+  //   menu 菜单 / dialog 设置等对话框 / right 右侧栏 / nav 左侧抽屉 / hero 首页 / conv 会话
+  private webMenu: boolean = false;
+  private webDialog: boolean = false;
+  private webRight: boolean = false;
+  private webNav: boolean = false;
   private keepAliveOn: boolean = false;
   @State private barDark: boolean = false;
   @State private insetTop: number = 0;
@@ -49,30 +54,72 @@ struct Index {
   aboutToAppear(): void {
     try { this.context = this.getUIContext().getHostContext() as common.UIAbilityContext; } catch (error) { /* 取不到上下文时延后处理 */ }
     this.followSystemBars();
-    this.startHomeWatch();
+    this.startUiWatch();
     this.boot();
   }
 
-  // DSH 的 Web 界面没有浏览历史，只能靠首页文案判断当前是否在会话/设置里，
-  // 供返回手势决定是“重载回首页”还是交回系统。
-  private startHomeWatch(): void {
-    if (this.homeTimer >= 0) { return; }
-    this.homeTimer = setInterval(() => {
+  // 返回手势需要同步判断页面上的浮层，runJavaScript 是异步的：这里每 500ms
+  // 采样一次页面状态，onBackPress 里按优先级动作。
+  private startUiWatch(): void {
+    if (this.uiTimer >= 0) { return; }
+    const script =
+      "(function(){try{" +
+      "var d=document.querySelector('[role=dialog][aria-label=\"导航\"]');" +
+      "var nav=!!d&&getComputedStyle(d).visibility!=='hidden'&&d.getBoundingClientRect().x>=0;" +
+      "var other=document.querySelector('[role=dialog]:not([aria-label=\"导航\"])');" +
+      "var menu=!!document.querySelector('[role=menu]');" +
+      "var right=!!document.querySelector('[aria-label=\"收起右侧边栏\"]');" +
+      "return JSON.stringify({nav:nav,dialog:!!other,menu:menu,right:right});" +
+      "}catch(e){return '{}';}})()";
+    this.uiTimer = setInterval(() => {
       if (this.url === '') { return; }
       try {
-        this.controller.runJavaScript(
-          "(function(){try{return document.querySelector('[data-content-phase=\"hero\"]')?'1':'0';}catch(e){return '1';}})()"
-        ).then((result: string) => {
-          this.webAtHome = String(result).replace(/"/g, '') === '1';
+        this.controller.runJavaScript(script).then((result: string) => {
+          try {
+            let text = String(result);
+            if (text.startsWith('"')) { text = JSON.parse(text) as string; }
+            const state = JSON.parse(text) as Record<string, boolean>;
+            this.webNav = state['nav'] === true;
+            this.webDialog = state['dialog'] === true;
+            this.webMenu = state['menu'] === true;
+            this.webRight = state['right'] === true;
+          } catch (error) { /* 解析失败时保留上一次状态 */ }
         }).catch(() => {});
       } catch (error) { /* Web 未挂载 */ }
-    }, 1500);
+    }, 500);
+  }
+
+  private pressEscape(): void {
+    try {
+      this.controller.runJavaScript(
+        "(function(){try{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));}catch(e){}})()"
+      ).catch(() => {});
+    } catch (error) { /* Web 未挂载 */ }
+  }
+
+  private clickSidebarToggle(): void {
+    try {
+      this.controller.runJavaScript(
+        "(function(){try{var es=[].slice.call(document.querySelectorAll('[aria-label=\"打开侧边栏\"]'));" +
+        "for(var i=0;i<es.length;i++){if(es[i].getBoundingClientRect().x>=0){es[i].click();return;}}}catch(e){}})()"
+      ).catch(() => {});
+    } catch (error) { /* Web 未挂载 */ }
+  }
+
+  // 菜单没有 Escape 处理，点它自己的触发按钮（aria-expanded=true）才会收起。
+  private closeMenu(): void {
+    try {
+      this.controller.runJavaScript(
+        "(function(){try{var es=[].slice.call(document.querySelectorAll('[aria-haspopup=menu][aria-expanded=true]'));" +
+        "for(var i=0;i<es.length;i++){if(es[i].getBoundingClientRect().x>=0){es[i].click();return;}}}catch(e){}})()"
+      ).catch(() => {});
+    } catch (error) { /* Web 未挂载 */ }
   }
 
   aboutToDisappear(): void {
     if (this.barTimer >= 0) { clearInterval(this.barTimer); this.barTimer = -1; }
     if (this.keepAliveTimer >= 0) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = -1; }
-    if (this.homeTimer >= 0) { clearInterval(this.homeTimer); this.homeTimer = -1; }
+    if (this.uiTimer >= 0) { clearInterval(this.uiTimer); this.uiTimer = -1; }
     this.stopUnpackingWatch();
     this.runtime?.stopWebUI();
     const context = this.context;
@@ -96,24 +143,18 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.termVisible) {
-      this.collapseRightSidebar();
-      return true;
-    }
+    // 按浮层优先级逐层关闭：菜单 → 对话框（设置）→ 右侧栏/终端 → 左侧抽屉 →
+    // Web 历史；都没有时交回系统（退到后台/退出）。
+    if (this.webMenu) { this.closeMenu(); return true; }
+    if (this.webDialog) { this.pressEscape(); return true; }
+    if (this.termVisible || this.webRight) { this.collapseRightSidebar(); return true; }
+    if (this.webNav) { this.clickSidebarToggle(); return true; }
     try {
       if (this.controller.accessBackward()) {
         this.controller.backward();
         return true;
       }
     } catch (error) { /* 控制器未就绪时退回系统默认行为 */ }
-    // DSH 的 Web 界面是内存路由，不产生浏览历史：在会话/设置里按返回时，
-    // 用一次页面重载回到工作区首页（会话数据在后端，不会丢）。
-    if (!this.webAtHome) {
-      try {
-        this.controller.runJavaScript('window.location.reload()').catch(() => {});
-      } catch (error) { /* Web 未挂载 */ }
-      return true;
-    }
     return false;
   }
 
