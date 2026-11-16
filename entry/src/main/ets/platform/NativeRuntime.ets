@@ -167,6 +167,7 @@ export class NativeRuntime {
       }
     }
     installCaBundle(this.root + '/certs');
+    this.installTrustBundle();
     this.installFetchPolyfill();
     this.env = this.buildEnv();
     const applets = await this.capture('toybox', ['--long']);
@@ -226,6 +227,9 @@ export class NativeRuntime {
     // runtime-*/home，下次就报 "working-directory: directory does not exist"。
     const stableHome = this.context.filesDir + '/home';
     const stableTmp = this.context.filesDir + '/tmp';
+    // 优先用合并后的 bundle（Mozilla 根证书 + 随包附加 CA）；合并失败时退回原 bundle。
+    let caFile = this.root + '/certs/cacert.pem';
+    try { if (fs.accessSync(this.root + '/certs/bundle.pem')) { caFile = this.root + '/certs/bundle.pem'; } } catch (error) { /* 保持回退 */ }
     const env: Record<string, string> = {
       'PATH': this.root + '/bin',
       'HOME': stableHome,
@@ -236,10 +240,10 @@ export class NativeRuntime {
       'LC_ALL': 'C.UTF-8',
       'IEC_SYSROOT': this.root,
       'IEC_NODE_JITLESS': 'on',
-      'NODE_EXTRA_CA_CERTS': this.root + '/certs/cacert.pem',
-      'SSL_CERT_FILE': this.root + '/certs/cacert.pem',
-      'GIT_SSL_CAINFO': this.root + '/certs/cacert.pem',
-      'CURL_CA_BUNDLE': this.root + '/certs/cacert.pem',
+      'NODE_EXTRA_CA_CERTS': caFile,
+      'SSL_CERT_FILE': caFile,
+      'GIT_SSL_CAINFO': caFile,
+      'CURL_CA_BUNDLE': caFile,
       'DSH_HOME': this.context.filesDir + '/harness-home',
       'DSH_PRIMARY_RUNTIME': '',
       'DSH_TELEMETRY_DISABLED': '1',
@@ -247,12 +251,6 @@ export class NativeRuntime {
       // 预加载纯 JS 补丁，宿主与终端里的 node 都会用上。
       'NODE_OPTIONS': '--require ' + this.root + '/harmony/fetch-polyfill.cjs'
     };
-    if (this.readInsecureTls()) {
-      // 只信任抓到的中间人根证书（TOFU），不全局关闭校验；详见 fetch-polyfill.cjs。
-      env['DSH_TRUST_INTERCEPTED_CA'] = '1';
-      env['DSH_INTERCEPTED_CA_FILE'] = this.root + '/certs/intercepted-ca.pem';
-      env['DSH_INTERCEPTED_CA_COPY'] = this.context.filesDir + '/local-ca.pem';
-    }
 
     return env;
   }
@@ -265,18 +263,6 @@ export class NativeRuntime {
       const text = fs.readTextSync(file);
       const parsed = JSON.parse(text) as Record<string, boolean>;
       return parsed.keepAlive === true;
-    } catch (error) { return false; }
-  }
-  // 开发/模拟器环境的 TLS 逃生口：有些模拟器或抓包代理会做 HTTPS 中间人，
-  // 系统浏览器（ArkWeb）信系统证书库所以正常，而 Node 只信随包的 Mozilla 根证书，
-  // 于是登录请求报 SELF_SIGNED_CERT_IN_CHAIN。默认关闭；用户在
-  // harness-home/harmony-native.json 里显式写 allowInsecureTls: true 才生效。
-  readInsecureTls(): boolean {
-    try {
-      const file = this.context.filesDir + '/harness-home/harmony-native.json';
-      if (!fs.accessSync(file)) { return false; }
-      const parsed = JSON.parse(fs.readTextSync(file)) as Record<string, boolean>;
-      return parsed.allowInsecureTls === true;
     } catch (error) { return false; }
   }
   // 一次性迁移：旧版本把 HOME 放在 runtime-<版本>/home，升级后该目录被删，
@@ -483,6 +469,30 @@ export class NativeRuntime {
   }
   // 鸿蒙上 Node 以 --jitless 运行，WebAssembly 被关掉，内置 undici 的 fetch
   // 因此不可用。把纯 JS 的 fetch 补丁写进运行时，并用 NODE_OPTIONS 预加载。
+  // TLS 信任的是「Mozilla 根证书 + 随包附加 CA」合并后的 bundle，不做任何
+  // 运行时放宽。附加 CA 用于开发环境里会拦截 HTTPS 的杀毒/代理（例如 Kaspersky
+  // 的 Web Anti-Virus）；发布版可以删掉 rawfile/harmony/extra-ca.pem 或替换成
+  // 自己的企业根证书。
+  private installTrustBundle(): void {
+    const dir = this.root + '/certs';
+    try {
+      let text = fs.readTextSync(dir + '/cacert.pem');
+      try {
+        const extra = this.context.resourceManager.getRawFileContentSync('harmony/extra-ca.pem');
+        const extraText = util.TextDecoder.create('utf-8').decodeToString(extra);
+        if (extraText.indexOf('BEGIN CERTIFICATE') >= 0) {
+          const copy = fs.openSync(dir + '/extra-ca.pem', fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+          fs.writeSync(copy.fd, extraText);
+          fs.closeSync(copy);
+          if (!text.endsWith('\n')) { text += '\n'; }
+          text += extraText;
+        }
+      } catch (error) { /* 没有随包附加 CA 时只用 Mozilla 根证书 */ }
+      const out = fs.openSync(dir + '/bundle.pem', fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(out.fd, text);
+      fs.closeSync(out);
+    } catch (error) { /* 合并失败时 buildEnv 会回退到 cacert.pem */ }
+  }
   private installFetchPolyfill(): void {
     const dir = this.root + '/harmony';
     try {

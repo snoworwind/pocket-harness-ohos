@@ -130,9 +130,18 @@ filesDir/
 
 ## 运行时补丁
 
-鸿蒙上 Node 只能以 `--jitless` 运行，V8 关闭了 WebAssembly；而 Node 24 内置的 `fetch`（undici）依赖 WASM 解析 HTTP，直接使用会报 `WebAssembly is not defined`。因此运行时会在 `harmony/fetch-polyfill.cjs` 写入一份纯 JS 的 `fetch`（`https` + Web Streams，支持 JSON、SSE 流式响应、重定向、gzip/br/deflate 与 `AbortSignal`），并通过 `NODE_OPTIONS=--require` 预加载到宿主与终端里的 node。有 WASM 的环境不会被替换。
+鸿蒙上 Node 只能以 `--jitless` 运行。V8 在 jitless 下不暴露 WebAssembly，而 Node 24 内置的 `fetch`（undici）用 WASM 解析 HTTP，直接使用会报 `WebAssembly is not defined`。
 
-带 HTTPS 中间人的模拟器/抓包代理会让宿主请求报 `SELF_SIGNED_CERT_IN_CHAIN`。默认**不**放宽校验；需要时在 `harness-home/harmony-native.json` 里显式写 `"allowInsecureTls": true`，宿主会在首次遇到该证书链错误时把**这一张**中间人根证书抓下来、持久化到 `runtime-*/certs/intercepted-ca.pem`，之后只用它补齐信任链（TOFU）。其它主机和后续请求仍然做完整校验，不会退化成全局关闭校验。抓到的证书同时复制到 `files/local-ca.pem`，便于在系统设置里安装。正式设备不要打开。
+当前采用**纯 JS 的 fetch 补丁**：`harmony/fetch-polyfill.cjs` 经 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，用 `https` + Web Streams 实现，已覆盖 DSH 用到的语义：
+
+- 请求体：`string` / `Buffer` / `Uint8Array` / `ArrayBuffer` / `URLSearchParams` / `Blob` / `FormData`（multipart）/ `ReadableStream` / Node `Readable`；
+- 响应：流式 body（SSE 不被整块缓冲）、gzip/br/deflate 解压；
+- 重定向 `follow` / `error` / `manual`，以及 301/302/303/307/308 的方法与 body 改写；
+- `AbortSignal` 以 `AbortError` 拒绝；`HEAD`/204/304 的 body 为 `null`；响应带 `url` / `type` / `redirected`。
+
+V8 的 DrumBrake（Wasm 解释器）理论上能在无 JIT 下提供 WebAssembly，但 Node 24.22.1 随包的 DrumBrake 源码已落后于同版本 V8 的 API（50 处编译错误），而且 V8 注明解释器运行 wasm 时仍会申请可执行内存，与鸿蒙无 JIT 的限制冲突，因此不采用。`scripts/patch-v8-drumbrake.sh` 仅作为实验记录保留。
+
+TLS 信任由运行时的 CA bundle 决定：启动时把随包的 Mozilla 根证书与 `rawfile/harmony/extra-ca.pem` 合并成 `certs/bundle.pem`，不做任何运行时放宽。`extra-ca.pem` 用于开发环境里会拦截 HTTPS 的杀毒/代理（当前是 Kaspersky 的根证书）；发布版删掉该文件即可回退到纯 Mozilla 根证书，或替换成自己的企业根证书。
 
 ## 许可证与合规
 

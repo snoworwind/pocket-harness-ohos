@@ -18,6 +18,8 @@ bash scripts/build-x86-runtime.sh rg
 bash scripts/build-x86-runtime.sh pack
 ```
 
+`scripts/patch-v8-drumbrake.sh` 是实验性的：Node 24.22.1 随包的 DrumBrake 源码落后于同版本 V8 API，打开后无法编译，因此默认不启用；无 JIT 下的 fetch 由 `harmony/fetch-polyfill.cjs` 提供。
+
 Node 中断后使用 `node-resume` 复用对象文件。可用 `JOBS=12` 控制并发。V8 的构建机辅助工具优先使用 `-O0`，强制内联不兼容时使用 `-O2`，这些辅助程序不随应用分发。模拟器调试运行库的 C++ 编译使用 `-O1`，保留完整功能；首次构建中已完成的对象复用原优化级别。
 
 `pack` 输出 `entry/libs/x86_64`，并替换引擎归档及运行时摘要为本次 x86 构建。打包前应保存 arm64 版本的归档和清单；本次备份位于 `.test-build/arm64-resources`，原 arm64 工具位于 `.test-build/libs-arm64-hold`。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT=/var/tmp/deepseek-harmony-native
-PROJECT=/mnt/c/Users/zouha/Documents/Codex/2026-11-15/ca/outputs/deepseek-harmony
+ROOT=${NATIVE_BASE:-/var/tmp/deepseek-harmony-native}
+PROJECT=${PROJECT:-"$(cd "$(dirname "$0")/../.." && pwd)"}
 while [ ! -x "$ROOT/sdk/native/llvm/bin/clang" ]; do sleep 2; done
 mkdir -p "$ROOT/iec" "$ROOT/compiler/bin" "$ROOT/logs"
 if [ ! -f "$ROOT/iec/scripts/optional/build_node.sh" ]; then
@@ -51,6 +51,8 @@ p=sys.argv[1]
 s=open(p).read().replace('parts.push_back("--no-expose-wasm");','parts.push_back("--wasm-jitless");')
 open(p,'w').write(s)
 PY
+# 注意：scripts/patch-v8-drumbrake.sh 是实验性的。当前 V8 快照里的 DrumBrake
+# 源码落后于 V8 的 API（50 处编译错误），打开后无法通过编译，因此默认不启用。
 "$CLANG" --target=aarch64-linux-ohos --sysroot="$OHOS_SDK/native/sysroot" -v -x c -o "$ROOT/probe.so" -shared - <<< 'int main(void){return 0;}' > "$ROOT/logs/compiler-probe.log" 2>&1
 bash "$ROOT/iec/scripts/optional/build_node.sh" "${1:-build}" > "$ROOT/logs/node24.log" 2>&1
 echo NODE24_BUILD_COMPLETE
