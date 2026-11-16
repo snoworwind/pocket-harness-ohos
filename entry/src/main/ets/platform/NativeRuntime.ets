@@ -248,8 +248,10 @@ export class NativeRuntime {
       'NODE_OPTIONS': '--require ' + this.root + '/harmony/fetch-polyfill.cjs'
     };
     if (this.readInsecureTls()) {
-      // 仅用于带 TLS 中间人的开发环境；正式设备不要打开。
-      env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
+      // 只信任抓到的中间人根证书（TOFU），不全局关闭校验；详见 fetch-polyfill.cjs。
+      env['DSH_TRUST_INTERCEPTED_CA'] = '1';
+      env['DSH_INTERCEPTED_CA_FILE'] = this.root + '/certs/intercepted-ca.pem';
+      env['DSH_INTERCEPTED_CA_COPY'] = this.context.filesDir + '/local-ca.pem';
     }
 
     return env;

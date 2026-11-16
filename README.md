@@ -132,7 +132,7 @@ filesDir/
 
 鸿蒙上 Node 只能以 `--jitless` 运行，V8 关闭了 WebAssembly；而 Node 24 内置的 `fetch`（undici）依赖 WASM 解析 HTTP，直接使用会报 `WebAssembly is not defined`。因此运行时会在 `harmony/fetch-polyfill.cjs` 写入一份纯 JS 的 `fetch`（`https` + Web Streams，支持 JSON、SSE 流式响应、重定向、gzip/br/deflate 与 `AbortSignal`），并通过 `NODE_OPTIONS=--require` 预加载到宿主与终端里的 node。有 WASM 的环境不会被替换。
 
-带 HTTPS 中间人的模拟器/抓包代理会让宿主请求报 `SELF_SIGNED_CERT_IN_CHAIN`（系统浏览器信系统证书库，Node 只信随包的 Mozilla 根证书）。这是开发环境问题，默认**不**放宽校验；需要时在 `harness-home/harmony-native.json` 里显式写 `"allowInsecureTls": true`，宿主才会带上 `NODE_TLS_REJECT_UNAUTHORIZED=0`。正式设备不要打开。
+带 HTTPS 中间人的模拟器/抓包代理会让宿主请求报 `SELF_SIGNED_CERT_IN_CHAIN`。默认**不**放宽校验；需要时在 `harness-home/harmony-native.json` 里显式写 `"allowInsecureTls": true`，宿主会在首次遇到该证书链错误时把**这一张**中间人根证书抓下来、持久化到 `runtime-*/certs/intercepted-ca.pem`，之后只用它补齐信任链（TOFU）。其它主机和后续请求仍然做完整校验，不会退化成全局关闭校验。抓到的证书同时复制到 `files/local-ca.pem`，便于在系统设置里安装。正式设备不要打开。
 
 ## 许可证与合规
 

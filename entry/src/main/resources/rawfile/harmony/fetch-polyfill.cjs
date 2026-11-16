@@ -17,8 +17,90 @@
 
   const http = require('node:http');
   const https = require('node:https');
+  const tls = require('node:tls');
+  const fs = require('node:fs');
+  const path = require('node:path');
   const zlib = require('node:zlib');
   const { Readable } = require('node:stream');
+
+  // 有些开发环境（模拟器、抓包代理）会用本地 CA 做 HTTPS 中间人。它不在
+  // Mozilla 根证书里，Node 会报 SELF_SIGNED_CERT_IN_CHAIN。开启这个开关时，
+  // 首次遇到证书错误会把这一个中间人根证书抓下来、持久化，并只信任它；
+  // 其它主机仍然走正常校验，不会退化成全局关闭校验。
+  const trustIntercepted = process.env.DSH_TRUST_INTERCEPTED_CA === '1';
+  const caFile = process.env.DSH_INTERCEPTED_CA_FILE || '';
+  const userCaCopy = process.env.DSH_INTERCEPTED_CA_COPY || '';
+  let extraCa = [];
+  if (caFile) {
+    try {
+      const text = fs.readFileSync(caFile, 'utf8');
+      extraCa = text.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || [];
+    } catch (error) { /* 还没有持久化的 CA */ }
+  }
+
+  const CERT_ERRORS = [
+    'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_UNTRUSTED',
+    'CERT_SIGNATURE_FAILURE', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID',
+  ];
+
+  function caOption() {
+    if (!extraCa.length) return undefined;
+    return (tls.rootCertificates || []).concat(extraCa);
+  }
+
+  function toPem(raw) {
+    const body = raw.toString('base64').replace(/(.{64})/g, '$1\n').replace(/\n$/, '');
+    return '-----BEGIN CERTIFICATE-----\n' + body + '\n-----END CERTIFICATE-----\n';
+  }
+
+  function lastSelfSigned(cert) {
+    let current = cert;
+    let last = cert;
+    const seen = new Set();
+    while (current && current.raw) {
+      const id = current.fingerprint || current.serialNumber;
+      if (id && seen.has(id)) break;
+      if (id) seen.add(id);
+      last = current;
+      const issuer = current.issuerCertificate;
+      if (!issuer || issuer === current || !issuer.raw) break;
+      current = issuer;
+    }
+    return last;
+  }
+
+  function captureInterceptedCa(host, port, servername) {
+    return new Promise((resolve, reject) => {
+      const socket = tls.connect({ host, port, servername, rejectUnauthorized: false }, () => {
+        try {
+          const root = lastSelfSigned(socket.getPeerCertificate(true));
+          socket.end();
+          if (!root || !root.raw) return reject(new Error('no peer certificate'));
+          resolve(toPem(root.raw));
+        } catch (error) {
+          socket.destroy();
+          reject(error);
+        }
+      });
+      socket.on('error', reject);
+    });
+  }
+
+  function rememberCa(pem) {
+    if (extraCa.indexOf(pem) >= 0) return;
+    extraCa.push(pem);
+    if (caFile) {
+      try {
+        fs.mkdirSync(path.dirname(caFile), { recursive: true });
+        fs.appendFileSync(caFile, pem);
+      } catch (error) { /* 持久化失败只影响下次启动 */ }
+    }
+    if (userCaCopy) {
+      try { fs.writeFileSync(userCaCopy, pem); } catch (error) { /* 供用户手动安装 */ }
+    }
+    console.error('[fetch-polyfill] 已信任被拦截的中间人 CA，并保存到', caFile);
+  }
 
   const MAX_REDIRECTS = 20;
   const agents = {
@@ -84,7 +166,7 @@
     return new Response(body, { status, statusText: response.statusMessage || '', headers });
   }
 
-  function requestOnce(url, init, redirects) {
+  function requestOnce(url, init, redirects, retried) {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const transport = parsed.protocol === 'http:' ? http : https;
@@ -100,11 +182,15 @@
         headers['accept-encoding'] = 'gzip, deflate, br';
       }
 
-      const req = transport.request(parsed, {
+      const options = {
         method,
         headers,
         agent: agents[parsed.protocol],
-      }, (response) => {
+      };
+      // 已信任的中间人 CA 只叠加在 Mozilla 根证书之上，替换默认列表时会显式合并。
+      if (transport === https && extraCa.length) options.ca = caOption();
+
+      const req = transport.request(parsed, options, (response) => {
         const status = response.statusCode || 0;
         const location = response.headers.location;
         if (location && [301, 302, 303, 307, 308].indexOf(status) >= 0 && redirects > 0) {
@@ -125,6 +211,21 @@
       });
 
       req.on('error', (error) => {
+        // 证书链错误且允许信任中间人 CA：抓一次根证书、持久化，然后用它重试。
+        // 只信任抓到的这一张，其它主机和之后的请求仍然做完整校验。
+        if (trustIntercepted && !retried && CERT_ERRORS.indexOf(error.code) >= 0) {
+          const port = parsed.port ? Number(parsed.port) : 443;
+          captureInterceptedCa(parsed.hostname, port, parsed.hostname)
+            .then((pem) => {
+              rememberCa(pem);
+              resolve(requestOnce(url, init, redirects, true));
+            })
+            .catch(() => {
+              console.error('[fetch-polyfill] failed', parsed.host, parsed.pathname, error.code || '', error.message);
+              reject(new TypeError('fetch failed: ' + error.message, { cause: error }));
+            });
+          return;
+        }
         console.error('[fetch-polyfill] failed', parsed.host, parsed.pathname, error.code || '', error.message);
         reject(new TypeError('fetch failed: ' + error.message, { cause: error }));
       });
