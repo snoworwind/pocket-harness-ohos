@@ -161,6 +161,27 @@ struct Index {
     return '';
   }
 
+  // 页面里的 window.open 在 ArkWeb 里会走「新窗口」通道：没有 onWindowNew 处理器时
+  // 渲染进程会被阻塞，表现就是点登录后整页黑屏。这里不给页面开新窗口的能力，并
+  // 接管 window.open，把外部链接交给系统浏览器。
+  private installPopupBridge(): void {
+    const script =
+      "(function(){if(window.__dshPopupBridge){return;}window.__dshPopupBridge=true;" +
+      "var send=function(u){try{console.log('DSH_TERM:'+JSON.stringify({op:'openExternal',url:String(u)}));}catch(e){}};" +
+      "window.open=function(url){" +
+      "var stub={closed:false,opener:null,focus:function(){},close:function(){stub.closed=true;}," +
+      "location:{replace:function(u){send(u);},assign:function(u){send(u);}}};" +
+      "try{Object.defineProperty(stub.location,'href',{get:function(){return url;},set:function(u){send(u);},configurable:true});}catch(e){}" +
+      "if(url&&url!=='about:blank'){send(url);}" +
+      "return stub;};})()";
+    try { this.controller.runJavaScript(script).catch(() => {}); } catch (error) { /* Web 未挂载 */ }
+  }
+  private openExternal(url: string): void {
+    if (!/^https?:\/\//i.test(url)) { return; }
+    const context = this.context;
+    if (!context) { return; }
+    try { context.openLink(url).catch(() => {}); } catch (error) { /* 没有可用浏览器 */ }
+  }
   // 页面 → 壳层：DSH 客户端插件把终端 tab 的 open/bounds/visible/close 以
   // `console.log('DSH_TERM:' + json)` 发过来，没有 JS 代理也能用。
   private onTermBridge(text: string): void {
@@ -190,6 +211,9 @@ struct Index {
         // 页面要求聚焦终端输入框时再弹键盘：终端 tab 打开本身不抢焦点，
         // 否则横屏下键盘一上来就把仅剩的几行终端压没了。
         try { this.getUIContext().getFocusController().requestFocus('term-input'); } catch (error) { /* 未挂载 */ }
+      } else if (op === 'openExternal') {
+        const url = message['url'] as string;
+        if (typeof url === 'string') { this.openExternal(url); }
       } else if (op === 'close') {
         this.showTerminal = false;
       }
@@ -363,6 +387,9 @@ struct Index {
     Stack({ alignContent: Alignment.Center }) {
       if (this.url !== '') {
         Web({ src: this.url, controller: this.controller })
+          // 不开应用内新窗口：window.open 一律由 installPopupBridge 接管并转给系统浏览器，
+          // 否则 ArkWeb 会因为缺少 onWindowNew 处理而阻塞渲染进程（黑屏）。
+          .multiWindowAccess(false)
           .javaScriptAccess(true)
           .domStorageAccess(true)
           .databaseAccess(true)
@@ -381,6 +408,7 @@ struct Index {
             this.stopUnpackingWatch();
             this.busy = false;
             this.syncBarsFromPage();
+            this.installPopupBridge();
             if (this.barTimer < 0) {
               this.barTimer = setInterval(() => { this.syncBarsFromPage(); }, 2000);
             }

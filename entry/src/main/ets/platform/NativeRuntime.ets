@@ -178,6 +178,7 @@ export class NativeRuntime {
     this.engineVersion = manifest.engineVersion; this.ready = true;
     this.installHarmonyPlugin();
     this.installTerminalPlugin();
+    this.installNotices();
     this.migrateLegacyHomePaths();
     // 新版运行时已经就绪，旧版本目录没有保留价值（一个版本约 450 MB）。
     // 放在成功之后做：本次解包失败时不动旧的，用户还能降级回上一个包。
@@ -433,6 +434,30 @@ export class NativeRuntime {
         fs.closeSync(file);
       }
     } catch (error) { /* 插件没装上只是没有侧栏终端入口 */ }
+  }
+  // 第三方声明随 HAP 以 rawfile 分发，启动时解到应用沙箱，方便用户/审计直接查看，
+  // 也保证分发物里始终带着 MIT / GPL / BSD 等许可证原文。
+  private installNotices(): void {
+    const dest = this.context.filesDir + '/notices';
+    const files: string[] = [
+      'THIRD_PARTY_NOTICES.md',
+      'LICENSES/Apache-2.0-LLVM.txt', 'LICENSES/Artistic-2.0.txt', 'LICENSES/DSH-MIT.txt',
+      'LICENSES/GPL-3.0.txt', 'LICENSES/libarchive.txt', 'LICENSES/libvterm.txt',
+      'LICENSES/Node-MIT.txt', 'LICENSES/ripgrep-MIT.txt', 'LICENSES/ripgrep-UNLICENSE.txt',
+      'LICENSES/toybox.txt'
+    ];
+    try {
+      this.ensureDir(dest);
+      this.ensureDir(dest + '/LICENSES');
+      const decoder = util.TextDecoder.create('utf-8');
+      for (const file of files) {
+        const content = this.context.resourceManager.getRawFileContentSync('notices/' + file);
+        const text = decoder.decodeToString(content);
+        const out = fs.openSync(dest + '/' + file, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        fs.writeSync(out.fd, text);
+        fs.closeSync(out);
+      }
+    } catch (error) { /* 声明文件缺失不影响运行 */ }
   }
   private copyTree(from: string, to: string): void {
     for (const name of fs.listFileSync(from)) {

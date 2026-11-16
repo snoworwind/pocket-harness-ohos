@@ -121,6 +121,52 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /* ------------------------------------------------------------------ */
+    /* 关于（设置里的一个分区）                                             */
+    /* ------------------------------------------------------------------ */
+    const PROJECT_URL = 'https://github.com/snoworwind/pocket-harness-ohos';
+    const DSH_URL = 'https://github.com/deepseek-ai/deepseek-harness';
+
+    function openUrl(url) {
+      // 交给壳层用系统浏览器打开：应用内 WebView 不承载外部站点。
+      send('openExternal', { url: url });
+    }
+
+    function AboutRow(props) {
+      return h('button', {
+        type: 'button',
+        onClick: function () { openUrl(props.url); },
+        style: {
+          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+          width: '100%', padding: '10px 12px', marginBottom: 8, textAlign: 'left',
+          borderRadius: 10, border: '1px solid var(--dsw-alias-border-l3)',
+          background: 'transparent', color: 'var(--dsw-alias-label-primary)',
+          font: 'inherit', cursor: 'pointer',
+        },
+      },
+      h('span', { style: { fontSize: 13 } }, props.title),
+      h('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', wordBreak: 'break-all' } }, props.url));
+    }
+
+    function AboutSection() {
+      const rows = [
+        ['本项目仓库', PROJECT_URL],
+        ['DeepSeek Harness 仓库', DSH_URL],
+        ['第三方软件声明 THIRD_PARTY_NOTICES.md', PROJECT_URL + '/blob/main/THIRD_PARTY_NOTICES.md'],
+        ['许可证全文 LICENSES/', PROJECT_URL + '/tree/main/LICENSES'],
+        ['GNU Bash 5.3 源码（GPL-3.0 对应源码）', 'https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz'],
+      ];
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0' } },
+        h('h2', { style: { margin: '0 0 4px', fontSize: 16, fontWeight: 600 } }, '关于 · 鸿蒙原生版'),
+        h('p', { style: { margin: '0 0 10px', fontSize: 12, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } },
+          '本项目由社区维护，与 DeepSeek 没有隶属、赞助或背书关系。界面与引擎来自官方 DeepSeek Harness（MIT）；终端、进程与应用运行时由本项目的鸿蒙原生层提供。'),
+        rows.map(function (row) {
+          return h(AboutRow, { key: row[1], title: row[0], url: row[1] });
+        }),
+        h('p', { style: { margin: '8px 0 0', fontSize: 11, lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } },
+          '许可证原文随安装包分发，首次启动后解出到应用沙箱的 files/notices/ 目录；仓库内的同名文件与之一致。第三方组件清单与各自许可见 THIRD_PARTY_NOTICES.md。'));
+    }
+
     return {
       inject: ['slots', 'sidebarRight', 'sidebarRightTabs'],
       apply(ctx) {
@@ -160,6 +206,18 @@ window.__ModuleLoader__.load({
             }, Stage);
           });
         }, 'harmony-terminal.body');
+
+        // 设置里的「关于」：仓库、上游、许可证与源码入口。
+        ctx.effect(function () {
+          return ctx.slots.inject('settings.section', function () {
+            return ctx.slots.register({
+              name: 'settings.section',
+              id: 'harmony-about',
+              order: 100,
+              label: function () { return '关于'; },
+            }, AboutSection);
+          });
+        }, 'harmony-terminal.about');
 
         // 系统返回键由壳层转到页面：收起右侧栏，终端会话不动。用服务判断/收起，
         // 不依赖按语言变化的 aria-label。

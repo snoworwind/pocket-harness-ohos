@@ -1,5 +1,7 @@
 # DeepSeek Harness · HarmonyOS 原生版
 
+> **非官方项目**：本项目由社区维护，与 DeepSeek 没有隶属、赞助或背书关系。"DeepSeek"、"DeepSeek Harness" 名称及鲸鱼标识归 DeepSeek 所有。许可与第三方组件声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 把**官方 DeepSeek Harness** 整个搬进鸿蒙应用：界面就是官方 Web GUI（`dsh --profile web` 的浏览器前端），Agent Loop、工具调用、审批、会话、工作区、终端全部由官方 `@deepseek-ai/dsh` 提供；Bash、Node、toybox、libarchive、ripgrep 针对 `arm64-linux-ohos` 交叉编译成原生库随 HAP 安装，不依赖 adb、Termux 或远程服务器。
 
 > 状态：HAP 已安装到真机（SGT-AL10 / HarmonyOS 6.1）并成功启动，界面是官方 Web GUI 的壳：ArkTS 只负责解包引擎、起 `dsh --profile web`、把打印出来的 `http://127.0.0.1:<port>/?token=…` 交给 Web 组件。真机上的引擎启动、界面加载与工具调用链路正在逐项验收，进度见 [验证说明](docs/VALIDATION.md)。
@@ -126,4 +128,11 @@ filesDir/
 - `fork` 未被拦截，是否允许由设备决定，`probeCaps().fork` 会先探测；终端 PTY 依赖 `forkpty`；
 - 未包含：Python、MCP、语音、插件市场、后台常驻执行。
 
-原生组件许可：Bettersh/IEC（随仓库附带 LICENSE）、bash（GPL-3.0，分发需提供对应源码）、toybox（BSD）、libarchive（BSD）、OpenSSL（Apache-2.0）、Node.js（MIT）、官方 DSH 与其原生插件（见各包 LICENSE）。本工程原创代码为 MIT。
+## 许可证与合规
+
+本工程原创代码为 MIT（见 [LICENSE](LICENSE)），上游 DeepSeek Harness 也是 MIT。随包分发的所有第三方组件、许可证原文和 GNU Bash 的对应源码获取方式，统一维护在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：
+
+- 许可证全文在 `LICENSES/`，同一份随 HAP 分发（`resources/rawfile/notices/`），首次启动后解出到应用沙箱 `files/notices/`；
+- 分发的 `libbash.so` 由 GNU Bash 5.3 原样源码编译（未打补丁），源码包地址与构建脚本见声明文件；
+- 官方 DSH 引擎归档内每个 npm 包自带 `LICENSE`，随归档一起分发。
+
