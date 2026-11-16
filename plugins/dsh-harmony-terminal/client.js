@@ -39,6 +39,35 @@ window.__ModuleLoader__.load({
       return 'harmony-terminal';
     }
 
+    /** 当前会话的工作目录：从宿主 API 的 session/list 取最近更新的那条。 */
+    async function activeSessionCwd() {
+      try {
+        const rpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : String(Date.now()) + Math.random().toString(16).slice(2);
+        const response = await fetch('/api/session/list', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'client-request',
+            rpcId: rpcId,
+            method: 'session/list',
+            payload: { args: { _request: {} } },
+          }),
+        });
+        const data = await response.json();
+        const items = data && data.result && data.result.value && data.result.value.items;
+        if (!Array.isArray(items) || items.length === 0) return '';
+        const sorted = items.slice().sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+        const first = sorted[0];
+        return first.cwd
+          || (first.projections && first.projections.values && first.projections.values.workingDirectory)
+          || '';
+      } catch (error) {
+        return '';
+      }
+    }
+
     /** tab 的内容区：一块透明的 stage，矩形变化就回报给壳层。 */
     function Stage(props) {
       const owner = tabOwner(props);
@@ -87,6 +116,10 @@ window.__ModuleLoader__.load({
         send('open', { owner: ownerRef.current, cols: 80, rows: 24 });
         opened.current = true;
         report();
+        // 解析当前会话的工作目录后补发：终端会落在项目目录（而不是固定目录）。
+        activeSessionCwd().then(function (cwd) {
+          if (cwd) send('cwd', { owner: ownerRef.current, cwd: cwd });
+        });
         const timer = window.setInterval(report, 300);
         const raf = window.requestAnimationFrame(report);
 
@@ -111,7 +144,13 @@ window.__ModuleLoader__.load({
       }, []);
 
       React.useEffect(function () {
-        if (opened.current) send('focus', { owner: ownerRef.current });
+        if (opened.current) {
+          send('focus', { owner: ownerRef.current });
+          // 切回终端时重新对齐会话目录（用户可能已经切了项目）。
+          activeSessionCwd().then(function (cwd) {
+            if (cwd) send('cwd', { owner: ownerRef.current, cwd: cwd });
+          });
+        }
       }, []);
 
       return h('div', {
@@ -119,6 +158,45 @@ window.__ModuleLoader__.load({
         'data-harmony-terminal-stage': '',
         style: { position: 'absolute', inset: 0, overflow: 'hidden' },
       });
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 选区「引用文本」浮层：系统选区工具条在选区上方，会盖住它，移到下方   */
+    /* ------------------------------------------------------------------ */
+    function installQuoteToolbarFix() {
+      if (window.__dshQuoteToolbarFix) return;
+      window.__dshQuoteToolbarFix = true;
+      const place = function () {
+        try {
+          const button = document.querySelector('button[aria-label="引用文本"]');
+          if (button === null) return;
+          const selection = window.getSelection();
+          if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) return;
+          const rect = selection.getRangeAt(0).getBoundingClientRect();
+          if (rect.width === 0 && rect.height === 0) return;
+          let node = button;
+          while (node !== null && node !== document.body) {
+            const style = window.getComputedStyle(node);
+            if (style.position === 'fixed' || style.position === 'absolute') break;
+            node = node.parentElement;
+          }
+          if (node === null || node === document.body) return;
+          const width = node.getBoundingClientRect().width;
+          const left = Math.max(8, Math.min(window.innerWidth - width - 8,
+            rect.left + rect.width / 2 - width / 2));
+          node.style.setProperty('top', Math.round(rect.bottom + 8) + 'px', 'important');
+          node.style.setProperty('left', Math.round(left) + 'px', 'important');
+          node.style.setProperty('bottom', 'auto', 'important');
+          node.style.setProperty('transform', 'none', 'important');
+        } catch (error) { /* 页面结构变化时静默 */ }
+      };
+      ['selectionchange', 'mouseup', 'touchend', 'scroll'].forEach(function (name) {
+        document.addEventListener(name, function () {
+          window.setTimeout(place, 60);
+          window.setTimeout(place, 200);
+        }, true);
+      });
+      window.addEventListener('resize', function () { window.setTimeout(place, 60); });
     }
 
     /* ------------------------------------------------------------------ */
@@ -231,6 +309,7 @@ window.__ModuleLoader__.load({
           return false;
         };
         window.__dshHarmonyTerminalReady = true;
+        installQuoteToolbarFix();
         } catch (error) {
           window.__dshHarmonyTerminalError = String(error && error.stack || error);
           throw error;

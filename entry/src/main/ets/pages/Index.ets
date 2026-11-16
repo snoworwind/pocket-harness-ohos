@@ -23,6 +23,8 @@ struct Index {
   @State private termWidth: number = 0;
   @State private termHeight: number = 0;
   @State private termVisible: boolean = false;
+  // 当前 DSH 会话的工作目录，由页面插件从宿主 API 解析后下发；终端用它作为 cwd。
+  @State private termCwd: string = '';
   @State private status: string = '正在准备原生运行时';
   @State private detail: string = '';
   @State private failed: string = '';
@@ -37,6 +39,8 @@ struct Index {
   private controller: webview.WebviewController = new webview.WebviewController();
   private barTimer: number = -1;
   private keepAliveTimer: number = -1;
+  private homeTimer: number = -1;
+  private webAtHome: boolean = true;
   private keepAliveOn: boolean = false;
   @State private barDark: boolean = false;
   @State private insetTop: number = 0;
@@ -45,12 +49,31 @@ struct Index {
   aboutToAppear(): void {
     try { this.context = this.getUIContext().getHostContext() as common.UIAbilityContext; } catch (error) { /* 取不到上下文时延后处理 */ }
     this.followSystemBars();
+    this.startHomeWatch();
     this.boot();
+  }
+
+  // DSH 的 Web 界面没有浏览历史，只能靠首页文案判断当前是否在会话/设置里，
+  // 供返回手势决定是“重载回首页”还是交回系统。
+  private startHomeWatch(): void {
+    if (this.homeTimer >= 0) { return; }
+    this.homeTimer = setInterval(() => {
+      if (this.url === '') { return; }
+      try {
+        this.controller.runJavaScript(
+          "(function(){try{var t=document.body?document.body.innerText:'';" +
+          "return (t.indexOf('探索未至之境')>=0||t.indexOf('Into the Unknown')>=0)?'1':'0';}catch(e){return '1';}})()"
+        ).then((result: string) => {
+          this.webAtHome = String(result).replace(/"/g, '') === '1';
+        }).catch(() => {});
+      } catch (error) { /* Web 未挂载 */ }
+    }, 1500);
   }
 
   aboutToDisappear(): void {
     if (this.barTimer >= 0) { clearInterval(this.barTimer); this.barTimer = -1; }
     if (this.keepAliveTimer >= 0) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = -1; }
+    if (this.homeTimer >= 0) { clearInterval(this.homeTimer); this.homeTimer = -1; }
     this.stopUnpackingWatch();
     this.runtime?.stopWebUI();
     const context = this.context;
@@ -84,6 +107,14 @@ struct Index {
         return true;
       }
     } catch (error) { /* 控制器未就绪时退回系统默认行为 */ }
+    // DSH 的 Web 界面是内存路由，不产生浏览历史：在会话/设置里按返回时，
+    // 用一次页面重载回到工作区首页（会话数据在后端，不会丢）。
+    if (!this.webAtHome) {
+      try {
+        this.controller.runJavaScript('window.location.reload()').catch(() => {});
+      } catch (error) { /* Web 未挂载 */ }
+      return true;
+    }
     return false;
   }
 
@@ -206,6 +237,12 @@ struct Index {
       if (op === 'open') {
         this.showTerminal = true;
         this.termVisible = false;
+        const cwd = message['cwd'] as string;
+        if (typeof cwd === 'string' && cwd !== '') { this.termCwd = cwd; }
+      } else if (op === 'cwd') {
+        // 页面从宿主 API 拿到当前会话的工作目录后补发过来，终端跟随它。
+        const cwd = message['cwd'] as string;
+        if (typeof cwd === 'string' && cwd !== '') { this.termCwd = cwd; }
       } else if (op === 'bounds') {
         const left = Number(message['left']);
         const top = Number(message['top']);
@@ -408,6 +445,8 @@ struct Index {
           .domStorageAccess(true)
           .databaseAccess(true)
           .fileAccess(true)
+          // 关闭双指缩放：界面按视口宽度布局，缩放会把终端/侧栏的几何算乱。
+          .zoomAccess(false)
           .imageAccess(true)
           .onlineImageAccess(true)
           // 跟随系统深浅色：页面里的 prefers-color-scheme 才跟手系统设置；
@@ -510,6 +549,7 @@ struct Index {
           stageWidth: this.termWidth,
           stageHeight: this.termHeight,
           visible: this.termVisible,
+          workspaceCwd: this.termCwd,
           onClose: () => { this.showTerminal = false; }
         })
       }

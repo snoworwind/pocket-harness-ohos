@@ -111,6 +111,9 @@ export struct TerminalView {
   // 名字带 stage 前缀：width/height 与组件自身的同名属性方法冲突。
   @Prop stageLeft: number = 0;
   @Prop stageTop: number = 0;
+  // 当前会话的工作目录（页面从宿主 API 解析后下发）；空则退回工作区根目录。
+  @Prop @Watch('onWorkspaceCwdChange') workspaceCwd: string = '';
+  private appliedCwd: string = '';
   @Prop stageWidth: number = 0;
   @Prop stageHeight: number = 0;
   @Prop visible: boolean = true;
@@ -178,6 +181,14 @@ export struct TerminalView {
     this.draw();
   }
 
+  // 页面切换到其它会话时，把 shell 跟到新的工作目录（同一个终端会话不重建）。
+  onWorkspaceCwdChange(): void {
+    const cwd = this.workspaceCwd;
+    if (cwd === '' || cwd === this.appliedCwd || !this.session) { return; }
+    this.appliedCwd = cwd;
+    this.session.write("cd '" + cwd.replace(/'/g, "'\\''") + "'\n");
+  }
+
   private async start(): Promise<void> {
     const context = this.context;
     if (!context) { this.status = '没有应用上下文'; return; }
@@ -203,7 +214,8 @@ export struct TerminalView {
       env['SHELL'] = this.root + '/bin/bash';
       // 终端要落在项目/工作区目录：exec 的 cwd 偶尔会被沙箱改写成根目录，
       // 这里再显式 cd 一次兜底（PWD 也一并设好，避免提示符显示 /）。
-      const workspace = runtime.workspaceDirectory();
+      const workspace = this.workspaceCwd !== '' ? this.workspaceCwd : runtime.workspaceDirectory();
+      this.appliedCwd = workspace;
       env['PWD'] = workspace;
       this.session = new TerminalSession(this.root + '/bin/bash', ['-i'], workspace, env,
         (bytes: Uint8Array) => {
