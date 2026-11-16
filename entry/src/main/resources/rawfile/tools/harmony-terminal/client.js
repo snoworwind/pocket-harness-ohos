@@ -39,8 +39,18 @@ window.__ModuleLoader__.load({
       return 'harmony-terminal';
     }
 
-    /** 当前会话的工作目录：从宿主 API 的 session/list 取最近更新的那条。 */
-    async function activeSessionCwd() {
+    /** 当前打开的会话 id（DSH 会话视图会把它写在 data-conversation-session 上）。 */
+    function activeSessionId() {
+      try {
+        const el = document.querySelector('[data-conversation-session]');
+        return el === null ? '' : (el.getAttribute('data-conversation-session') || '');
+      } catch (error) {
+        return '';
+      }
+    }
+
+    /** 拉取会话列表；cwd 就是该会话的工作目录（项目目录）。 */
+    async function fetchSessionItems() {
       try {
         const rpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
           ? crypto.randomUUID()
@@ -57,15 +67,43 @@ window.__ModuleLoader__.load({
         });
         const data = await response.json();
         const items = data && data.result && data.result.value && data.result.value.items;
-        if (!Array.isArray(items) || items.length === 0) return '';
-        const sorted = items.slice().sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
-        const first = sorted[0];
-        return first.cwd
-          || (first.projections && first.projections.values && first.projections.values.workingDirectory)
-          || '';
+        return Array.isArray(items) ? items : [];
       } catch (error) {
-        return '';
+        return [];
       }
+    }
+
+    function cwdOf(item) {
+      if (!item) return '';
+      return item.cwd
+        || (item.projections && item.projections.values && item.projections.values.workingDirectory)
+        || '';
+    }
+
+    /** 当前会话的工作目录：优先按当前打开的会话 id 匹配，退回归最近更新的会话。 */
+    async function activeSessionCwd() {
+      const items = await fetchSessionItems();
+      if (items.length === 0) return '';
+      const id = activeSessionId();
+      const match = id === '' ? null : items.find(function (item) { return item.sessionId === id; });
+      if (match) return cwdOf(match);
+      const sorted = items.slice().sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+      return cwdOf(sorted[0]);
+    }
+
+    /** 会话/工作区切换时把终端的 cwd 跟过去。 */
+    function watchActiveSession() {
+      if (window.__dshActiveSessionWatch) return;
+      window.__dshActiveSessionWatch = true;
+      let lastId = '';
+      window.setInterval(function () {
+        const id = activeSessionId();
+        if (id === '' || id === lastId) return;
+        lastId = id;
+        activeSessionCwd().then(function (cwd) {
+          if (cwd) send('cwd', { owner: 'harmony-terminal', cwd: cwd });
+        });
+      }, 1200);
     }
 
     /** tab 的内容区：一块透明的 stage，矩形变化就回报给壳层。 */
@@ -181,13 +219,24 @@ window.__ModuleLoader__.load({
             node = node.parentElement;
           }
           if (node === null || node === document.body) return;
-          const width = node.getBoundingClientRect().width;
-          const left = Math.max(8, Math.min(window.innerWidth - width - 8,
-            rect.left + rect.width / 2 - width / 2));
-          node.style.setProperty('top', Math.round(rect.bottom + 8) + 'px', 'important');
+          // 浮层的 top/left 是相对 offsetParent（消息列）的坐标，不能直接用视口坐标。
+          const parent = node.offsetParent || node.parentElement;
+          if (parent === null) return;
+          const parentRect = parent.getBoundingClientRect();
+          const width = node.offsetWidth || button.offsetWidth;
+          const height = node.offsetHeight || 32;
+          const gap = 8;
+          let top;
+          if (rect.bottom + gap + height <= window.innerHeight) {
+            top = rect.bottom + gap - parentRect.top;
+          } else {
+            top = rect.top - gap - height - parentRect.top;
+          }
+          let left = rect.left + rect.width / 2 - parentRect.left - width / 2;
+          left = Math.max(4, Math.min(parentRect.width - width - 4, left));
+          node.style.setProperty('top', Math.round(top) + 'px', 'important');
           node.style.setProperty('left', Math.round(left) + 'px', 'important');
           node.style.setProperty('bottom', 'auto', 'important');
-          node.style.setProperty('transform', 'none', 'important');
         } catch (error) { /* 页面结构变化时静默 */ }
       };
       ['selectionchange', 'mouseup', 'touchend', 'scroll'].forEach(function (name) {
@@ -310,6 +359,7 @@ window.__ModuleLoader__.load({
         };
         window.__dshHarmonyTerminalReady = true;
         installQuoteToolbarFix();
+        watchActiveSession();
         } catch (error) {
           window.__dshHarmonyTerminalError = String(error && error.stack || error);
           throw error;

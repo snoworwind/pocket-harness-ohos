@@ -61,8 +61,7 @@ struct Index {
       if (this.url === '') { return; }
       try {
         this.controller.runJavaScript(
-          "(function(){try{var t=document.body?document.body.innerText:'';" +
-          "return (t.indexOf('探索未至之境')>=0||t.indexOf('Into the Unknown')>=0)?'1':'0';}catch(e){return '1';}})()"
+          "(function(){try{return document.querySelector('[data-content-phase=\"hero\"]')?'1':'0';}catch(e){return '1';}})()"
         ).then((result: string) => {
           this.webAtHome = String(result).replace(/"/g, '') === '1';
         }).catch(() => {});
