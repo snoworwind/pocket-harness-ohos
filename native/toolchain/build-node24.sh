@@ -35,7 +35,7 @@ for tool in llvm-ar llvm-ranlib llvm-nm llvm-readelf llvm-objcopy llvm-strip ld.
 export OHOS_SDK="$ROOT/sdk"
 export CLANG="$ROOT/compiler/bin/clang" CLANG_DIR="$ROOT/compiler/bin" CLANGXX="$ROOT/compiler/bin/clang++"
 export HOST_CC=gcc HOST_CXX=g++ HOST_AR=ar HOST_NM=nm HOST_READELF=readelf
-export JOBS=8
+export JOBS=${JOBS:-12}
 export IEC_NODE_SRC="$ROOT/node-v24.22.1" IEC_NODE_TARBALL="$ROOT/downloads/node-v24.22.1.tar.gz"
 export IEC_NODE_BUILD="$ROOT/iec/build/node24"
 NODE_SHA=$(grep ' node-v24.22.1.tar.gz$' "$ROOT/downloads/SHASUMS256.txt" | cut -d' ' -f1)
