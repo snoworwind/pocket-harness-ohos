@@ -93,7 +93,8 @@ struct Index {
   private pressEscape(): void {
     try {
       this.controller.runJavaScript(
-        "(function(){try{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));}catch(e){}})()"
+        "(function(){try{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));" +
+        "setTimeout(function(){try{if(document.activeElement)document.activeElement.blur();}catch(e){}},250);}catch(e){}})()"
       ).catch(() => {});
     } catch (error) { /* Web 未挂载 */ }
   }
@@ -102,7 +103,8 @@ struct Index {
     try {
       this.controller.runJavaScript(
         "(function(){try{var es=[].slice.call(document.querySelectorAll('[aria-label=\"打开侧边栏\"]'));" +
-        "for(var i=0;i<es.length;i++){if(es[i].getBoundingClientRect().x>=0){es[i].click();return;}}}catch(e){}})()"
+        "for(var i=0;i<es.length;i++){if(es[i].getBoundingClientRect().x>=0){" +
+        "es[i].click();es[i].blur();if(document.activeElement)document.activeElement.blur();return;}}}catch(e){}})()"
       ).catch(() => {});
     } catch (error) { /* Web 未挂载 */ }
   }
@@ -112,7 +114,8 @@ struct Index {
     try {
       this.controller.runJavaScript(
         "(function(){try{var es=[].slice.call(document.querySelectorAll('[aria-haspopup=menu][aria-expanded=true]'));" +
-        "for(var i=0;i<es.length;i++){if(es[i].getBoundingClientRect().x>=0){es[i].click();return;}}}catch(e){}})()"
+        "for(var i=0;i<es.length;i++){if(es[i].getBoundingClientRect().x>=0){" +
+        "es[i].click();es[i].blur();if(document.activeElement)document.activeElement.blur();return;}}}catch(e){}})()"
       ).catch(() => {});
     } catch (error) { /* Web 未挂载 */ }
   }
@@ -134,11 +137,12 @@ struct Index {
   private collapseRightSidebar(): void {
     try {
       this.controller.runJavaScript(
-        "(function(){try{if(window.__dshCollapseRightSidebar)return window.__dshCollapseRightSidebar();}catch(e){}" +
+        "(function(){try{if(window.__dshCollapseRightSidebar)window.__dshCollapseRightSidebar();}catch(e){}" +
         "var es=[].slice.call(document.querySelectorAll('[aria-label]'));" +
         "for(var i=0;i<es.length;i++){var a=es[i].getAttribute('aria-label')||'';" +
-        "if(/^(collapse|收起)\\b.*(right sidebar|右侧边栏)$/i.test(a)){es[i].click();return true;}}" +
-        "return false;})()"
+        "if(/^(collapse|收起)\\b.*(right sidebar|右侧边栏)$/i.test(a)){es[i].click();break;}}" +
+        "setTimeout(function(){try{if(document.activeElement)document.activeElement.blur();}catch(e){}},250);" +
+        "})()"
       ).catch(() => {});
     } catch (error) { /* Web 未挂载 */ }
   }
