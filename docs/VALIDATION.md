@@ -97,3 +97,23 @@
 | 不该伪造 `window.dshDesktop` | 引擎用 `"dshDesktop" in globalThis` 判断桌面版，会改变 onboarding / 转写视图 / 拖拽 / 分析等行为 | 改为只做 DOM 层拦截，不注入 `dshDesktop` | 桥脚本断言 `dshDesktop` 不存在 |
 
 本轮只改 ArkTS 与文档，未重建原生库、未连接真机、未推送远程。
+
+## 2026-11-17 用 release 资产补全本地构建
+
+本机此前只有一部分原生库（缺 libpython/libgit/libcurl 等 15 个）。从 v0.1.0.2 的
+`pocket-harness-native-arm64-v8a.zip` 与 HAP 资产补齐后，本地可以构建完整包：
+
+- 原生库：只补缺失的 15 个（libpython、libgit、libgit-remote-http、libcurlcmd、
+  libjqcmd、libbccmd、libdropbear、libsftpcmd、liblesscmd、libvimcmd、libtreecmd、
+  libsqlite3cmd、librsynccmd、libxzcmd、libzstdcmd）；本轮修过的 `librg.so`、
+  libarchive 前端、`libopensslcmd.so`、`libghcmd.so`、`libgitlfscmd.so` 保留本机构建，
+  没有被旧资产覆盖。
+- 运行时归档：从 release HAP 取回 `npm.tar.gz`、`python-stdlib.tar`、
+  `vim-runtime.tar.gz`，放进 `entry/src/main/resources/rawfile/tools/`。
+- Python：`python-stdlib.tar` 里补回 CPython 3.12.14 的 `ensurepip` 与
+  `pip-25.0.1` wheel，`python3 -m venv` 不再报 `No module named ensurepip`；
+  `_bz2` 仍编在 `libpython.so` 里，要等重建 Python 才能补上。
+- 构建：`node scripts/build.mjs` 重算清单为 `0.2.2-rc.1-79f47bdf59e8`，
+  `assembleHap` BUILD SUCCESSFUL，产出签名的 `entry-default-signed.hap`（303 MB）。
+
+本轮未连接真机、未推送远程。
