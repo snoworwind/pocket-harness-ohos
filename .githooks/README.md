@@ -21,7 +21,7 @@ git config core.hooksPath .githooks
 | 钩子 | 时机 | 扫描对象 |
 | --- | --- | --- |
 | `pre-commit` | `git commit` | 暂存区新增/修改的文件 |
-| `pre-push` | `git push` | 本次推送的提交相对远端的差异；新分支扫描完整树 |
+| `pre-push` | `git push` | 本次推送区间内每个提交新增/修改的文件；密钥在中间提交加入、后续删除也会被拦下；新分支扫描完整树 |
 
 手动全量检查：
 

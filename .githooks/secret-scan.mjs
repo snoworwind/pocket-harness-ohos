@@ -105,23 +105,39 @@ function scanOutgoing() {
   for (const line of lines) {
     const [, localSha, , remoteSha] = line.split(/\s+/);
     if (!localSha || ZERO_SHA.test(localSha)) continue;
-    let files;
-    if (!remoteSha || ZERO_SHA.test(remoteSha)) {
-      // 新分支：扫描该提交的完整树，避免第一次推送绕过门禁。
-      files = splitZ(git(['ls-tree', '-r', '--name-only', '-z', localSha]));
-    } else {
-      try {
-        files = splitZ(git(['diff', '--name-only', '--diff-filter=ACMR', '-z', `${remoteSha}..${localSha}`]));
-      } catch {
-        files = splitZ(git(['ls-tree', '-r', '--name-only', '-z', localSha]));
-      }
+
+    let commits = [];
+    if (remoteSha && !ZERO_SHA.test(remoteSha)) {
+      try { commits = git(['rev-list', '--reverse', `${remoteSha}..${localSha}`]).toString('utf8').split('\n').filter(Boolean); } catch { commits = []; }
     }
-    for (const file of files) {
-      if (seen.has(`${localSha}:${file}`)) continue;
-      seen.add(`${localSha}:${file}`);
-      let content = null;
-      try { content = git(['show', `${localSha}:${file}`]); } catch { /* 目录/子模块 */ }
-      issues.push(...inspect(file, content));
+    if (commits.length === 0) {
+      // 新分支或无法解析远端：扫描该提交的完整树，避免第一次推送绕过门禁。
+      for (const file of splitZ(git(['ls-tree', '-r', '--name-only', '-z', localSha]))) {
+        if (seen.has(`${localSha}:${file}`)) continue;
+        seen.add(`${localSha}:${file}`);
+        let content = null;
+        try { content = git(['show', `${localSha}:${file}`]); } catch { /* 目录/子模块 */ }
+        issues.push(...inspect(file, content));
+      }
+      continue;
+    }
+
+    // 逐个提交扫描新增/修改的 blob：密钥在中间提交加入、后续提交删除时，
+    // 只看最终树会漏掉，但历史里仍然拿得到。
+    for (const sha of commits) {
+      let files = [];
+      try {
+        files = splitZ(git(['diff-tree', '-r', '-m', '--no-commit-id', '--name-only', '-z', '--diff-filter=ACMR', sha]));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (seen.has(`${sha}:${file}`)) continue;
+        seen.add(`${sha}:${file}`);
+        let content = null;
+        try { content = git(['show', `${sha}:${file}`]); } catch { /* 目录/子模块 */ }
+        issues.push(...inspect(file, content));
+      }
     }
   }
   return issues;
