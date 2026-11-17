@@ -1,6 +1,8 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { webview } from '@kit.ArkWeb';
 import { window, mediaquery } from '@kit.ArkUI';
+import { picker, fileIo as fs } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
 import { TerminalView } from './Terminal';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NativeRuntime } from '../platform/NativeRuntime';
@@ -26,6 +28,57 @@ const UPLOAD_DOCUMENT_SCRIPT: string =
   "retry.body=buffer;return fetch(input,retry);});});};" +
   "window.__DSH_FILE_UPLOAD__={fetch:post};" +
   "}catch(e){}})();";
+
+// 文档开始就装两颗桥：
+//   1. 外链：查询用量/充值/账号信息都是 <a target="_blank">。ArkWeb 在
+//      multiWindowAccess(false) 下拿不到新窗口处理器会把渲染进程挂住，表现就是
+//      点一下整页白屏、返回也退不出去。这里在捕获阶段拦下所有 target=_blank
+//      锚点：站外的交给系统浏览器，站内的就地导航，绝不让内核去开新窗口。
+//   2. 下载：DSH 的「下载」是把文件读成 blob 再点一个 <a download> 锚点，ArkWeb
+//      不会替页面保存 blob: 下载（没设置下载委托时就是静默失败）。这里在文档起点
+//      接管所有 <a download>（含脚本直接 anchor.click()、会话导出、预览下载）：
+//      把字节经 javaScriptProxy 分片交给 Index，壳层弹系统保存框写文件。
+//      注意不要伪造 window.dshDesktop：引擎里多处用 `"dshDesktop" in globalThis`
+//      判断桌面版（onboarding、分析、拖拽等），塞一个假对象会把 Web 版行为改坏。
+const BRIDGE_DOCUMENT_SCRIPT: string =
+  "(function(){try{" +
+  "if(window.__dshNativeBridge){return;}window.__dshNativeBridge=true;" +
+  "var CH=262144;" +
+  "var send=function(u){try{console.log('DSH_TERM:'+JSON.stringify({op:'openExternal',url:String(u)}));}catch(e){}};" +
+  "var external=function(u){var s=String(u||'');if(!/^https?:/i.test(s)){return false;}send(s);return true;};" +
+  "window.open=function(url){var s=String(url||'');var stub={closed:false,opener:null,focus:function(){},close:function(){stub.closed=true;},location:{replace:function(u){external(u);},assign:function(u){external(u);}}};try{Object.defineProperty(stub.location,'href',{get:function(){return s;},set:function(u){external(u);},configurable:true});}catch(e){}if(s&&s!=='about:blank'){external(s);}return stub;};" +
+  "var nameOf=function(url,fallback){try{var n=decodeURIComponent(String(url).split('?')[0].split('#')[0].split('/').pop()||'');return n||fallback;}catch(e){return fallback;}};" +
+  "var blank=function(a){if(!a||!a.getAttribute){return false;}var t=String(a.getAttribute('target')||'').toLowerCase();if(t!=='_blank'&&t!=='_new'){return false;}var u;try{u=new URL(a.href,document.baseURI);}catch(e){return false;}if(u.origin===location.origin){try{location.assign(u.href);}catch(e){}return true;}return external(u.href);};" +
+  "var b64=function(blob){return new Promise(function(resolve,reject){try{var r=new FileReader();r.onload=function(){var s=String(r.result||'');resolve(s.slice(s.indexOf(',')+1));};r.onerror=function(){reject(new Error('read'));};r.readAsDataURL(blob);}catch(e){reject(e);}});};" +
+  "var waits={};" +
+  "window.__dshSaveDone=function(id,path){var cb=waits[id];if(cb){delete waits[id];cb(String(path||''));}};" +
+  "var sendBlob=function(name,mime,data){return new Promise(function(resolve,reject){var go=function(left){if(!window.dshNative){if(left<=0){reject(new Error('bridge'));return;}setTimeout(function(){go(left-1);},100);return;}var total=Math.max(1,Math.ceil(data.length/CH));for(var i=0;i<total;i++){if(!window.dshNative.put(id,name,mime,total,i,data.slice(i*CH,(i+1)*CH))){reject(new Error('put'));return;}}var timer=setTimeout(function(){if(waits[id]){delete waits[id];resolve('');}},180000);waits[id]=function(p){clearTimeout(timer);resolve(p);};};var id='d'+Date.now().toString(36)+Math.random().toString(36).slice(2);go(20);});};" +
+  "var saveUrl=function(url,name){return fetch(String(url),{referrerPolicy:'no-referrer'}).then(function(r){if(!r.ok){throw new Error('fetch');}return r.blob();}).then(function(blob){return b64(blob).then(function(data){return sendBlob(String(name||nameOf(url,'download')),blob.type||'',data);});});};" +
+  "window.__dshSaveUrl=function(url,name){try{saveUrl(url,name).catch(function(){});}catch(e){}};" +
+  "var download=function(a){if(!a||!a.hasAttribute||!a.hasAttribute('download')){return false;}var href=a.href;if(!href){return false;}if(href.indexOf('blob:')!==0&&!/^https?:/i.test(href)){return false;}try{saveUrl(href,a.getAttribute('download')||nameOf(href,'download')).catch(function(){});}catch(e){}return true;};" +
+  "var proto=window.HTMLAnchorElement&&HTMLAnchorElement.prototype;" +
+  "if(proto&&proto.click){var orig=proto.click;proto.click=function(){if(download(this)){return;}if(blank(this)){return;}return orig.apply(this,arguments);};}" +
+  "document.addEventListener('click',function(e){try{var t=e.target;var a=t&&t.closest?t.closest('a[href]'):null;if(!a){return;}if(download(a)){e.preventDefault();e.stopPropagation();return;}if(blank(a)){e.preventDefault();e.stopPropagation();}}catch(err){}},true);" +
+  "}catch(e){}})();";
+
+// javaScriptProxy 的落点：页面分片送来的下载内容。ArkTS 侧只在分片齐了之后才弹
+// 系统保存框，写盘与回包都在 Index 里完成。
+class DownloadSink {
+  putImpl: (id: string, name: string, mime: string, total: number, seq: number, chunk: string) => boolean =
+    () => false;
+  put(id: string, name: string, mime: string, total: number, seq: number, chunk: string): boolean {
+    return this.putImpl(id, name, mime, total, seq, chunk);
+  }
+}
+
+interface DownloadJob {
+  name: string;
+  mime: string;
+  total: number;
+  got: number;
+  parts: string[];
+  filled: boolean[];
+}
 
 // 界面就是官方 Web GUI：设备内跑 `dsh --profile web`，Web 组件加载它打印的
 // http://127.0.0.1:<port>。这里只保留启动/等待/失败三种状态，不再自绘会话界面。
@@ -59,6 +112,12 @@ struct Index {
   private guard?: PluginGuard;
   private keepAlive: BackgroundKeepAlive = new BackgroundKeepAlive();
   private context?: common.UIAbilityContext;
+  // 下载：页面通过 javaScriptProxy 分片送来的内容，齐了之后弹系统保存框。
+  private downloads: Map<string, DownloadJob> = new Map();
+  private downloadSink: DownloadSink = new DownloadSink();
+  // 最后一次成功采样页面状态的时刻。渲染进程被新窗口请求挂住时轮询会停，
+  // onBackPress 不能再拿残留的浮层状态把返回吞掉（白屏退不出去）。
+  private uiAliveAt: number = 0;
   private controller: webview.WebviewController = new webview.WebviewController();
   private barTimer: number = -1;
   private keepAliveTimer: number = -1;
@@ -76,6 +135,9 @@ struct Index {
 
   aboutToAppear(): void {
     try { this.context = this.getUIContext().getHostContext() as common.UIAbilityContext; } catch (error) { /* 取不到上下文时延后处理 */ }
+    this.downloadSink.putImpl = (id: string, name: string, mime: string, total: number, seq: number, chunk: string): boolean => {
+      return this.onDownloadChunk(id, name, mime, total, seq, chunk);
+    };
     this.followSystemBars();
     this.startUiWatch();
     this.boot();
@@ -104,6 +166,7 @@ struct Index {
       try {
         this.controller.runJavaScript(script).then((result: string) => {
           try {
+            this.uiAliveAt = Date.now();
             let text = String(result);
             if (text.startsWith('"')) { text = JSON.parse(text) as string; }
             const state = JSON.parse(text) as Record<string, boolean>;
@@ -179,12 +242,25 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    // 按浮层优先级逐层关闭：菜单 → 对话框（设置）→ 右侧栏/终端 → 左侧抽屉 →
-    // Web 历史；都没有时交回系统（退到后台/退出）。
-    if (this.webMenu) { this.closeMenu(); return true; }
-    if (this.webDialog) { this.pressEscape(); return true; }
-    if (this.termVisible || this.webRight) { this.collapseRightSidebar(); return true; }
-    if (this.webNav) { this.clickSidebarToggle(); return true; }
+    // 页面若已经跑到站外（onLoadIntercept 的兜底没拦住），先把本地界面拉回来，
+    // 不给用户留一个退不出去的白页。
+    try {
+      const current = this.controller.getUrl();
+      if (current !== '' && this.url !== '' && !this.isLocalUrl(current)) {
+        this.controller.loadUrl(this.url);
+        return true;
+      }
+    } catch (error) { /* 控制器未就绪时按默认处理 */ }
+    // 渲染进程被新窗口请求挂住时轮询会停（uiAliveAt 不再更新）：这时残留的浮层
+    // 状态不可信，直接交给 Web 历史/系统，否则返回会被 pressEscape 一直吃掉。
+    const alive = Date.now() - this.uiAliveAt < 2500;
+    if (alive) {
+      // 按浮层优先级逐层关闭：菜单 → 对话框（设置）→ 右侧栏/终端 → 左侧抽屉。
+      if (this.webMenu) { this.closeMenu(); return true; }
+      if (this.webDialog) { this.pressEscape(); return true; }
+      if (this.termVisible || this.webRight) { this.collapseRightSidebar(); return true; }
+      if (this.webNav) { this.clickSidebarToggle(); return true; }
+    }
     try {
       if (this.controller.accessBackward()) {
         this.controller.backward();
@@ -282,26 +358,97 @@ struct Index {
     return '';
   }
 
-  // 页面里的 window.open 在 ArkWeb 里会走「新窗口」通道：没有 onWindowNew 处理器时
-  // 渲染进程会被阻塞，表现就是点登录后整页黑屏。这里不给页面开新窗口的能力，并
-  // 接管 window.open，把外部链接交给系统浏览器。
+  // window.open / <a target="_blank"> 在 ArkWeb 里都走「新窗口」通道：没有处理器时
+  // 渲染进程会被挂住（白屏）。文档开始时已经注入 BRIDGE_DOCUMENT_SCRIPT，这里在
+  // 页面加载完再补一次，覆盖文档起点注入失败（例如页面被替换）的情况。
   private installPopupBridge(): void {
-    const script =
-      "(function(){if(window.__dshPopupBridge){return;}window.__dshPopupBridge=true;" +
-      "var send=function(u){try{console.log('DSH_TERM:'+JSON.stringify({op:'openExternal',url:String(u)}));}catch(e){}};" +
-      "window.open=function(url){" +
-      "var stub={closed:false,opener:null,focus:function(){},close:function(){stub.closed=true;}," +
-      "location:{replace:function(u){send(u);},assign:function(u){send(u);}}};" +
-      "try{Object.defineProperty(stub.location,'href',{get:function(){return url;},set:function(u){send(u);},configurable:true});}catch(e){}" +
-      "if(url&&url!=='about:blank'){send(url);}" +
-      "return stub;};})()";
-    try { this.controller.runJavaScript(script).catch(() => {}); } catch (error) { /* Web 未挂载 */ }
+    try { this.controller.runJavaScript(BRIDGE_DOCUMENT_SCRIPT).catch(() => {}); } catch (error) { /* Web 未挂载 */ }
   }
   private openExternal(url: string): void {
     if (!/^https?:\/\//i.test(url)) { return; }
     const context = this.context;
     if (!context) { return; }
     try { context.openLink(url).catch(() => {}); } catch (error) { /* 没有可用浏览器 */ }
+  }
+  // 当前 Web 服务的 origin（http://127.0.0.1:<port>）。页面自己发起的站内请求
+  // 必须放行，其余主框架导航一律交给系统浏览器，避免 Web 组件跑出本地界面。
+  private localOrigin(): string {
+    const u = this.url;
+    const scheme = u.indexOf('://');
+    if (scheme < 0) { return ''; }
+    const slash = u.indexOf('/', scheme + 3);
+    return slash < 0 ? u : u.slice(0, slash);
+  }
+  private isLocalUrl(url: string): boolean {
+    const origin = this.localOrigin();
+    if (origin === '') { return true; }
+    return url === origin || url.startsWith(origin + '/');
+  }
+  // 文件名只保留最后一段并去掉文件系统非法字符：系统保存框的 newFileNames 不接受路径。
+  private safeFileName(name: string): string {
+    let base = name;
+    const slash = base.lastIndexOf('/');
+    if (slash >= 0) { base = base.slice(slash + 1); }
+    base = base.replace(/[\\/:*?"<>|]/g, '_').trim();
+    if (base === '' || base === '.' || base === '..') { base = 'download'; }
+    return base;
+  }
+  private nameFromUrl(url: string): string {
+    try {
+      const clean = url.split('#')[0].split('?')[0];
+      const base = decodeURIComponent(clean.slice(clean.lastIndexOf('/') + 1));
+      return base === '' ? 'download' : base;
+    } catch (error) { return 'download'; }
+  }
+  // javaScriptProxy：页面把下载内容分片送过来。分片齐了才弹保存框，避免用户
+  // 选完位置还要等数据；写盘结束后用 __dshSaveDone 把路径回给页面的 Promise。
+  onDownloadChunk(id: string, name: string, mime: string, total: number, seq: number, chunk: string): boolean {
+    if (id === '' || total <= 0 || total > 4096 || seq < 0 || seq >= total) { return false; }
+    let job = this.downloads.get(id);
+    if (job === undefined) {
+      const parts: string[] = [];
+      const filled: boolean[] = [];
+      for (let i = 0; i < total; i++) { parts.push(''); filled.push(false); }
+      const created: DownloadJob = { name: name, mime: mime, total: total, got: 0, parts: parts, filled: filled };
+      this.downloads.set(id, created);
+      job = created;
+    }
+    if (job.total !== total) { return false; }
+    if (!job.filled[seq]) { job.filled[seq] = true; job.got += 1; }
+    job.parts[seq] = chunk;
+    if (job.got >= job.total) {
+      this.downloads.delete(id);
+      const done = job;
+      this.saveDownload(id, done).catch(() => { this.replyDownload(id, ''); });
+    }
+    return true;
+  }
+  private async saveDownload(id: string, job: DownloadJob): Promise<void> {
+    const context = this.context;
+    if (context === undefined) { this.replyDownload(id, ''); return; }
+    const bytes = new util.Base64Helper().decodeSync(job.parts.join(''));
+    const buffer = new ArrayBuffer(bytes.length);
+    new Uint8Array(buffer).set(bytes);
+    const viewPicker = new picker.DocumentViewPicker(context);
+    const selected = await viewPicker.save({ newFileNames: [this.safeFileName(job.name)] });
+    if (selected.length === 0) { this.replyDownload(id, ''); return; }
+    const file = fs.openSync(selected[0], fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      let offset = 0;
+      while (offset < buffer.byteLength) {
+        const written = fs.writeSync(file.fd, buffer.slice(offset));
+        if (written <= 0) { throw new Error('文件写入未完成'); }
+        offset += written;
+      }
+      fs.fsyncSync(file.fd);
+    } finally { fs.closeSync(file); }
+    this.replyDownload(id, selected[0]);
+  }
+  private replyDownload(id: string, path: string): void {
+    try {
+      this.controller.runJavaScript('window.__dshSaveDone(' + JSON.stringify(id) + ',' + JSON.stringify(path) + ')')
+        .catch(() => {});
+    } catch (error) { /* Web 未挂载 */ }
   }
   // 页面 → 壳层：DSH 客户端插件把终端 tab 的 open/bounds/visible/close 以
   // `console.log('DSH_TERM:' + json)` 发过来，没有 JS 代理也能用。
@@ -571,12 +718,23 @@ struct Index {
     Stack({ alignContent: Alignment.Center }) {
       if (this.url !== '') {
         Web({ src: this.url, controller: this.controller })
-          // 不开应用内新窗口：window.open 一律由 installPopupBridge 接管并转给系统浏览器，
-          // 否则 ArkWeb 会因为缺少 onWindowNew 处理而阻塞渲染进程（黑屏）。
+          // 不开应用内新窗口：window.open 和 <a target="_blank"> 都由文档起点注入的
+          // BRIDGE_DOCUMENT_SCRIPT 拦下并转给系统浏览器，内核不会拿到新窗口请求。
           .multiWindowAccess(false)
           .javaScriptAccess(true)
-          // 必须在页面脚本之前装好附件上传钩子，否则 FileUploadRuntime 已经选了 Worker 通道。
-          .javaScriptOnDocumentStart([{ script: UPLOAD_DOCUMENT_SCRIPT, scriptRules: ['*'] }])
+          // 下载走 javaScriptProxy：页面把分片交给 Index，落盘后再回路径。
+          .javaScriptProxy({
+            object: this.downloadSink,
+            name: 'dshNative',
+            methodList: ['put'],
+            controller: this.controller
+          })
+          // 必须在页面脚本之前装好附件上传钩子与外链/下载桥，否则 FileUploadRuntime
+          // 已经选了 Worker 通道，而桌面外壳的扩展点也已经按「不存在」处理过了。
+          .javaScriptOnDocumentStart([
+            { script: UPLOAD_DOCUMENT_SCRIPT, scriptRules: ['*'] },
+            { script: BRIDGE_DOCUMENT_SCRIPT, scriptRules: ['*'] }
+          ])
           .domStorageAccess(true)
           .databaseAccess(true)
           .fileAccess(true)
@@ -609,6 +767,30 @@ struct Index {
               this.onTermBridge(event.message.getMessage());
             } catch (error) { /* 控制台消息不是桥消息 */ }
             return false;
+          })
+          // 主框架只允许留在本地 Web 服务：任何站外跳转都交给系统浏览器，
+          // 否则 Web 组件会显示一个加载不出来的白页（账号页的查询用量/充值
+          // 都是指向 platform.deepseek.com 的链接）。
+          .onLoadIntercept((event: OnLoadInterceptEvent) => {
+            try {
+              const request = event.data;
+              const url = request.getRequestUrl();
+              if (!request.isMainFrame()) { return false; }
+              if (url === '' || url === 'about:blank' || /^(blob|data|about|javascript):/i.test(url)) { return false; }
+              if (this.isLocalUrl(url)) { return false; }
+              this.openExternal(url);
+              return true;
+            } catch (error) { return false; }
+          })
+          // http(s) 下载不经内核落盘：交给页面侧的保存桥，由壳层弹系统保存框。
+          .onDownloadStart((event: OnDownloadStartEvent) => {
+            try {
+              if (!/^https?:/i.test(event.url)) { return; }
+              const name = this.nameFromUrl(event.url);
+              this.controller.runJavaScript(
+                'window.__dshSaveUrl(' + JSON.stringify(event.url) + ',' + JSON.stringify(name) + ')'
+              ).catch(() => {});
+            } catch (error) { /* Web 未挂载 */ }
           })
           .onErrorReceive((event: OnErrorReceiveEvent) => {
             if (event && event.error && event.error.getErrorInfo()) {

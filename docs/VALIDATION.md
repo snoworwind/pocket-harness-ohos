@@ -87,3 +87,13 @@
 | `node-pty` 在 IEC shell 内 `forkpty` 失败（P3） | 沙箱不允许 `fork`；tty shim 只能接管 pty fd/RPC | 未改代码，记为已知限制（见 `ARCHITECTURE.md`） | — |
 
 本轮构建在 WSL Ubuntu 上完成（OHOS clang 15 + sysroot），未连接真机、未推送远程。`gh`/`git-lfs` 的 `GOOS=openharmony` 产物只做了 ELF/符号层验证，业务链路仍需真机复测；`libpython.so` 需要在有 host python3.12 的构建机重编后才能随包升级。
+
+## 2026-11-17 第二次修复（账号页白屏 / 文件下载）
+
+| 问题 | 根因 | 修复 | 验证 |
+| --- | --- | --- | --- |
+| 下载 agent 交付的文件没有反应 | 官方 GUI 的「下载」把文件读成 `blob:` 后点 `<a download>`；ArkWeb 没有下载委托，blob 下载被静默丢弃 | 文档起点注入桥脚本接管 `<a download>`（含 `anchor.click()`）与 `onDownloadStart`，字节经 `javaScriptProxy` 分片（256 KiB）交给壳层，`DocumentViewPicker` 落盘 | 桥脚本在 Node + 假 DOM 下验证：blob 锚点被拦截、原点击被抑制、600 KiB 文件切成 4 片并原样重组；下载名取自 `download` 属性 |
+| DeepSeek 账号点「查询用量」白屏、退不出去 | 该链接是 `<a target="_blank">`；`multiWindowAccess(false)` 下没有新窗口处理器会挂住渲染进程，轮询停止后返回手势仍被残留的对话框状态吃掉 | 捕获阶段拦下所有 `target=_blank`：站外转系统浏览器、站内就地导航；`onLoadIntercept` 只放行本地 origin；`onBackPress` 在 2.5 s 没有页面采样时忽略残留浮层，并把跑出站外的页面拉回本地 | 桥脚本验证：`platform.deepseek.com` 触发 `openExternal`、站内 `_blank` 就地导航、普通链接不受影响；未在真机复测账号页 |
+| 不该伪造 `window.dshDesktop` | 引擎用 `"dshDesktop" in globalThis` 判断桌面版，会改变 onboarding / 转写视图 / 拖拽 / 分析等行为 | 改为只做 DOM 层拦截，不注入 `dshDesktop` | 桥脚本断言 `dshDesktop` 不存在 |
+
+本轮只改 ArkTS 与文档，未重建原生库、未连接真机、未推送远程。
