@@ -10,11 +10,11 @@
 | --- | --- |
 | 应用名 | Pocket Harness |
 | 包名 | `com.snoworwind.phoh` |
-| 版本 | `0.1.0.2`（versionCode 3） |
+| 版本 | `0.1.0.3`（versionCode 4） |
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
 | 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1、CPython 3.12.14（含 pip）、curl 8.22.0、jq 1.7.1、Dropbear SSH、less/Vim、SQLite 3.50.4、rsync 3.4.1、xz 5.8.1、zstd 1.5.7、gh、Git LFS |
-| 发布产物 | GitHub Release：未签名 HAP + arm64/x86_64 原生库（**本项目暂不打算上架华为应用市场**） |
+| 发布产物 | GitHub Release：未签名 HAP + arm64 原生库（0.1.0.3 起不再发布 x86_64 预编译包；**本项目暂不打算上架华为应用市场**） |
 
 > 本项目**暂不打算上架华为应用市场**，只通过 GitHub Release 分发未签名的 HAP 与预编译原生库；使用者需要自行用调试证书签名后安装。下文的应用包（`.app`）构建步骤仅作为将来可能上架时的参考保留。
 
@@ -138,7 +138,7 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 
 - **真机调试**需要 `com.snoworwind.phoh` 的 debug Profile（含设备 UDID），在 DevEco
   Project Structure → Signing Configs 里自动生成；
-- **GitHub Release** 只提供**未签名**的 HAP 与预编译原生库，使用者需自行签名；
+- **GitHub Release** 只提供**未签名**的 arm64 HAP 与 arm64 预编译原生库，使用者需自行签名；x86_64 从 0.1.0.3 起不再提供预编译包，按 `docs/X86_64-BUILD.md` 自行构建；
 - 本项目**不计划上架华为应用市场**；如果自行上架，才需要发布证书 + release Profile 签名的
   `.app`，并自行承担商店审核、备案、商标与 AI 服务合规等责任；
 - **release 签名的 HAP 不能 `hdc install`**（会报 `9568322 not trusted app source`），
