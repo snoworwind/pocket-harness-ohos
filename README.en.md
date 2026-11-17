@@ -27,6 +27,7 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 - **Native terminal**: a closable right-sidebar tab with PTY and job control (`Ctrl-Z`, `fg`, `bg`), libvterm rendering, IME-aware layout and orientation support. It starts in the current DSH session's working directory and follows session/workspace switches.
 - **Built-in Git**: `git` and `git-remote-http(s)` are cross-compiled from source into IEC shared libraries and use the app's CA bundle, so `clone`/`fetch`/`push` over HTTPS work without an external toolchain.
 - **Back gesture**: closes overlays in priority order — menu → settings dialog → right sidebar/terminal → left drawer → system. Collapsing the terminal keeps the process running; only the tab's × stops it.
+- **Attachments**: ArkWeb has no reliable blob-Worker upload path, so a document-start `fetch` hook sends uploads on the main thread; images are identified from file headers and passed through unchanged in an engine without sharp/WASM.
 - **Quote popover**: the "quote text" button is placed below the selection, clear of the system selection toolbar.
 - **Pinch zoom disabled**: the layout is viewport-based; zoom would break terminal/sidebar geometry.
 - **No JIT**: Node runs with `--jitless`, so undici's WASM-based fetch is unavailable; a pure-JS `fetch` polyfill is injected at runtime.
@@ -131,7 +132,7 @@ Output: `build/outputs/default/*.app`; the single HAP is at
 ## Tests
 
 ```bash
-node scripts/test.cjs                  # 28 host-side tests (session protocol, SSE, path sandbox, JSON-RPC)
+node scripts/test.cjs                  # 39 host-side tests (session protocol, SSE, path sandbox, upload hook, image patch)
 node scripts/test-fetch-polyfill.cjs   # 15 fetch-polyfill tests (JSON/SSE/redirect/FormData/abort)
 bash scripts/audit-sources.sh          # unpack the HAP, verify binaries and npm.tar.gz
 bash scripts/check-engine-web.sh       # web profile: 291 plugins, empty stderr
@@ -210,6 +211,28 @@ root CA of an HTTPS interception proxy used in some development environments and
 in this repository**; provide it yourself if needed. Public/store builds should leave it absent
 (Mozilla roots only) or replace it with your own enterprise root.
 
+### Attachments and images
+
+The browser-side attachment transport is "blob URL + Web Worker" (`workerTransport`), which is
+unreliable on ArkWeb: the worker script may not have fetched the blob URL before
+`revokeObjectURL` runs. The app injects a `fetch` hook (`globalThis.__DSH_FILE_UPLOAD__`) at
+document start; the client prefers it and uploads through same-origin `fetch` on the main thread
+(cookies still apply). If the kernel rejects a Blob body, the hook retries once with an ArrayBuffer.
+
+Images have a second problem: the shipped engine intentionally contains no native binaries,
+`dsh-attachment-local` calls `requireSharp()` on every image path, and the WASM fallback cannot
+run under `--jitless`. `scripts/pack-native.sh` therefore appends a pure-JS fallback
+(`scripts/engine-patch/`) to `dsh-attachment-local/lib/index.js`: PNG/JPEG/WebP/GIF are identified
+from their headers and pass through byte-identically once admission limits are met. The tradeoff
+is no EXIF rotation, no 2048² downscaling and no 8-bit sRGB normalization; only admission limits
+such as `maxImageBytes` bound very large sources.
+
+A second, HarmonyOS-only failure happens while persisting: the attachment package fsyncs every
+ancestor from `DSH_HOME` up to the filesystem root, but the app sandbox cannot
+`open('/data/storage/el2')`, so every attachment fails with `EACCES` before any byte is written.
+The fallback stops the upward fsync at `EACCES`/`EPERM` while still syncing every level below the
+sandbox boundary.
+
 ## Known limitations
 
 - First launch unpacks a 47 MB engine archive (~27k files), about 1–2 minutes on a phone.
@@ -218,6 +241,9 @@ in this repository**; provide it yourself if needed. Public/store builds should 
 - `dsh web` binds `127.0.0.1` only; the UI is reachable only from the in-app Web component.
 - The engine's process sandboxing (bwrap / Landlock) is generally unavailable on HarmonyOS;
   capability limits come from permission presets and tool switches.
+- Image attachments use the pure-JS fallback: header validation plus byte pass-through, no
+  re-encoding. EXIF orientation, large-image downscaling and 16-bit/CMYK normalization are no
+  longer performed by the engine.
 - `fork` is not intercepted; the terminal PTY relies on `forkpty` compatibility.
 - Not included: Python, MCP, voice, plugin marketplace, persistent background execution.
 

@@ -134,6 +134,8 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 
 - **启动性能**：`node-addon-native-custom-loader` 在 OHOS 上无法从 ELF interpreter / `/proc/self/maps` 识别 libc，会退回 `process.report.getReport()` 判断 musl/glibc。该报告枚举 CPU/网络，真机上阻塞 Node 事件循环约 32 秒，连带把 `/api/session/create` 和 account 请求拖到同一时刻返回。`harmony/runtime-preload.cjs` 通过 `NODE_OPTIONS` 预加载，只对**无参** `getReport()` 返回最小报告（`header` 为空即按 musl），带 options 的调用仍走 Node 原实现；`DSH_LITE_REPORT=0` 可关闭。真机 CPU profile 确认该调用从 32 秒降到毫秒级，冷启动到可用从约 50–55 秒降到约 11–15 秒。
 - **fetch**：鸿蒙上 Node 以 `--jitless` 运行，V8 不暴露 WebAssembly，undici 的 fetch 不可用。运行时把纯 JS 的 `harmony/fetch-polyfill.cjs` 通过 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，覆盖 JSON、SSE、重定向、压缩、AbortSignal、FormData/Blob 等语义。
+- **附件上传**：`dsh-client-file-upload` 默认用 blob URL 建 Worker 上传，ArkWeb 上不可靠。`Index.ets` 通过 `javaScriptOnDocumentStart` 注入 `globalThis.__DSH_FILE_UPLOAD__ = { fetch }`，客户端启动时优先使用，把上传退回主线程同源 `fetch`；Blob 请求体被拒时退成 ArrayBuffer 重试一次。
+- **图片附件**：随包引擎没有 sharp 原生模块，`--jitless` 也没有 WASM 兜底。`scripts/pack-native.sh` 在解包后的引擎树上给 `@deepseek-ai/dsh-attachment-local/lib/index.js` 追加 `scripts/engine-patch/attachment-pure-js.epilogue.js`：`probeImage`/`detectImage` 改成 PNG/JPEG/WebP/GIF 文件头解析，`normalizeImage`/`createRequestImage` 原字节透传；并把 `ensureDurableDirectory` 改成在沙箱边界的 `EACCES`/`EPERM` 停止向上 fsync（`/data/storage/el2` 不可读）。补丁按函数名覆盖，升级引擎时名字不匹配会直接让打包失败。
 - **TLS**：启动时把 `certs/cacert.pem`（Mozilla 根证书）与可选的 `rawfile/harmony/extra-ca.pem` 合并成 `certs/bundle.pem`，`SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` 指向它；不做任何运行时放宽。附加 CA 不随仓库分发，仅供会拦截 HTTPS 的开发环境使用。
 - **缩放**：`Web` 组件设置 `zoomAccess(false)`，避免双指缩放破坏终端与侧栏的几何计算。
 

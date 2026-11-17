@@ -24,6 +24,7 @@
 - **原生终端**：右侧栏可关闭 tab，PTY + 作业控制（`Ctrl-Z`/`fg`/`bg`）、libvterm 绘制、软键盘防遮挡、横竖屏自适应；终端默认进入当前 DSH 会话的工作目录，切换会话/工作区时自动跟随。
 - **内置 Git**：`git` 及 `git-remote-http(s)` 由源码交叉编译成 IEC 共享库，直接使用应用内的 CA bundle，可执行 `clone`/`fetch`/`push` 等 HTTPS 操作。
 - **返回手势**：按浮层优先级逐层关闭——菜单 → 设置 → 右侧栏/终端 → 左侧抽屉 → 系统；终端收起时进程继续运行，只有 tab 的 × 才停止。
+- **附件上传**：ArkWeb 没有可靠的 blob Worker 上传通道，改在文档开始时注入 `fetch` 钩子走主线程；图片附件在没有 sharp / WASM 的引擎里按文件头识别、原字节透传。
 - **选区引用**：选中文本时「引用文本」浮层显示在选区下方，避开系统选区工具条。
 - **禁用双指缩放**：界面按视口宽度布局，避免缩放把终端/侧栏几何算乱。
 - **无 JIT 的 fetch**：Node 以 `--jitless` 运行，undici 的 WASM 不可用，运行时注入纯 JS 的 `fetch` 补丁。
@@ -125,7 +126,7 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 ## 测试与校验
 
 ```bash
-node scripts/test.cjs                  # 宿主侧 28 项（会话协议、SSE、路径沙箱、JSON-RPC）
+node scripts/test.cjs                  # 宿主侧 39 项（会话协议、SSE、路径沙箱、附件上传钩子与图片补丁）
 node scripts/test-fetch-polyfill.cjs   # fetch 补丁 15 项（JSON/SSE/重定向/FormData/abort…）
 bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合与 npm.tar.gz
 bash scripts/check-engine-web.sh       # web profile 291 个插件，stderr 为空
@@ -201,6 +202,25 @@ TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可�
 杀毒/代理，**不随仓库分发**；需要时自行放入，公开/商店构建请保持缺省（只信 Mozilla 根证书），
 或替换成自己的企业根证书。
 
+### 附件上传与图片
+
+附件的浏览器端默认传输实现是「blob URL + Web Worker」(`workerTransport`)，而 ArkWeb
+对这条链路不可靠：Worker 脚本还没取到 blob URL 就已被 `revokeObjectURL`。应用在
+`javaScriptOnDocumentStart` 注入一个 `fetch` 钩子（`globalThis.__DSH_FILE_UPLOAD__`），
+客户端启动时会优先用它，把上传退回主线程的同源 `fetch`（cookie 照常携带）；个别内核
+拒绝 Blob 请求体时自动退成 ArrayBuffer 重发一次。
+
+图片还多一层问题：随包引擎按设计不含原生二进制，`dsh-attachment-local` 每一步都
+`requireSharp()`，而 `--jitless` 下 WASM 兜底也不可用。`scripts/pack-native.sh` 会在
+打包时给 `dsh-attachment-local/lib/index.js` 追加纯 JS 降级补丁
+（`scripts/engine-patch/`）：PNG/JPEG/WebP/GIF 只解析文件头，满足入场限制后原字节透传。
+代价是不再做 EXIF 旋转、2048² 降采样和 8-bit sRGB 归一化；超大图只由 `maxImageBytes`
+等入场限制把关。
+
+另一个只在鸿蒙上出现的问题是落盘：附件包会从 `DSH_HOME` 一路 fsync 到文件系统根来证明
+目录项已持久化，而应用沙箱不允许 `open('/data/storage/el2')`，于是任何附件都会在写文件前
+报 `EACCES`。补丁在遇到沙箱边界的 `EACCES`/`EPERM` 时停止向上 fsync，边界以下仍逐级同步。
+
 ## 已知边界
 
 - 首次启动要解包 47 MB 的引擎归档（约 2.7 万个文件），真机上一到两分钟；
@@ -208,6 +228,8 @@ TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可�
 - `dsh web` 只绑 `127.0.0.1`，界面只在本机 Web 组件里可达，不要改成对外监听；
 - 引擎自带的进程级沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，能力边界靠 permission
   preset 与工具开关；
+- 图片附件走纯 JS 降级：只做文件头校验与原字节透传，不重编码；EXIF 方向、超大图降采样
+  和 16-bit/CMYK 归一化都不再由引擎处理；
 - `fork` 未被拦截，由设备决定；终端 PTY 依赖 `forkpty` 的兼容实现；
 - 未包含：Python、MCP、语音、插件市场、后台常驻执行。
 

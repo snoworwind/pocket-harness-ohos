@@ -24,9 +24,11 @@
 | 双指缩放 | 真机 | 已禁用 |
 | fetch 补丁 | 真机终端 | JSON、gzip、FormData multipart、SSE、AbortError、外部 HTTPS 均通过 |
 | 引擎插件表 | `bash scripts/check-engine-web.sh` | web profile 291 个插件，stderr 为空 |
+| 引擎附件补丁 | `bash scripts/check-engine-archive.sh` | `attachment pure-JS fallback` 已写入归档；归档内 `dsh-attachment-local` 按文件头识别 PNG/JPEG/WebP/GIF 并原字节透传 |
+| 真机附件上传 | 覆盖安装后经 ArkWeb 页面与 UI 文件输入实测 | pdf 与 png 上传均返回 `ok:true`；图片附件卡进入 ready 状态（不是 `upload.status === "error"`），移除按钮可用 |
 | 运行时清单自动化 | `node scripts/runtime-manifest.mjs sync/check` | 按实际字节计算；重复 sync 结果不变；篡改 version 后 check 退出 1；构建出的 HAP 内清单为新版本 |
 | 本次启动/清单改动编译 | `hvigor assembleHap` | `CompileArkTS`、`PackageHap` 通过；本机 `SignHap` 仅因未挂载签名 U 盘失败 |
-| 宿主机测试 | `node scripts/test.cjs` | 28 项通过 |
+| 宿主机测试 | `node scripts/test.cjs` | 39 项通过（含附件上传钩子、图片补丁与沙箱边界持久化的行为验证） |
 | fetch 回归 | `node scripts/test-fetch-polyfill.cjs` | 15 项通过 |
 
 ## 未验收
@@ -37,6 +39,7 @@
 - 应用市场实际审核与上架；
 - 后台保活：授权模糊定位后切后台/锁屏，引擎是否持续运行、通知栏行为与持续时间；
 - 模型调用工具（`bash`/`rg`/文件工具）、工作区目录选择、文件上传、审批面板的完整链路；
+- 附件消息回看与重启持久化：真机已验证上传与附件卡 ready，但尚未发送消息让模型读取，也未验证重启后历史附件仍可回看；
 - 登录 / API Key 配置后的真实对话，以及各类网络环境下内置 CA 是否覆盖实际证书链；
 - JIT-less V8 的长任务性能与内存占用。
 

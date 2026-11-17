@@ -10,6 +10,23 @@ import { PluginGuard } from '../platform/PluginGuard';
 // 页面里的终端入口把 location.hash 改成 #dshterm，原生轮询 controller.getUrl() 读取，
 // 不依赖 javascriptProxy 注册，避免桥上偶发失效。
 
+// 附件上传的默认通道是 blob: Worker（dsh-client-file-upload 的 workerTransport），
+// ArkWeb 对「blob URL 建 Worker + 立刻 revokeObjectURL」这条链路不可靠，表现为
+// 任何附件都停在上传失败。客户端 FileUploadRuntime 构造时会读 globalThis.__DSH_FILE_UPLOAD__，
+// 存在就改用它的 fetch 钩子；这里在文档开始时注入，保证早于客户端 Cordis 启动。
+// fetch 是同源请求，cookie 由内核自动携带；个别内核拒绝 Blob 请求体时退成 ArrayBuffer 重发一次。
+const UPLOAD_DOCUMENT_SCRIPT: string =
+  "(function(){try{" +
+  "var post=function(input,init){" +
+  "if(!init||typeof Blob!=='function'||!(init.body instanceof Blob)){return fetch(input,init);}" +
+  "return fetch(input,init).catch(function(error){" +
+  "if(init.signal&&init.signal.aborted){throw error;}" +
+  "return init.body.arrayBuffer().then(function(buffer){" +
+  "var retry={};for(var key in init){if(key!=='body'&&key!=='duplex'){retry[key]=init[key];}}" +
+  "retry.body=buffer;return fetch(input,retry);});});};" +
+  "window.__DSH_FILE_UPLOAD__={fetch:post};" +
+  "}catch(e){}})();";
+
 // 界面就是官方 Web GUI：设备内跑 `dsh --profile web`，Web 组件加载它打印的
 // http://127.0.0.1:<port>。这里只保留启动/等待/失败三种状态，不再自绘会话界面。
 @Entry
@@ -558,6 +575,8 @@ struct Index {
           // 否则 ArkWeb 会因为缺少 onWindowNew 处理而阻塞渲染进程（黑屏）。
           .multiWindowAccess(false)
           .javaScriptAccess(true)
+          // 必须在页面脚本之前装好附件上传钩子，否则 FileUploadRuntime 已经选了 Worker 通道。
+          .javaScriptOnDocumentStart([{ script: UPLOAD_DOCUMENT_SCRIPT, scriptRules: ['*'] }])
           .domStorageAccess(true)
           .databaseAccess(true)
           .fileAccess(true)

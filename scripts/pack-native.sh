@@ -135,6 +135,14 @@ EOF
     cp -f "$PROJECT/plugins/harmony-compat/cordis.patch.yml" "$WORK/engine/harmony/harmony-compat.patch.yml"
     note "鸿蒙适配插件已打包"
   fi
+  # 图片附件：随包引擎不含 sharp 原生模块，ArkWeb 侧也没有 WASM 兜底，给
+  # attachment-local 追加纯 JS 头解析 + 原字节透传（issue #1 方案 B）。
+  # 补丁在解包后的暂存树上原地追加，不改上游 node_modules，也不改 ship 清单。
+  ATTACHMENT_INDEX="$WORK/engine/node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js"
+  [ -f "$ATTACHMENT_INDEX" ] || fail "引擎里找不到 @deepseek-ai/dsh-attachment-local/lib/index.js"
+  node "$PROJECT/scripts/engine-patch/attachment-pure-js.mjs" "$ATTACHMENT_INDEX" \
+    || fail "附件图片纯 JS 降级补丁应用失败"
+  note "附件图片降级补丁已应用"
 
   printf '{"name":"deepseek-harmony-engine","private":true,"version":"%s"}\n' "$ENGINE_VERSION" \
     > "$WORK/engine/package.json"
