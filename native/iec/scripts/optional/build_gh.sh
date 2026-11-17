@@ -20,6 +20,10 @@ SRC="${GH_SRC:-$IEC_ROOT/thirdparty/gh}"
 # gh 的 go.mod 会随上游升到新 Go；OpenHarmony 工具链基于 go1.26.5，所以固定到
 # 最后一个要求 go <= 1.26 的 tag。换 tag 前先确认 `git show <tag>:go.mod`。
 GH_REF="${GH_REF:-v2.100.0}"
+# `gh --version` reads internal/build.Version, which defaults to "DEV" and cannot be
+# recovered from build info in a c-shared build. Stamp the tag we actually built.
+GH_VERSION="${GH_VERSION:-$GH_REF}"
+GH_BUILD_DATE="${GH_BUILD_DATE:-$(date -u +%Y-%m-%d)}"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
 OUT="$OUT_DIR/libghcmd.so"
 WRAP="$SRC/cmd/ghohos"
@@ -37,6 +41,41 @@ command -v "$GO_TOOLCHAIN" >/dev/null 2>&1 || iec_err "Go toolchain not found: $
 "$GO_TOOLCHAIN" tool dist list 2>/dev/null | grep -qx "$GO_OS/arm64" \
 	|| iec_err "Go toolchain $("$GO_TOOLCHAIN" version) has no $GO_OS/arm64 target. Run scripts/optional/fetch_go_ohos.sh and set GO_TOOLCHAIN=<repo>/build/go-ohos/bin/go"
 iec_clone_if_missing "$SRC" "https://github.com/cli/cli.git" "$GH_REF"
+
+# ── HarmonyOS: start IEC command objects without execve ────────────────────
+# The sandbox denies execve() of ELF files in every path the app can see, and
+# the runtime launchers are #IECSOv2 text files only the IEC exec service can
+# start. gh's git commands all go through internal/run.PrepareCmd, so that
+# package is pointed at internal/ghohos: a C child (forked in cgo) asks the exec
+# service for the command, becomes its stand-in, and Go waits normally.
+# See scripts/optional/gh-ohos/bridge.go and tools/iec_fork_exec.c.
+GH_OHOS="$IEC_ROOT/scripts/optional/gh-ohos"
+[ -d "$GH_OHOS" ] || iec_err "missing gh patches: $GH_OHOS"
+mkdir -p "$SRC/internal/ghohos"
+cp -f "$GH_OHOS/bridge.go" "$SRC/internal/ghohos/bridge.go"
+cp -f "$IEC_ROOT/tools/iec_fork_exec.c" "$SRC/internal/ghohos/iec_fork_exec.c"
+cp -f "$IEC_ROOT/exec/shim.c" "$SRC/internal/ghohos/iec_exec_shim.c"
+cp -f "$IEC_ROOT/common/rpc.c" "$SRC/internal/ghohos/iec_rpc.c"
+cp -f "$IEC_ROOT/common/sock_client.c" "$SRC/internal/ghohos/iec_sock_client.c"
+
+"${HOST_PY:-python3}" - "$SRC/internal/run/run.go" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+if 'internal/ghohos' in text:
+    raise SystemExit(0)
+
+text = text.replace(
+    '\t"github.com/cli/cli/v2/utils"\n',
+    '\t"github.com/cli/cli/v2/internal/ghohos"\n\t"github.com/cli/cli/v2/utils"\n', 1)
+text = text.replace("out, err := c.Cmd.Output()", "out, err := ghohos.Output(c.Cmd)", 1)
+text = text.replace("return c.Cmd.Run()", "return ghohos.Run(c.Cmd)", 1)
+text = text.replace("err := c.Cmd.Run()", "err := ghohos.Run(c.Cmd)", 1)
+if 'ghohos.Output' not in text or 'ghohos.Run' not in text:
+    raise SystemExit("cannot patch internal/run/run.go")
+open(path, "w", encoding="utf-8").write(text)
+PY
 
 mkdir -p "$WRAP" "$OUT_DIR"
 cat > "$WRAP/main.go" <<'GO'
@@ -71,8 +110,12 @@ GO
 ( cd "$SRC" && \
 	GOOS="$GO_OS" GOARCH=arm64 CGO_ENABLED=1 GOTOOLCHAIN=local \
 	CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
+	CGO_CFLAGS="-I$IEC_ROOT -I$IEC_ROOT/common -DINT_PRELOAD -D_GNU_SOURCE" \
 	"$GO_TOOLCHAIN" build -buildvcs=false -buildmode=c-shared -trimpath \
-		-ldflags='-s -w' -o "$OUT" ./cmd/ghohos ) \
+		-ldflags="-s -w \
+			-X github.com/cli/cli/v2/internal/build.Version=$GH_VERSION \
+			-X github.com/cli/cli/v2/internal/build.Date=$GH_BUILD_DATE" \
+		-o "$OUT" ./cmd/ghohos ) \
 	|| iec_err "gh Go build failed"
 
 "$CLANG_DIR/llvm-nm" -D --defined-only "$OUT" | grep ' iec_gh_main$' >/dev/null \

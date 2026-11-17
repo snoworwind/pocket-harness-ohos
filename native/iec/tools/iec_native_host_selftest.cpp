@@ -32,6 +32,7 @@
 #include "exec/exec_ncp_refusal.h"
 #include "exec/exec_route.h"
 #include "exec/exec_session.h"
+#include "exec/exec_so.h"
 
 namespace {
 
@@ -148,6 +149,72 @@ void TestResolveKind(const std::string& dir) {
     // 不存在的路径不能意外落到某个路线。
     Check(ResolveKind(dir + "/no-such-file") == LaunchKind::kUnexecutable,
           "不存在的路径判为 kUnexecutable");
+}
+
+/* ------------------------------------------------------------------ */
+/* 1b. 启动器的两种“活法”：sidecar 与符号链接                          */
+/* ------------------------------------------------------------------ */
+
+// 一个命令可以同时是「真 ELF」（Go 的 os/exec 直接 execve 能跑）和「.so 启动器」
+// （服务端照旧走 kSo）。后者放在 <path>.iecso，路由与解析都必须认它。
+void TestSidecarLauncher(const std::string& dir) {
+    const std::string stub = dir + "/git-stub";
+    const std::string sidecar = stub + ".iecso";
+
+    Check(WriteFile(stub, ElfHeaderBytes()), "构造带 sidecar 的 ELF");
+    Check(WriteFile(sidecar, "#IECSOv2\n/tmp/libgit.so\niec_git_main\n2\n2\n"),
+          "构造 sidecar 启动器");
+
+    setCaps(kCapsWithFork);
+    Check(ResolveKind(stub) == LaunchKind::kSo,
+          "普通 ELF 旁边有 .iecso 时判为 kSo（正常路由仍走 .so）");
+
+    SoLauncher launcher;
+    std::string err;
+    const bool ok = ResolveSoLauncher(stub, launcher, &err);
+    Check(ok && launcher.so == "/tmp/libgit.so" && launcher.entry == "iec_git_main" &&
+              launcher.arity == 2 && launcher.primary == PrimaryLaunchKind::kNcp,
+          "ResolveSoLauncher 从 sidecar 读出目标 .so 与入口" + (ok ? "" : (": " + err)));
+
+    // 没有 sidecar 的 ELF 不能被误判。
+    Check(ResolveKind(dir + "/plain-elf") == LaunchKind::kExec,
+          "没有 sidecar 的普通 ELF 仍是 kExec");
+
+    // sidecar 存在但内容坏了：必须拒绝，而不是把 ELF 桩再执行一遍（那会形成
+    // 「桩 → 服务 → 桩」的循环）。
+    const std::string broken = dir + "/broken-stub";
+    Check(WriteFile(broken, ElfHeaderBytes()), "构造 sidecar 损坏的 ELF");
+    Check(WriteFile(broken + ".iecso", "not a launcher\n"), "构造损坏的 sidecar");
+    Check(ResolveKind(broken) == LaunchKind::kUnexecutable,
+          "sidecar 存在但格式错误时拒绝该 ELF（防启动器循环）");
+}
+
+// 符号链接有两种：内核能跟随的真实链接，和 fs shim 在沙箱里写的
+// `<name>.IEC_SYMLINK` 标记文件。后者对内核不可见，必须由服务端解析。
+void TestSymlinkLauncher(const std::string& dir) {
+    const std::string target = dir + "/ls-launcher";
+    const std::string marker_link = dir + "/myls";
+    const std::string real_link = dir + "/real-myls";
+
+    Check(WriteFile(target, "#IECSOv2\n/tmp/libtoybox.so\nbsh_toybox_main\n2\n2\n"),
+          "构造符号链接的目标启动器");
+    Check(WriteFile(marker_link + ".IEC_SYMLINK", "ls-launcher"),
+          "构造 .IEC_SYMLINK 标记文件");
+    Check(symlink("ls-launcher", real_link.c_str()) == 0, "构造真实符号链接");
+
+    setCaps(kCapsWithFork);
+
+    const std::string marked = ResolveLaunchPath(marker_link, "");
+    Check(marked == target, "ResolveLaunchPath 解析 .IEC_SYMLINK 标记（得到 " + marked + "）");
+    Check(ResolveKind(marked) == LaunchKind::kSo,
+          "经由标记链接找到的启动器判为 kSo");
+
+    const std::string real = ResolveLaunchPath(real_link, "");
+    Check(real == target, "ResolveLaunchPath 跟随真实符号链接（得到 " + real + "）");
+
+    Check(ResolveLaunchPath(target, "") == target, "普通文件路径原样返回");
+    Check(ResolveLaunchPath("/proc/self/exe", "") == "/proc/self/exe",
+          "/proc 路径不跟随（magic link）");
 }
 
 /* ------------------------------------------------------------------ */
@@ -337,6 +404,8 @@ int main(int argc, char** argv) {
     }
 
     TestResolveKind(dir);
+    TestSidecarLauncher(dir);
+    TestSymlinkLauncher(dir);
     TestNcpRefusal();
 
     // cwd 校验必须经过真实服务：请求解析和拒绝都在 onExecute() 里。

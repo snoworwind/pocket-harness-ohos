@@ -28,11 +28,13 @@
 
 #define IEC_SO_MAGIC "#IECSOv2"
 
-// The first line of a launcher, on its own. Deliberately not the full check: this asks
-// whether a path claims to be a launcher, and a file that claims to be one and then
-// does not parse should be answered as such (see ResolveSoLauncher) rather than
-// quietly handed to execve, which in the case this exists for does not work at all.
-bool IsSoLauncher(const std::string& path) {
+// A launcher can also sit next to the file it starts. That is what lets one command be
+// a real ELF executable -- so a Go program's own fork/execve can run it -- while the
+// server keeps starting it through the .so it names. The sidecar uses the same five
+// lines and this suffix.
+#define IEC_SO_SIDECAR ".iecso"
+
+bool HasMagic(const std::string& path) {
     char magic[sizeof IEC_SO_MAGIC - 1];
     struct stat st;
     ssize_t n;
@@ -49,7 +51,20 @@ bool IsSoLauncher(const std::string& path) {
     return n == (ssize_t)sizeof magic && memcmp(magic, IEC_SO_MAGIC, sizeof magic) == 0;
 }
 
-bool ResolveSoLauncher(const std::string& path, SoLauncher& out, std::string* err) {
+bool IsSoLauncher(const std::string& path) {
+    return HasMagic(path) || HasMagic(path + IEC_SO_SIDECAR);
+}
+
+bool HasSoSidecar(const std::string& path) {
+    struct stat st;
+    return stat((path + IEC_SO_SIDECAR).c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+namespace {
+
+// Reads and parses one launcher file. Keeping this separate is what makes the sidecar
+// fallback below a fallback rather than second full parser.
+bool ParseLauncher(const std::string& path, SoLauncher& out, std::string* err) {
     // The reason travels in one place, so a caller that does not want it can pass null.
     auto fail = [err](const std::string& why) {
         if (err) *err = why;
@@ -110,6 +125,13 @@ bool ResolveSoLauncher(const std::string& path, SoLauncher& out, std::string* er
         out.primary = static_cast<PrimaryLaunchKind>(lines[4][0] - '0');
     }
     return true;
+}
+
+}  // namespace
+
+bool ResolveSoLauncher(const std::string& path, SoLauncher& out, std::string* err) {
+    if (ParseLauncher(path, out, err)) return true;
+    return ParseLauncher(path + IEC_SO_SIDECAR, out, err);
 }
 
 // What the child leaves with when the object will not load, and when it loads but the

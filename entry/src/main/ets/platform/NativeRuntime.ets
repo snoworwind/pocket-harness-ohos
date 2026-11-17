@@ -2,7 +2,8 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { execStart, execPoll, execWrite, execCloseStdin, execTerminate, execRelease,
-  initIecResourceManager, installCaBundle, probeCaps, startIecServer, unpackResource, writeSoLauncher, writeTxtFile } from 'iec';
+  initIecResourceManager, installCaBundle, probeCaps, startIecServer, unpackResource,
+  writeSoLauncher, writeTxtFile } from 'iec';
 import { EngineHooks, EnginePipe, OfficialRpc } from '../core/OfficialRpc';
 import { Settings } from '../core/Types';
 
@@ -166,22 +167,28 @@ export class NativeRuntime {
       this.ensureDir(this.root + '/home');
       this.ensureDir(this.root + '/tmp');
       this.ensureDir(this.root + '/engine');
-      const engineCode = unpackResource('tools/official-engine.tar.gz', this.root + '/engine');
+      const engineCode = await unpackResource('tools/official-engine.tar.gz', this.root + '/engine');
       if (engineCode !== 0) {
         this.removeTree(this.root + '/engine');
         throw new Error('官方引擎解包失败（unpackResource=' + engineCode.toString() + '）');
       }
-      const npmCode = unpackResource('tools/npm.tar.gz', this.root);
+      const npmCode = await unpackResource('tools/npm.tar.gz', this.root);
       if (npmCode !== 0) { throw new Error('npm 解包失败（unpackResource=' + npmCode.toString() + '）'); }
-      const pythonCode = unpackResource('tools/python-stdlib.tar', this.root);
+      const pythonCode = await unpackResource('tools/python-stdlib.tar', this.root);
       if (pythonCode !== 0) { throw new Error('Python 标准库解包失败（unpackResource=' + pythonCode.toString() + '）'); }
       this.ensureDir(this.root + '/vim');
-      const vimCode = unpackResource('tools/vim-runtime.tar.gz', this.root + '/vim');
+      const vimCode = await unpackResource('tools/vim-runtime.tar.gz', this.root + '/vim');
       if (vimCode !== 0) { throw new Error('Vim 运行时解包失败（unpackResource=' + vimCode.toString() + '）'); }
       if (writeTxtFile(this.root + '/.installed', manifest.version) !== 0) { throw new Error('运行时安装标记写入失败'); }
     }
     this.installing = false;
     if (onInstalling !== undefined) { onInstalling(false); }
+    // git 的 init 模板目录：缺省会去找 /usr/share/git-core/templates（假根里不存在），
+    // 每次 `git init` 都打印 "templates not found"。必须放在首次解包之后建，
+    // 否则整棵运行时被 removeTree 后会漏掉。
+    this.ensureDir(this.root + '/git-templates/hooks');
+    this.ensureDir(this.root + '/git-templates/info');
+    this.ensureDir(this.root + '/git-templates/branches');
     for (const command of manifest.commands) {
       // bash 的入口是 main(argc, argv, envp) 三参形状；按 2 参调用会把 envp 留成
       // 寄存器垃圾，bash 初始化变量时立刻崩溃。其余命令都是两参入口。
@@ -279,6 +286,8 @@ export class NativeRuntime {
       // git 的 remote helper 与内建子命令都从 <sysroot>/bin 的启动器找；
       // 不设这个变量时会去 /usr/libexec/git-core（假根里没有），HTTPS 会失败。
       'GIT_EXEC_PATH': this.root + '/bin',
+      // `git init` 的模板目录；空目录即可，见 ensure() 里的说明。
+      'GIT_TEMPLATE_DIR': this.root + '/git-templates',
       'CURL_CA_BUNDLE': caFile,
       // libcrypto 的 OPENSSLDIR 是 /etc/ssl（构建机路径不能进设备二进制），默认配置
       // 在沙箱里不存在；`openssl req`/`ca` 找不到配置会直接失败，所以指到随运行时

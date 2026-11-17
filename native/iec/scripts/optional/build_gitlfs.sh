@@ -35,6 +35,21 @@ command -v "$GO_TOOLCHAIN" >/dev/null 2>&1 || iec_err "Go toolchain not found: $
 	|| iec_err "Go toolchain $("$GO_TOOLCHAIN" version) has no $GO_OS/arm64 target. Run scripts/optional/fetch_go_ohos.sh and set GO_TOOLCHAIN=<repo>/build/go-ohos/bin/go"
 iec_clone_if_missing "$SRC" "https://github.com/git-lfs/git-lfs.git" "$GITLFS_REF"
 
+# ── HarmonyOS: start IEC command objects without execve ────────────────────
+# The sandbox denies execve() of ELF files in every path the app can see, and
+# the runtime launchers are #IECSOv2 text files only the IEC exec service can
+# start. git-lfs is therefore built with a fork-based bridge: a C child asks the
+# exec service for `git`, becomes its stand-in, and the Go side waits normally.
+# See scripts/optional/gitlfs-ohos/ for the Go half and tools/iec_fork_exec.c
+# for the C half.
+PATCH="$IEC_ROOT/scripts/optional/gitlfs-ohos"
+[ -d "$PATCH" ] || iec_err "missing git-lfs patches: $PATCH"
+cp -f "$PATCH/subprocess_nix.go" "$PATCH/cmd.go" "$PATCH/iec.go" "$SRC/subprocess/"
+cp -f "$IEC_ROOT/tools/iec_fork_exec.c" "$SRC/subprocess/iec_fork_exec.c"
+cp -f "$IEC_ROOT/exec/shim.c" "$SRC/subprocess/iec_exec_shim.c"
+cp -f "$IEC_ROOT/common/rpc.c" "$SRC/subprocess/iec_rpc.c"
+cp -f "$IEC_ROOT/common/sock_client.c" "$SRC/subprocess/iec_sock_client.c"
+
 mkdir -p "$WRAP" "$OUT_DIR"
 cat > "$WRAP/main.go" <<'GO'
 package main
@@ -70,6 +85,7 @@ GO
 ( cd "$SRC" && \
 	GOOS="$GO_OS" GOARCH=arm64 CGO_ENABLED=1 GOTOOLCHAIN=local \
 	CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
+	CGO_CFLAGS="-I$IEC_ROOT -I$IEC_ROOT/common -DINT_PRELOAD -D_GNU_SOURCE" \
 	"$GO_TOOLCHAIN" build -buildvcs=false -buildmode=c-shared -trimpath \
 		-ldflags='-s -w' -o "$OUT" ./cmd/gitlfsohos ) \
 	|| iec_err "git-lfs Go build failed"

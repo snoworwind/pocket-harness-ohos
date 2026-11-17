@@ -44,7 +44,10 @@ else
   READELF=""
 fi
 
-# name|library|entry
+# name|library|entry|arity|elf-stub
+# 最后一列非空表示该命令同时需要 ELF 启动桩：bin/<name> 是真正的 ELF（Go 的
+# os/exec 直接 execve 才能执行），启动器写到 bin/<name>.iecso。git-lfs 与 gh 都用
+# Go 的 os/exec 调 `git`，没有桩时会报 exec format error。
 COMMANDS='bash|libbash.so|iec_bash_main|3
 sh|libbash.so|iec_bash_main|3
 toybox|libtoybox.so|bsh_toybox_main
@@ -259,13 +262,17 @@ fi
   printf '{\n  "version": "",\n  "engineVersion": "%s",\n  "nodeVersion": "%s",\n  "commands": [\n' \
     "$ENGINE_VERSION" "$NODE_VERSION"
   first=1
-  while IFS='|' read -r name library entry arity; do
+  while IFS='|' read -r name library entry arity stub; do
     [ -z "$name" ] && continue
     [ -f "$PROJECT/entry/libs/$LIB_ARCH/$library" ] || continue
     [ "$first" -eq 1 ] || printf ',\n'
     first=0
-    if [ -n "$arity" ]; then
+    if [ -n "$arity" ] && [ -n "$stub" ]; then
+      printf '    { "name": "%s", "library": "%s", "entry": "%s", "arity": %s, "elfStub": true }' "$name" "$library" "$entry" "$arity"
+    elif [ -n "$arity" ]; then
       printf '    { "name": "%s", "library": "%s", "entry": "%s", "arity": %s }' "$name" "$library" "$entry" "$arity"
+    elif [ -n "$stub" ]; then
+      printf '    { "name": "%s", "library": "%s", "entry": "%s", "elfStub": true }' "$name" "$library" "$entry"
     else
       printf '    { "name": "%s", "library": "%s", "entry": "%s" }' "$name" "$library" "$entry"
     fi

@@ -44,9 +44,11 @@ export const ensureDir: (path: string) => number;
 export const writeSoLauncher: (target: string, so: string, entry: string,
                                arity: number, primary?: number) => number;
 
-// Extracts a tar stored in rawfile `name` into `dest`. 0 on success, 1 on
-// failure. Symlinks become <name>.IEC_SYMLINK marker files.
-export const unpackResource: (name: string, dest: string) => number;
+// Extracts a tar stored in rawfile `name` into `dest`, on a NAPI worker thread so
+// the UI thread is not blocked (a first-run extraction would otherwise trip the
+// THREAD_BLOCK_6S watchdog). Resolves to 0 on success, 1 on failure. Symlinks
+// become <name>.IEC_SYMLINK marker files.
+export const unpackResource: (name: string, dest: string) => Promise<number>;
 
 // Writes `data` to `target` (parent directories must exist). 0 on success, 1 on
 // failure.

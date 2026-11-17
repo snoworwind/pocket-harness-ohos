@@ -104,6 +104,10 @@ pid_t SpawnShebang(const SpawnRequest& req) {
     next.argv.push_back(req.path);
     for (size_t i = 1; i < req.argv.size(); i++) next.argv.push_back(req.argv[i]);
 
+    // The interpreter may itself be reached through a symbolic link (the marker form
+    // the fs shim uses is invisible to the kernel's own resolution).
+    next.path = ResolveLaunchPath(next.path, req.cwd);
+
     const LaunchKind kind = ResolveKind(next.path);
     StartByKind(kind, next);
 }

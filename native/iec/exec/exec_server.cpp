@@ -610,6 +610,9 @@ SpawnResult Spawn(SpawnRequest req) {
     SpawnResult res;
     if (req.path.empty()) { res.error = "path is empty"; return res; }
     req.path = ResolveAgainstCwd(req.path, req.cwd);
+    // The same link resolution onExecute() does; kept here too because Spawn() is
+    // also reached from sessions that never went through that handler.
+    req.path = ResolveLaunchPath(req.path, req.cwd);
 
     // kAuto means the caller left the decision to us. It is settled before the
     // fork so that both sides agree on what is being started.
@@ -1092,6 +1095,10 @@ bool ExecServer::onExecute(const Packet& req, Reply& reply) {
     }
     // 相对路径按调用者 cwd 归一化后再判定 launch kind（见 ResolveAgainstCwd）。
     sr.path = ResolveAgainstCwd(sr.path, sr.cwd);
+    // 启动器可能是符号链接：真实链接由内核跟随，但本运行时用 .IEC_SYMLINK 标记文件
+    // 模拟链接，内核看不见它。不在这里解析，`ln -s bin/ls myls; ./myls` 会被判成
+    // kUnexecutable，shell 退回按脚本执行文本启动器。见 ResolveLaunchPath()。
+    sr.path = ResolveLaunchPath(sr.path, sr.cwd);
     sr.kind_hint = ResolveKind(sr.path);
 
     // 不是 ELF、不是 launcher、也没有 shebang 的文本文件：execve(2) 会返回

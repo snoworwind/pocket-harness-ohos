@@ -118,7 +118,121 @@ std::string ResolveSimulated(const std::string& path, const std::string& cwd) {
     return rc == 0 ? std::string(out) : path;
 }
 
+// The fs shim cannot create symbolic links in this sandbox, so it stores them as
+// ordinary files named <link>.IEC_SYMLINK whose content is the target string. Reading
+// one is the same operation as readlink(), just from that file.
+bool ReadMarkerTarget(const std::string& marker, std::string* target) {
+    struct stat st;
+    if (lstat(marker.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (st.st_size <= 0 || st.st_size > 4095) return false;
+
+    const int fd = open(marker.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+
+    char buf[4096];
+    const ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return false;
+    target->assign(buf, static_cast<size_t>(n));
+    return true;
+}
+
+// Collapses "//", "." and ".."; a path that ends up empty is the root.
+std::string NormalizePath(const std::string& path) {
+    std::vector<std::string> parts;
+
+    for (size_t i = 0; i < path.size();) {
+        while (i < path.size() && path[i] == '/') i++;
+        size_t j = i;
+        while (j < path.size() && path[j] != '/') j++;
+        if (i < j) {
+            const std::string part = path.substr(i, j - i);
+            if (part == "..") {
+                if (!parts.empty()) parts.pop_back();
+            } else if (part != ".") {
+                parts.push_back(part);
+            }
+        }
+        i = j;
+    }
+
+    std::string out;
+    for (const std::string& part : parts) out += "/" + part;
+    return out.empty() ? std::string("/") : out;
+}
+
+// Finds the first link anywhere in `path`, real or marker, and returns the path with
+// that link expanded and the rest of the way spliced on. False means there is none.
+bool ResolveOneLink(const std::string& path, std::string* out) {
+    std::vector<std::string> segments;
+    for (size_t i = 0; i < path.size();) {
+        while (i < path.size() && path[i] == '/') i++;
+        size_t j = i;
+        while (j < path.size() && path[j] != '/') j++;
+        if (i < j) segments.push_back(path.substr(i, j - i));
+        i = j;
+    }
+
+    std::string prefix;
+    for (size_t k = 0; k < segments.size(); k++) {
+        prefix = NormalizePath(prefix + "/" + segments[k]);
+
+        std::string target;
+        struct stat st;
+        if (lstat(prefix.c_str(), &st) == 0 && S_ISLNK(st.st_mode)) {
+            char buf[4096];
+            const ssize_t n = readlink(prefix.c_str(), buf, sizeof buf - 1);
+            if (n <= 0) return false;
+            target.assign(buf, static_cast<size_t>(n));
+        } else if (!ReadMarkerTarget(prefix + ".IEC_SYMLINK", &target)) {
+            continue;    // not a link: the next component is the interesting one
+        }
+
+        std::string rest;
+        for (size_t r = k + 1; r < segments.size(); r++) rest += "/" + segments[r];
+
+        std::string base = target;
+        if (base.empty() || base[0] != '/') {
+            // A relative target is relative to the link's own directory.
+            const size_t slash = prefix.rfind('/');
+            base = (slash == std::string::npos ? std::string() : prefix.substr(0, slash)) +
+                   "/" + base;
+        }
+        *out = NormalizePath(base + rest);
+        return true;
+    }
+    return false;
+}
+
 }  // namespace
+
+std::string ResolveLaunchPath(const std::string& path, const std::string& cwd) {
+    // /proc entries are process state, not files a program can be started from; a
+    // magic link there must not be chased.
+    if (path.empty() || path.compare(0, 6, "/proc/") == 0) return path;
+
+    std::string work;
+    if (path[0] == '/') {
+        work = path;
+    } else {
+        std::string base = cwd;
+        if (base.empty()) {
+            char buf[4096];
+            if (getcwd(buf, sizeof buf) == nullptr) return path;
+            base = buf;
+        }
+        work = base + (base.back() == '/' ? "" : "/") + path;
+    }
+
+    // The kernel's own limit, for the same reason: a pair of links naming each other
+    // must not be able to keep the exec server busy.
+    for (int hops = 0; hops < 40; hops++) {
+        std::string next;
+        if (!ResolveOneLink(work, &next) || next == work) break;
+        work = next;
+    }
+    return work;
+}
 
 std::string UnderFakeRoot(const std::string& path) {
     if (Caps().path != 0) return path;

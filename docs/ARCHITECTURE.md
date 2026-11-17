@@ -39,7 +39,7 @@ filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭
 - 目录被改坏时的恢复分三层：三项存在性探测失败 → 整棵重解；引擎启动报 `Cannot find module` / `failed to import` → 自动重解一次（`NativeRuntime.repair()`）；仍失败 → 界面提供「重新解包运行时」按钮。`repair()` 只删 `runtime-*`，不碰 `harness-home`。
 - `harness-home` 永不被应用删除：覆盖升级保留会话与设置，卸载才清空。
 
-- 解包用的是 HAR 里的 `unpackResource()`：先把 rawfile 读进内存，再用 libarchive 的 write-disk 解到目标目录。`libarchive.so.13` 是运行期 `dlopen` 的共享库，必须随 HAP 打进 `libs/arm64-v8a/`。
+- 解包用的是 HAR 里的 `unpackResource()`：先把 rawfile 读进内存，再用 libarchive 的 write-disk 解到目标目录。它是异步的（返回 `Promise<number>`）：rawfile 读取与解包都在 NAPI 工作线程，首解包约 11 秒也不会阻塞 UI 线程——同步做过一次，`THREAD_BLOCK_6S` 看门狗会在解包结束时把进程杀掉。`libarchive.so.13` 是运行期 `dlopen` 的共享库，必须随 HAP 打进 `libs/arm64-v8a/`。
 - 解包失败会留下半棵树，所以失败时清掉 `engine/` 再抛出；`fs.mkdirSync` 在目录已存在时会抛 `13900015 File exists`（即使 `recursion=true`），所以所有建目录都先 `accessSync` 判断。
 
 ### 启动页与阶段提示
@@ -94,9 +94,15 @@ node scripts/build.mjs --strict-runtime-manifest --deveco-home "<DevEco>"
 
 IEC 的 `execStart` 拿到的不是普通 `fork`：鸿蒙应用进程不能直接 `fork/exec`，`.so` 由原生子进程装载，`.so` 里导出 `iec_bash_main` / `iec_node_main` 之类的 C 入口。命令行启动器是一个文本包装文件，记录目标 `.so`、入口符号和启动方式（本工程统一用 `2`，即鸿蒙原生子进程）。
 
-`libnode.so` 重链接时用 `--wrap` 把 exec 家族换成了 IEC 的 RPC 版本（导出 64 个 `__wrap_*`），所以官方引擎里的 `child_process`（工具调用、终端、子代理）在设备上落到执行服务。`fork` 本身没有被拦截，是否允许由设备决定，`probeCaps().fork` 会先探测。
+启动器默认是 `#IECSOv2` 文本文件。代码里还保留 sidecar 形态（`bin/<name>` 是 ELF、启动器放 `bin/<name>.iecso`）的识别，但真机证明平台拒绝应用进程 `execve` 任何 ELF（应用数据目录、bundle libs、甚至系统动态链接器全部返回 `EACCES`），所以没有任何命令使用它；Go 程序需要执行命令时走下面「Go 命令」一节的进程内执行桥。
 
-**Git**：`libgit.so` 用同一套 `--wrap` shim 接管文件与进程调用，静态链接 zlib/PCRE2；`libgit-remote-http.so` 额外静态链接 libcurl/OpenSSL，因此运行时只依赖 `libc.so`。`GIT_EXEC_PATH` 指到 `<sysroot>/bin`，`GIT_SSL_CAINFO` 指到合并后的 CA bundle，HTTPS 不做任何证书放宽。`git init` 不依赖模板目录，缺省模板警告可忽略。
+符号链接也由服务端解析：真实链接用 `readlink`，沙箱里 fs shim 生成的 `<name>.IEC_SYMLINK` 标记文件按同样语义跟随（`exec/path_resolver.cpp` 的 `ResolveLaunchPath()`），所以 `ln -s <sysroot>/bin/ls myls` 和默认 venv 的 `bin/python` 都能执行。
+
+`libnode.so` 重链接时用 `--wrap` 把 exec 家族换成了 IEC 的 RPC 版本（导出 64 个 `__wrap_*`），所以官方引擎里的 `child_process`（工具调用、终端、子代理）在设备上落到执行服务。`fork` 本身没有被拦截，是否允许由设备决定，`probeCaps().fork` 会先探测。`node-pty` 的 `pty.node` 用同一套 tty/exec shim 重新链接（`scripts/pty/build-node-pty.sh`）：`pty.cc` 里的 `forkpty/openpty/posix_openpt/execvp` 被 `--wrap` 换成服务端实现，因此它拿到的 master/slave 是 IEC 的虚拟 PTY，而不是沙箱里打不开的 `/dev/ptmx`。
+
+**Git**：`libgit.so` 用同一套 `--wrap` shim 接管文件与进程调用，静态链接 zlib/PCRE2；`libgit-remote-http.so` 额外静态链接 libcurl/OpenSSL，因此运行时只依赖 `libc.so`。`GIT_EXEC_PATH` 指到 `<sysroot>/bin`，`GIT_SSL_CAINFO` 指到合并后的 CA bundle，HTTPS 不做任何证书放宽。`git init` 的模板目录由启动时创建的 `<sysroot>/git-templates` 提供（`GIT_TEMPLATE_DIR`），不再警告缺模板。`git-lfs` 自己不 `execve` `git`：`subprocess.Cmd` 对 `$IEC_SYSROOT/bin/*` 的启动走`native/iec/tools/iec_fork_exec.c` 的 fork + IEC 执行桥，所以 `git lfs install/track/env` 能正常拿到 `git version`/`git config`；`gh` 同理，`internal/run.PrepareCmd` 已接到 `internal/ghohos`（同一套桥），`git.Client.Command` 的 `Run`/`Output` 都走它。
+
+**Python**：stdlib 装在 `<sysroot>/python/lib/python3.12`，`PYTHONHOME=<sysroot>/python`。venv 的子进程会主动删掉 `PYTHONHOME`，所以 `python-stdlib.tar` 里还带一个 `<sysroot>/lib/python3.12 -> ../python/lib/python3.12` 的兼容链接（设备上落成 `.IEC_SYMLINK`，由 fs shim 透明解析）；venv 默认改为复制启动器而不是建符号链接。`_bz2` 与其余静态扩展一起编进 `libpython.so`。
 
 **libc++ ABI**：随 HAP 打包的 `libc++_shared.so` 来自 DevEco SDK，只导出 `std::__n1` 命名空间的符号。所以所有 C++ 产物（`libnode.so`、`pty.node`、`require_builtin.node`）都必须用「libc++ 22 头文件 + `_LIBCPP_ABI_NAMESPACE __n1`」编译：V8 需要 libc++ 22 的 `<ranges>`，而 SDK 自带那套 `__n1` 头文件太旧、没有 ranges。用默认 `__1` 头文件编出来的 `.so` 在真机上 dlopen 会报 `_ZNSt3__119__shared_weak_count14__release_weakEv: symbol not found`。
 
@@ -143,9 +149,11 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 - **缩放**：`Web` 组件设置 `zoomAccess(false)`，避免双指缩放破坏终端与侧栏的几何计算。
 - **ripgrep 参数**：`librg.so` 由 IEC dlopen 进 shell 进程，`std::env::args()` 拿到的是宿主 argv（空），所以 `iec_rg_main` 必须用启动器传入的 `_argc/_argv` 重建命令行；否则引擎的代码搜索与 `grep` 工具会一直报 `ripgrep requires at least one pattern`。构建脚本已把 ripgrep 的 CLI 解析改走这份参数，见 `scripts/rg/build-ripgrep.sh`。
 - **Go 命令（`gh`、`git-lfs`）**：stock Go 的 `c-shared` 用 initial-exec TLS，鸿蒙 musl 在 `dlopen` 时直接拒绝（`initial-exec TLS resolves to dynamic definition`，IEC 侧是退出码 125）。`GOOS=android` 也不行：它靠 bionic 的固定 TP 偏移/`pthread_key` 扫描找 goroutine 槽位，musl 的 `tsd` 是独立分配的。正确做法是 OpenHarmony 的 Go 工具链（`GOOS=openharmony`，c-shared 默认 TLSDESC）：先跑 `native/iec/scripts/optional/fetch_go_ohos.sh`，再设 `GO_TOOLCHAIN`；两个构建脚本都会检查产物不含 `R_AARCH64_TLS_TPREL64`。gh 固定在要求 go ≤ 1.26 的 tag（`GH_REF=v2.100.0`），并强制 `GOTOOLCHAIN=local`，否则 `go` 会自动下载官方新工具链、覆盖掉 openharmony 目标。
+
+  **执行桥**：Go 的 `os/exec` 直接发 `execve`，IEC 的 shim 拦不到，而平台又拒绝执行任何 ELF，因此 `git-lfs` 在编译时打补丁（`native/iec/scripts/optional/gitlfs-ohos/`）：cgo 里 `fork()`，子进程只跑 C 代码并调用链接进来的 `exec/shim.c` 走 IEC 执行服务、成为替身；Go 侧照常 `waitpid`、读管道。`subprocess.Cmd`（git-lfs）与 `internal/run.PrepareCmd`（gh）对所有以 `$IEC_SYSROOT/bin/` 开头的命令（`git`、`ssh` 等）都走这条桥。
 - **OpenSSL 配置**：`libcrypto` 的 `OPENSSLDIR` 编译为 `/etc/ssl`（绝不能再是构建机路径）。运行时的真实配置是随包的 `rawfile/harmony/openssl.cnf` → `<sysroot>/certs/openssl.cnf`，`OPENSSL_CONF` 指过去；`openssl req`/`ca` 找不到配置是致命错误，所以这一步不能省。
 - **归档压缩后端**：`tar` 静态链入 bzip2/xz/zstd，`-j`/`-J`/`--zstd` 不再依赖设备上不存在的 `bzip2`/`xz` 命令。
-- **node-pty（已知限制）**：`pty.node` 走 `forkpty(3)`，而鸿蒙应用沙箱不允许 `fork`，IEC 的 tty shim 只能接管 pty 的 fd/RPC，不能凭空变出子进程。因此在内置 shell 里运行依赖 node-pty 的 Node 程序会失败；应用自己的 Bash 工具走管道、右侧栏终端走原生 PTY，不受影响。要支持它得让 node-pty 改走 IEC 的执行服务，而不是 shim 层能解决的。
+- **node-pty**：`pty.node` 直接调 libc 的 `forkpty/openpty`，而 `/dev/ptmx` 在沙箱里打不开。构建脚本把 tty+exec shim 编进 `pty.node`，用 `--wrap` 把 `forkpty/openpty/posix_openpt/execvp`改到 IEC 的虚拟 PTY 与执行服务；真机上 `pty.spawn()` 已能启动子进程并回显。
 
 ## 扩展顺序
 

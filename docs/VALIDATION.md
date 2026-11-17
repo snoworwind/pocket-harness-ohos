@@ -117,3 +117,60 @@
   `assembleHap` BUILD SUCCESSFUL，产出签名的 `entry-default-signed.hap`（303 MB）。
 
 本轮未连接真机、未推送远程。
+
+## 2026-11-17 运行时二进制遗留问题（BINARY-FIX-REMAINING）
+
+对照真机复测报告 `BINARY-FIX-REMAINING.md`（运行时 `0.2.2-rc.1-79f47bdf59e8`）逐项处理。
+本轮在 WSL 上重建了 `libpython.so`、`librg.so`、`libghcmd.so`、`libgitlfscmd.so`、`pty.node`
+并重新算出清单 `0.2.2-rc.1-4efcf73f4e8a`；宿主测试覆盖路由、启动器与 stdlib 定位，真机完成了覆盖安装、
+首次解包、Web GUI 启动与 `git lfs` 验收。
+
+| 报告项 | 根因 | 修复 | 本轮验证 |
+| --- | --- | --- | --- |
+| `git lfs` 不能调 `git`（P1） | 沙箱拒绝执行任何 ELF：`execve` 对 `bin/git`、bundle libs 里的桩、`/lib/ld-musl-aarch64.so.1` 全部返回 `EACCES`；文本启动器返回 `ENOEXEC` 是因为格式检查先于该拒绝。Go 的 `os/exec` 因此无法启动命令 | 编译 `git-lfs` 时打补丁（`scripts/optional/gitlfs-ohos/` + `tools/iec_fork_exec.c`）：cgo 里 `fork()`，子进程只跑 C 代码并调用链接进来的 `exec/shim.c` 走 IEC 执行服务、成为替身；Go 侧照常 `waitpid`/读管道。`subprocess.Cmd` 对 `$IEC_SYSROOT/bin/*` 的启动改走这条桥 | 真机：`git lfs env` 输出 `git version 2.56.0`；`git init` + `git lfs install --local` + `git lfs track '*.bin'` 后 `.gitattributes` 为 `*.bin filter=lfs diff=lfs merge=lfs -text` |
+| `python3 -m venv` 失败（P1，根因 A） | venv 的子进程会删 `PYTHONHOME`，而 stdlib 只在 `<sysroot>/python/lib`，`<sysroot>/lib/pythonX.Y` 不存在 | `python-stdlib.tar` 增加 `lib/python3.12 -> ../python/lib/python3.12`（设备上落成 `.IEC_SYMLINK`，由 fs shim 解析）；`venv` 的 CLI 默认（POSIX 上 `--symlinks`）与 `EnvBuilder` 默认一起改成复制启动器；`build_python.sh` 把兼容链接打进归档并强制校验 `_bz2` | 宿主用同一版 CPython 搭 `<prefix>/bin/python3` + `lib/python3.12` 兼容链接，并按同样的补丁改 venv：`env -u PYTHONHOME` 下 venv 创建成功、`bin/python*` 全是普通文件（无符号链接），venv 内解释器 `sys.prefix` 正确且能找到 stdlib；真机复测通过（报告确认） |
+| 符号链接启动器不能执行（P1，根因 B） | 服务端只按字面路径判 kind，`.IEC_SYMLINK` 标记文件对内核不可见 | `exec/path_resolver.cpp` 新增 `ResolveLaunchPath()`：逐段跟随真实符号链接与 `.IEC_SYMLINK`，在 `onExecute`/`Spawn`/`SpawnShebang` 三处生效 | 宿主自测 5 项：标记链接、真实链接、普通文件、`/proc` 路径、经链接判为 kSo；真机 `ln -s`/`env`/`spawnSync` 复测通过（报告确认） |
+| `_bz2` 缺失（P2） | `build_python.sh` 没有把 `libbz2` 交给 configure，CPython 静默丢弃 `_bz2` | configure 传 `LIBS=-lbz2`（依赖由 `build_bzip2.sh` 提供），并在配置后把 `_bz2` 缺失变成硬错误 | 重建 `libpython.so`：`PyInit__bz2` 导出、`BZ2_bzCompress` 已链入；`NEEDED` 只有 `libc.so`；产物 strip 后 14.1 MB；真机 `import bz2` 复测通过 |
+| `node-pty` `forkpty/openpty` 失败（P3） | node-pty 直接调 libc；`posix_openpt` 未接管，`/dev/ptmx` 在沙箱不可开 | `tty/shim.c` 新增 `posix_openpt`；`scripts/pty/build-node-pty.sh` 把 tty+exec shim 编进 `pty.node`，用 `--wrap` 改掉 `forkpty/openpty/posix_openpt/execvp` 等调用 | `pty.node`（96 KB）导出 `__wrap_forkpty/__wrap_openpty/__wrap_posix_openpt/__wrap_execvp`，无 `U forkpty/openpty`；`NEEDED` 仅 `libc++_shared.so`/`libc.so`；已替换进引擎归档；真机 `pty.spawn` 输出 `PTYOK`（报告确认） |
+| `git init` 模板警告（P3） | 假根没有 `/usr/share/git-core/templates` | 启动时建 `<sysroot>/git-templates/{hooks,info,branches}`，环境变量 `GIT_TEMPLATE_DIR` 指过去 | 真机 `git init` 不再警告（报告确认） |
+| `gh --version` 显示 `DEV`（P3） | c-shared 构建里 `build.Version` 默认 `DEV`，无法从 build info 恢复 | `build_gh.sh` 用 `-ldflags -X .../internal/build.Version=$GH_VERSION`（默认 tag）与 `Date` | 重建 `libghcmd.so`（43 MB），真机输出 `gh version 2.100.0`（报告确认） |
+| `rg` 无 PCRE2（P3） | 构建没开 `pcre2` feature | `build-ripgrep.sh` 支持 `PCRE2=1`，用 `scripts/optional/build_pcre2.sh` 产的静态 `libpcre2-8.a`（JIT off）通过 pkg-config 链入，并 strip | 重建 `librg.so`（5.2 MB）：`iec_rg_main` 导出、含 77 个 `pcre2_*` 符号、无未解析项；真机 `rg -P` 复测通过 |
+
+宿主测试入口：
+
+```bash
+bash native/iec/scripts/test_iec_native_host.sh   # 45 + 15 项，含 sidecar/符号链接路由
+```
+
+产物变化：`entry/libs/arm64-v8a/libpython.so`（14.1 MB，含 `_bz2`）、`librg.so`（5.2 MB，含 PCRE2）、
+`libghcmd.so`（43 MB，版本号已注入）、`libgitlfscmd.so`（13.6 MB，含 IEC 执行桥）；
+`python-stdlib.tar` 增加 `lib/python3.12` 兼容链接，`official-engine.tar.gz` 内 `pty.node` 已替换。
+
+### 平台 exec 限制与 git-lfs 执行桥（2026-11-17 深夜）
+
+- 平台实测：应用进程里 `execve` 任何 ELF 都被拒绝（`EACCES`）——`bin/git`（应用数据目录）、
+  `entry/libs` 里的 `libgitlaunch.so`（bundle el1）、系统动态链接器
+  `/lib/ld-musl-aarch64.so.1` 全部如此；文本启动器返回 `ENOEXEC` 只是因为格式检查先发生。
+  所以“ELF 启动桩 / 动态链接器加载”两条路都不可行（中途版本已在真机证伪并回退）。
+- 最终修复：`git-lfs` 用**进程内 fork + IEC 执行桥**
+  （`native/iec/scripts/optional/gitlfs-ohos/`、`native/iec/tools/iec_fork_exec.c`），
+  `subprocess.Cmd` 对 `$IEC_SYSROOT/bin/*` 的启动全部走这条桥（`git`、`ssh` 等）。
+- 真机验证（覆盖安装）：启动探针 `git lfs env` 输出 `git version 2.56.0`；
+  `git init` → `git lfs install --local` → `git lfs track '*.bin'` 成功，
+  `.gitattributes` 内容为 `*.bin filter=lfs diff=lfs merge=lfs -text`。
+- `gh`：`internal/run.PrepareCmd` 已接到 `internal/ghohos`（同一套 fork + exec shim），
+  `git.Client.Command` 的 `Run`/`Output` 都走它。真机验证：`gh auth setup-git --force
+  --hostname github.com` 退出 0（内部执行了 `git config`），不再出现
+  `fork/exec .../bin/git: permission denied`。
+
+### 真机覆盖安装与首次解包（2026-11-17 晚）
+
+- 覆盖安装：`hdc install -r entry-default-signed.hap` → `install bundle successfully`；真机
+  安装后应用版本 `0.1.0.2`（versionCode 3），应用数据保留。
+- 发现并修复：新运行时版本的首次启动会在 UI 线程同步读 rawfile（约 84 MB，HAP 内压缩）
+  并解包（约 8 秒），触发 `THREAD_BLOCK_6S` 看门狗把进程杀掉（真机复现）。现在
+  `unpackResource()` 返回 Promise：rawfile 读取与 tar 解包都在 NAPI 工作线程，
+  `ensure()` 里 4 处调用改为 `await`。
+- 修复后真机复测：engine 解包 20:49:33.817 → 20:49:41.734，stdlib/vim 至 20:49:45.322，
+  共约 11.5 秒，流式 hilog 中无 `THREAD_BLOCK`/`APP_FREEZE`；20:49:48 `bin/node` 启动，
+  `http://127.0.0.1:40085` 加载出官方 Web GUI，进程 50 秒后仍存活。

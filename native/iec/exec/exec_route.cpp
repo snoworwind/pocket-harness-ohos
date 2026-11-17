@@ -25,6 +25,12 @@ LaunchKind ResolveKind(const std::string& path) {
     // gating this on fork made every command on a no-fork device resolve to
     // kUnexecutable while an NCP route was available.
     if (IsSoLauncher(path)) return LaunchKind::kSo;
+    // A file with a .iecso next to it is a dual-form command: its ELF is only a
+    // front door for programs that execve() it, and the service must start the .so
+    // the sidecar names. If the sidecar exists but does not parse, refuse instead of
+    // routing to the ELF -- otherwise the ELF stub would ask the service again and
+    // the two would keep starting each other.
+    if (HasSoSidecar(path)) return LaunchKind::kUnexecutable;
 
     const uint16_t machine = ElfMachine(path);
     const bool host_arch = machine == HOST_ARCH;

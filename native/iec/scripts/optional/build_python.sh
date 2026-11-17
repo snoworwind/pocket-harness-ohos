@@ -78,6 +78,7 @@ AR="${AR:-$CLANG_DIR/llvm-ar}"
 RANLIB="${RANLIB:-$CLANG_DIR/llvm-ranlib}"
 NM="${NM:-$CLANG_DIR/llvm-nm}"
 READELF="${READELF:-$CLANG_DIR/llvm-readelf}"
+STRIP="${STRIP:-$CLANG_DIR/llvm-strip}"
 AT_HOST="aarch64-linux-musl"
 
 TIC_BIN="${TIC_BIN:-$(command -v tic 2>/dev/null || true)}"
@@ -281,6 +282,7 @@ if [ ! -f "$BLD/Makefile" ]; then
 		PKG_CONFIG_LIBDIR="$PY_DEPS/lib/pkgconfig:$IEC_DEPS_LIB/pkgconfig:$IEC_DEPS_DIR/usr/lib/pkgconfig" \
 		PKG_CONFIG_PATH="" \
 		PY_UNSUPPORTED_OPENSSL_BUILD=static \
+		LIBS="-lbz2" \
 		"$PY_SRC/configure" \
 		MODULE_BUILDTYPE=static \
 		--host="$AT_HOST" --build=x86_64-pc-linux-gnu --prefix="$PREFIX" \
@@ -313,9 +315,13 @@ if [ ! -f "$BLD/Makefile" ]; then
 	done
 fi
 
+# _bz2 is a tested runtime requirement (`import bz2`); a configure/build that drops
+# it must not produce a package we then ship. See docs/BINARY-FIX-REMAINING.md.
+grep -qE '^_bz2 ' "$BLD/Modules/Setup.stdlib" \
+	|| iec_err "_bz2 was not detected; check $IEC_DEPS_INC/bzlib.h and $IEC_DEPS_LIB/libbz2.a"
+
 grep -q '^\*static\*' "$BLD/Modules/Setup.stdlib" \
 	|| iec_err "Setup.stdlib is not *static*; rerun with PY_RECONFIGURE=1"
-
 iec_log "build CPython"
 make -C "$BLD" -j1 Makefile > "$BUILD/py-makefile.log" 2>&1 || true
 make -C "$BLD" -j"$JOBS" > "$BUILD/py-make.log" 2>&1 \
@@ -409,6 +415,12 @@ if "$NM" -D -u "$OUT" | grep -E ' U (__wrap_|__real_)[A-Za-z0-9_]+$' >/dev/null;
 	iec_err "unresolved __wrap_/__real_ symbols"
 fi
 "$READELF" -d "$OUT" | grep -E 'NEEDED|SONAME' >&2 || true
+# The symbol table is build-time information; the shipped object only needs its
+# dynamic symbols (dlopen/resolve of Py_BytesMain and the pip entry).
+if [ -x "$STRIP" ]; then
+	"$STRIP" --strip-unneeded "$OUT"
+	iec_log "stripped $OUT"
+fi
 
 # ── 5. stdlib tar ──────────────────────────────────────────────────────────
 iec_log "pack python-stdlib.tar"
@@ -424,6 +436,13 @@ SETUPTOOLS_VER="${SETUPTOOLS_VER:-75.6.0}"
 WHEEL_VER="${WHEEL_VER:-0.45.1}"
 mkdir -p "$RT_ROOT/python/lib"
 cp -a "$SLIB" "$RT_ROOT/python/lib/"
+# CPython's venv subprocess deliberately removes PYTHONHOME. With our stdlib
+# rooted at <sysroot>/python/lib, a fresh venv then looks for the base stdlib at
+# <sysroot>/lib/pythonX.Y and fails before ensurepip can run. Mirror the stdlib
+# at that conventional location; the runtime fs shim resolves this packaged
+# symlink transparently.
+mkdir -p "$RT_ROOT/lib"
+ln -sfn "../python/lib/python$PY_SERIES" "$RT_ROOT/lib/python$PY_SERIES"
 # CPython is configured --without-ensurepip: `make install` cannot run the
 # cross-built interpreter, so ensurepip must not be invoked at build time. The
 # module itself is still installed, and the loop below makes sure its
@@ -431,6 +450,41 @@ cp -a "$SLIB" "$RT_ROOT/python/lib/"
 # offline. Without that wheel venv reports "No module named ensurepip".
 ( cd "$RT_ROOT/python/lib/python$PY_SERIES" && \
 	rm -rf test idlelib tkinter lib2to3 config-* ) || true
+# venv's CLI decides the strategy, not EnvBuilder's default: on POSIX `python -m
+# venv` passes symlinks=True. A symlink to a #IECSOv2 text launcher cannot be
+# executed by the kernel, so both defaults are forced to copying here.
+VENV_INIT="$RT_ROOT/python/lib/python$PY_SERIES/venv/__init__.py"
+[ -f "$VENV_INIT" ] || iec_err "venv package is missing from the stdlib"
+"$HOST_PY" - "$VENV_INIT" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+changed = False
+
+# EnvBuilder's own default.
+pattern = r"(\bsymlinks\s*=\s*)(?:os\.name\s*==\s*['\"]nt['\"]|True|False)"
+updated, count = re.subn(pattern, r"\1False", text, count=1)
+if count:
+    text = updated
+    changed = True
+
+# main()'s --symlinks default on POSIX. Replaced as a whole block rather than by
+# regex: both lines have to go, and the result must still define use_symlinks.
+CLI_BLOCK = """    if os.name == 'nt':
+        use_symlinks = False
+    else:
+        use_symlinks = True"""
+if CLI_BLOCK in text:
+    text = text.replace(CLI_BLOCK, "    use_symlinks = False")
+    changed = True
+
+if not changed and not re.search(r"\buse_symlinks = False\b", text):
+    raise SystemExit("cannot locate venv symlink defaults to patch")
+path.write_text(text)
+PY
 # macOS checkouts/tarballs carry AppleDouble resource forks (`._venv`), which show
 # up as bogus files in the installed venv. They are not part of any Python tree.
 find "$RT_ROOT" -name '._*' -type f -delete 2>/dev/null || true
@@ -472,7 +526,10 @@ fi
 [ -d "$PIP_SITE/pip" ] || iec_err "pip is not present in site-packages"
 
 find "$RT_ROOT" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
-tar -C "$RT_ROOT" -cf "$RTAR" python
+# `lib` carries the <sysroot>/lib/pythonX.Y compatibility link created above. It has
+# to be in the archive or a venv (which removes PYTHONHOME) cannot find the stdlib.
+[ -e "$RT_ROOT/lib/python$PY_SERIES" ] || iec_err "missing $RT_ROOT/lib/python$PY_SERIES"
+tar -C "$RT_ROOT" -cf "$RTAR" python lib
 [ -f "$RT_ROOT/python/lib/python$PY_SERIES/encodings/__init__.py" ] \
 	|| iec_err "stdlib has no encodings package"
 

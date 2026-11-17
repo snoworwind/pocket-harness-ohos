@@ -79,7 +79,7 @@ async function expectedVersion(manifest) {
   if (!Array.isArray(manifest.commands) || manifest.commands.length === 0) fail('manifest.commands 为空');
 
   const hash = createHash('sha256');
-  update(hash, 'schema', 'dsh-runtime-v1');
+  update(hash, 'schema', 'dsh-runtime-v2');
   update(hash, 'engineVersion', manifest.engineVersion);
   update(hash, 'nodeVersion', manifest.nodeVersion);
   const commands = manifest.commands
@@ -88,6 +88,7 @@ async function expectedVersion(manifest) {
       library: String(command.library),
       entry: String(command.entry),
       arity: command.arity === 3 ? 3 : 2,
+      elfStub: command.elfStub === true,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
   update(hash, 'commands', JSON.stringify(commands));
@@ -96,6 +97,12 @@ async function expectedVersion(manifest) {
     const path = join(toolsDir, name);
     requireFile(path, `运行时归档 ${name}`);
     await updateFile(hash, `archive:${name}`, path);
+  }
+  // 设备端会从 rawfile 写出这两份 ELF 启动桩；只有存在时才计入，x86/arm64
+  // 只带其中一份的构建树也能算出一致的摘要。
+  for (const name of ['iec-exec-stub-arm64', 'iec-exec-stub-x86_64']) {
+    const path = join(toolsDir, name);
+    if (existsSync(path)) await updateFile(hash, `stub:${name}`, path);
   }
   for (const path of listSoFiles(libsDir)) await updateFile(hash, `so:${relative(libsDir, path)}`, path);
 

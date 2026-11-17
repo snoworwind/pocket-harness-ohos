@@ -2,6 +2,7 @@
 # 从上游源码为鸿蒙 arm64 编译 ripgrep，产物是可以被 IEC 装载的 .so（导出 iec_rg_main）。
 #
 #   bash scripts/rg/build-ripgrep.sh
+#   PCRE2=1 bash scripts/rg/build-ripgrep.sh   # 额外启用 -P/--pcre2 后端
 #
 # 输出：$RIPGREP_OUT/librg.so（默认 /var/tmp/dsh-rg/librg.so）
 set -euo pipefail
@@ -11,6 +12,10 @@ RUST_TARGET="${RUST_TARGET:-aarch64-unknown-linux-ohos}"
 OHOS_TARGET="${OHOS_TARGET:-aarch64-linux-ohos}"
 LIB_ARCH="${LIB_ARCH:-arm64-v8a}"
 RUST_HOME_ROOT="${RUST_HOME_ROOT:-$NATIVE_ROOT}"
+# -P/--pcre2 is a build feature: without it `rg -P` answers "PCRE2 is not
+# available in this build". The pcre2 crate builds its C library from the
+# vendored source, so the cross compiler has to be named for the Rust target.
+PCRE2="${PCRE2:-0}"
 SRC="${SRC:-/var/tmp/ripgrep-build/src}"
 BUILD="${BUILD:-/var/tmp/ripgrep-build/build}"
 OUT="${RIPGREP_OUT:-/var/tmp/dsh-rg}"
@@ -127,8 +132,32 @@ LINKER_VAR="CARGO_TARGET_$(echo "$RUST_TARGET" | tr '[:lower:]-' '[:upper:]_')_L
 export "$LINKER_VAR=$NATIVE_ROOT/compiler/bin/clang"
 export RUSTFLAGS="-C link-arg=--target=$OHOS_TARGET -C link-arg=--sysroot=$NATIVE_ROOT/sdk/native/sysroot -C link-arg=-fuse-ld=lld"
 
+CARGO_FEATURES=()
+if [ "$PCRE2" = 1 ]; then
+	# Use the static PCRE2 the tree already builds for git (scripts/optional/
+	# build_pcre2.sh, JIT off). The bundled copy pcre2-sys would compile enables
+	# sljit JIT for this target and then fails to link on musl (`__clear_cache`);
+	# the tree's copy is both linkable and safe on a no-JIT device.
+	PCRE2_PREFIX="${PCRE2_PREFIX:-$NATIVE_ROOT/iec/build/sysroot/usr}"
+	PCRE2_PCDIR="$PCRE2_PREFIX/lib/$OHOS_TARGET/pkgconfig"
+	[ -f "$PCRE2_PCDIR/libpcre2-8.pc" ] \
+		|| { echo "缺少 $PCRE2_PCDIR/libpcre2-8.pc（先运行 scripts/optional/build_pcre2.sh）" >&2; exit 1; }
+	export PCRE2_SYS_STATIC=0
+	export PKG_CONFIG_ALLOW_CROSS=1
+	export PKG_CONFIG_PATH="$PCRE2_PCDIR"
+	export PKG_CONFIG_SYSROOT_DIR=""
+	CARGO_FEATURES=(--features pcre2)
+	echo "=== pcre2 后端：启用（-P/--pcre2，静态链 $PCRE2_PREFIX） ==="
+fi
+
 echo "=== cargo build ($RUST_TARGET) ==="
-cargo build --release --target "$RUST_TARGET" 2>&1 | tail -25
+if ! cargo build --release --target "$RUST_TARGET" "${CARGO_FEATURES[@]}" \
+	> "$BUILD/cargo.log" 2>&1; then
+	tail -30 "$BUILD/cargo.log" >&2
+	echo "cargo build failed (完整日志：$BUILD/cargo.log)" >&2
+	exit 1
+fi
+tail -3 "$BUILD/cargo.log"
 
 SO="$BUILD/target/$RUST_TARGET/release/librg_ohos.so"
 [ -f "$SO" ] || { echo "没有产出 librg_ohos.so" >&2; exit 1; }
@@ -139,6 +168,25 @@ READELF="$NATIVE_ROOT/sdk/native/llvm/bin/llvm-readelf"
 echo '=== 产物 ==='
 "$READELF" -h "$OUT/librg.so" | grep -E 'Class|Machine|Type'
 "$NM" -D --defined-only "$OUT/librg.so" | grep ' T iec_rg_main$'
+if [ "$PCRE2" = 1 ]; then
+	# The bundled PCRE2 is statically linked, so its symbols are local; grep is
+	# enough to prove the backend went in instead of being compiled out. Write the
+	# symbol table first: `grep -q` exits early and would SIGPIPE llvm-nm under
+	# `set -o pipefail`.
+	"$NM" "$OUT/librg.so" > "$OUT/librg.syms"
+	if grep -q 'pcre2_compile_8' "$OUT/librg.syms"; then
+		echo "pcre2: 已静态链入（rg -P 可用）"
+	else
+		rm -f "$OUT/librg.syms"
+		echo "PCRE2=1 但没有把 pcre2 链进 librg.so" >&2
+		exit 1
+	fi
+	rm -f "$OUT/librg.syms"
+fi
+# Static PCRE2 adds a lot of symbol data; the shipped object needs the code, not
+# the symbol table (the same treatment the previous non-PCRE2 build had).
+STRIP="${STRIP:-$NATIVE_ROOT/sdk/native/llvm/bin/llvm-strip}"
+if [ -x "$STRIP" ]; then "$STRIP" --strip-unneeded "$OUT/librg.so"; fi
 echo "size: $(stat -c%s "$OUT/librg.so")"
 
 # 放到与其他原生工具相同的位置，pack-native.sh 会一并收进 HAP。

@@ -519,6 +519,55 @@ napi_value WriteSoLauncher(napi_env env, napi_callback_info info) {
     return IntResult(env, 0);
 }
 
+// 解包放到 NAPI 工作线程。首次启动要读约 84 MB 的 rawfile（HAP 内是压缩的，
+// 读取要解压）并写约 3 万个文件，在 UI 线程同步做会阻塞 7 秒以上，HarmonyOS 的
+// THREAD_BLOCK_6S 看门狗会在解包刚结束时杀掉进程（真机复测已复现）。读文件和
+// 解包都进工作线程，UI 线程只创建 promise；每个 RawFile 句柄独占，资源管理器
+// 本身无状态。
+struct UnpackJob {
+    napi_async_work work = nullptr;
+    napi_deferred deferred = nullptr;
+    std::string name;
+    std::string dest;
+    size_t bytes = 0;
+    int result = 1;
+};
+
+void ExecuteUnpack(napi_env /*env*/, void* arg) {
+    UnpackJob* job = static_cast<UnpackJob*>(arg);
+    if (!EnsureDirs(job->dest)) {
+        job->result = 1;
+        return;
+    }
+    std::vector<unsigned char> data;
+    if (!g_res_mgr || !ReadRawFile(g_res_mgr, job->name, &data)) {
+        job->result = 1;
+        return;
+    }
+    job->bytes = data.size();
+    job->result = IecExtractTar(data.data(), data.size(), job->dest.c_str()) == 0
+                      ? 0
+                      : 1;
+}
+
+void CompleteUnpack(napi_env env, napi_status status, void* arg) {
+    UnpackJob* job = static_cast<UnpackJob*>(arg);
+    const int code = status == napi_ok ? job->result : 1;
+    if (code != 0) {
+        Logger::GetInstance()->LogE("[iec] unpack %s -> %s failed",
+                                    job->name.c_str(), job->dest.c_str());
+    } else {
+        Logger::GetInstance()->LogI("[iec] unpacked %s -> %s (%zu bytes)",
+                                    job->name.c_str(), job->dest.c_str(),
+                                    job->bytes);
+    }
+    napi_value result;
+    napi_create_int32(env, code, &result);
+    napi_resolve_deferred(env, job->deferred, result);
+    napi_delete_async_work(env, job->work);
+    delete job;
+}
+
 napi_value UnpackResource(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value argv[2] = {nullptr, nullptr};
@@ -532,31 +581,43 @@ napi_value UnpackResource(napi_env env, napi_callback_info info) {
                        "unpackResource(name, dest) expects two strings", dest))
         return nullptr;
 
+    napi_value promise;
+    napi_deferred deferred;
+    napi_create_promise(env, &deferred, &promise);
+
+    auto settle = [&](int code) {
+        napi_value result;
+        napi_create_int32(env, code, &result);
+        napi_resolve_deferred(env, deferred, result);
+        return promise;
+    };
+
     if (!g_res_mgr) {
         Logger::GetInstance()->LogE("[iec] unpack %s: resource manager is not set",
                                     name.c_str());
-        return IntResult(env, 1);
+        return settle(1);
     }
 
-    std::vector<unsigned char> data;
-    if (!ReadRawFile(g_res_mgr, name, &data)) {
-        Logger::GetInstance()->LogE("[iec] unpack %s: rawfile read failed",
+    auto* job = new UnpackJob();
+    job->deferred = deferred;
+    job->name = name;
+    job->dest = dest;
+
+    napi_value resource_name;
+    napi_create_string_utf8(env, "iecUnpackResource", NAPI_AUTO_LENGTH,
+                            &resource_name);
+    if (napi_create_async_work(env, nullptr, resource_name, ExecuteUnpack,
+                               CompleteUnpack, job, &job->work) != napi_ok ||
+        napi_queue_async_work(env, job->work) != napi_ok) {
+        Logger::GetInstance()->LogE("[iec] unpack %s: cannot queue the work",
                                     name.c_str());
-        return IntResult(env, 1);
-    }
-    if (!EnsureDirs(dest)) return IntResult(env, 1);
-
-    // 解包核心在 common/archive_extract.cpp：这里只负责把 rawfile 读成内存
-    // 并做字符串参数转换，宿主测试可以对同一份实现跑 npm.tar.gz。
-    if (IecExtractTar(data.data(), data.size(), dest.c_str()) != 0) {
-        Logger::GetInstance()->LogE("[iec] unpack %s -> %s failed",
-                                    name.c_str(), dest.c_str());
-        return IntResult(env, 1);
+        delete job;
+        return settle(1);
     }
 
-    Logger::GetInstance()->LogI("[iec] unpacked %s -> %s (%zu bytes)",
-                                name.c_str(), dest.c_str(), data.size());
-    return IntResult(env, 0);
+    Logger::GetInstance()->LogI("[iec] unpack %s -> %s started",
+                                name.c_str(), dest.c_str());
+    return promise;
 }
 
 napi_value WriteTxtFile(napi_env env, napi_callback_info info) {

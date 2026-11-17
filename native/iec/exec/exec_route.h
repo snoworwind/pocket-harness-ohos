@@ -25,6 +25,17 @@ std::string UnderFakeRoot(const std::string& path);
 std::string ResolveFilePath(const std::string& path, const std::vector<std::string>& env,
                             const std::string& cwd);
 
+// Follows the two forms of symbolic link this runtime can meet -- a real one, and the
+// fs shim's `<name>.IEC_SYMLINK` marker file -- and returns the file they name. A path
+// that is not a link (and has none on the way) comes back unchanged, so callers can use
+// this on every request. Relative paths are resolved against `cwd`, exactly like
+// ResolveAgainstCwd() in the server does before this is called.
+//
+// The kernel resolves a real symlink itself, but it cannot resolve the marker form: a
+// launcher reached through `ln -s` is a marker file there, and routing has to see the
+// launcher underneath it or the file is refused as unexecutable.
+std::string ResolveLaunchPath(const std::string& path, const std::string& cwd);
+
 // The mode the fs shim stored in <path>.IEC_CHMOD when the kernel refused a
 // chmod. These three are how the server honours an emulated executable bit:
 // ReadChmodMarker reads it, ModeAllowsExec applies the usual uid/gid rules,

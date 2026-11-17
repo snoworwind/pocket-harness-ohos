@@ -643,6 +643,14 @@ int IEC_EXPORT(getpt)(void) {
     return open(PTMX_PATH, O_RDWR | O_NOCTTY);
 }
 
+/* posix_openpt(3) is what node-pty and other libraries call instead of open(2).
+ * It is the same master allocation as getpt(); the flags are O_RDWR|O_NOCTTY,
+ * which is what the service's socketpair already is, so they need no mapping. */
+int IEC_EXPORT(posix_openpt)(int flags) {
+    (void)flags;
+    return open(PTMX_PATH, O_RDWR | O_NOCTTY);
+}
+
 int IEC_EXPORT(grantpt)(int fd) {
     /* Nothing to do: the server already owns the "slave" and hands it over on
      * open("/dev/pts/<n>"). */
@@ -674,7 +682,7 @@ int IEC_EXPORT(openpty)(int *amaster, int *aslave, char *name,
     int master, slave;
     char *pname;
 
-    master = getpt();
+    master = open(PTMX_PATH, O_RDWR | O_NOCTTY);
     if (master < 0) return -1;
 
     if (grantpt(master) < 0 || unlockpt(master) < 0) {

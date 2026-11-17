@@ -27,6 +27,12 @@ struct SoLauncher {
 // this is deliberately not the full check. See ResolveSoLauncher().
 bool IsSoLauncher(const std::string& path);
 
+// Whether a sidecar launcher (`<path>.iecso`) exists next to this path, whatever its
+// content. A command whose ELF executable carries a sidecar may only be started
+// through that sidecar: refusing a malformed one here is what keeps the ELF stub
+// from being executed again in a loop. See ResolveKind().
+bool HasSoSidecar(const std::string& path);
+
 // Reads a launcher in full. Returns false with the reason in *err when the file is
 // not one or is not well formed; err may be null for a caller that only wants the
 // answer.
