@@ -147,11 +147,16 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 ## 测试与校验
 
 ```bash
-node scripts/test.cjs                  # 宿主侧 39 项（会话协议、SSE、路径沙箱、附件上传钩子与图片补丁）
+node scripts/test.cjs                  # 宿主侧 52 项（会话协议、SSE、路径沙箱、附件上传钩子、图片补丁与门禁规则）
 node scripts/test-fetch-polyfill.cjs   # fetch 补丁 15 项（JSON/SSE/重定向/FormData/abort…）
 bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合与 npm.tar.gz
 bash scripts/check-engine-web.sh       # web profile 291 个插件，stderr 为空
+node .githooks/secret-scan.mjs --all   # 敏感文件门禁（签名材料、凭据、私钥、常见 token）
 ```
+
+首次克隆后执行一次 `node scripts/install-hooks.mjs`，即可启用 `pre-commit` / `pre-push`
+门禁；`.github/workflows/secret-scan.yml` 在服务端再跑一遍，详见
+[.githooks/README.md](.githooks/README.md)。
 
 真机验证范围与已知缺口见 [docs/VALIDATION.md](docs/VALIDATION.md)。
 

@@ -29,6 +29,33 @@ const UPLOAD_DOCUMENT_SCRIPT: string =
   "window.__DSH_FILE_UPLOAD__={fetch:post};" +
   "}catch(e){}})();";
 
+// ArkWeb 把自定义 scheme 当 opaque URL：new URL('dsh-resource://file/…').hostname
+// 恒为空，而客户端 @deepseek-ai/dsh-client-resources 的 protocolOf() 正是用
+// hostname 当协议键。于是资源记录一律被判成「没有 provider」，侧栏文件、聊天
+// 文件链接、交付物预览统一显示「文件资源服务不可用」。这里在文档起点只给
+// dsh-resource: 且原生 hostname 为空的 URL 补出 host；解析正常的引擎和其它
+// scheme 保持原样（鸿蒙 ArkWeb 7.0.0.105 实测 hostname 为空）。
+const RESOURCE_URL_DOCUMENT_SCRIPT: string =
+  "(function(){try{" +
+  "if(window.__dshResourceUrlShim){return;}window.__dshResourceUrlShim=true;" +
+  "var U=window.URL;if(!U||!U.prototype){return;}" +
+  "var desc=Object.getOwnPropertyDescriptor(U.prototype,'hostname');" +
+  "if(!desc||typeof desc.get!=='function'){return;}" +
+  "var nativeGet=desc.get;" +
+  "var hostOf=function(href){" +
+  "var m=/^dsh-resource:\\/\\/([^\\/?#]*)/i.exec(String(href||''));" +
+  "if(!m){return '';}" +
+  "var authority=m[1];var at=authority.lastIndexOf('@');if(at>=0){authority=authority.slice(at+1);}" +
+  "var colon=authority.lastIndexOf(':');if(colon>=0){authority=authority.slice(0,colon);}" +
+  "if(!/^[A-Za-z0-9._~!$&'()*+,;=%-]+$/.test(authority)){return '';}" +
+  "return authority.toLowerCase();};" +
+  "var patched=function(){var host=nativeGet.call(this);if(host!==''){return host;}" +
+  "try{if(String(this.protocol).toLowerCase()==='dsh-resource:'){return hostOf(this.href);}}catch(e){}" +
+  "return host;};" +
+  "Object.defineProperty(U.prototype,'hostname',{configurable:true,enumerable:desc.enumerable,get:patched,set:desc.set});" +
+  "}catch(e){}})();";
+// __RESOURCE_URL_SHIM_END__
+
 // 文档开始就装两颗桥：
 //   1. 外链：查询用量/充值/账号信息都是 <a target="_blank">。ArkWeb 在
 //      multiWindowAccess(false) 下拿不到新窗口处理器会把渲染进程挂住，表现就是
@@ -732,6 +759,7 @@ struct Index {
           // 必须在页面脚本之前装好附件上传钩子与外链/下载桥，否则 FileUploadRuntime
           // 已经选了 Worker 通道，而桌面外壳的扩展点也已经按「不存在」处理过了。
           .javaScriptOnDocumentStart([
+            { script: RESOURCE_URL_DOCUMENT_SCRIPT, scriptRules: ['*'] },
             { script: UPLOAD_DOCUMENT_SCRIPT, scriptRules: ['*'] },
             { script: BRIDGE_DOCUMENT_SCRIPT, scriptRules: ['*'] }
           ])

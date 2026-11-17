@@ -1,0 +1,3 @@
+#!/bin/sh
+# 提交门禁：暂存区里出现敏感文件/凭据时拒绝提交。
+exec node "$(dirname "$0")/secret-scan.mjs" --staged

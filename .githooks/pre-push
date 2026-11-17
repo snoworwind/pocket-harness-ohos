@@ -1,0 +1,3 @@
+#!/bin/sh
+# 推送门禁：本次要推送的提交里出现敏感文件/凭据时拒绝推送。
+exec node "$(dirname "$0")/secret-scan.mjs" --pre-push

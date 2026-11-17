@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "scripts": {
     "test": "node scripts/test.cjs",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "secrets:scan": "node .githooks/secret-scan.mjs --all",
     "runtime:sync": "node scripts/runtime-manifest.mjs sync",
     "runtime:check": "node scripts/runtime-manifest.mjs check"
   },

@@ -1,0 +1,5 @@
+# Git 钩子由 sh 执行，必须保持 LF（Windows 上 core.autocrlf=true 也不能转换）。
+.githooks/pre-commit text eol=lf
+.githooks/pre-push text eol=lf
+.githooks/*.mjs text eol=lf
+*.sh text eol=lf
