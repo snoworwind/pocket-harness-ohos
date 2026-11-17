@@ -10,10 +10,10 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 | --- | --- |
 | App name | Pocket Harness |
 | Bundle | `com.snoworwind.phoh` |
-| Version | `0.1.0.1` (versionCode 2) |
+| Version | `0.1.0.2` (versionCode 3) |
 | Min / target API | HarmonyOS 5.1.0 (API 18) / API 24 |
 | Engine | `@deepseek-ai/dsh` 0.2.2-rc.1 (web profile, 291 plugins) |
-| Runtime | Node 24.22.1 (`--jitless`), Bash 5.3, Git 2.56.0 (with HTTPS), toybox 0.8.14, libarchive 3.7.7, ripgrep 14.1.1 |
+| Runtime | Node 24.22.1 (`--jitless`), Bash 5.3, Git 2.56.0 (with HTTPS), toybox 0.8.14, libarchive 3.7.7, ripgrep 14.1.1, CPython 3.12.14 (with pip), curl 8.22.0, jq 1.7.1, Dropbear SSH, less/Vim, SQLite 3.50.4, rsync 3.4.1, xz 5.8.1, zstd 1.5.7, gh, Git LFS |
 | Distribution | GitHub Release: unsigned HAP + arm64/x86_64 native libraries (**no AppGallery release is planned for now**) |
 
 > This project is **not intended for Huawei AppGallery** for now. It is distributed only through
@@ -245,7 +245,7 @@ sandbox boundary.
   re-encoding. EXIF orientation, large-image downscaling and 16-bit/CMYK normalization are no
   longer performed by the engine.
 - `fork` is not intercepted; the terminal PTY relies on `forkpty` compatibility.
-- Not included: Python, MCP, voice, plugin marketplace, persistent background execution.
+- Not included: MCP console, voice, plugin marketplace, persistent background execution. Python is bundled, but there is no on-device `make`/`cc`; pip packages with native extensions must be built on the host.
 
 ## Licensing
 

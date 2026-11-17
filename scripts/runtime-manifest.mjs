@@ -92,7 +92,7 @@ async function expectedVersion(manifest) {
     .sort((a, b) => a.name.localeCompare(b.name));
   update(hash, 'commands', JSON.stringify(commands));
 
-  for (const name of ['official-engine.tar.gz', 'npm.tar.gz']) {
+  for (const name of ['official-engine.tar.gz', 'npm.tar.gz', 'python-stdlib.tar', 'vim-runtime.tar.gz']) {
     const path = join(toolsDir, name);
     requireFile(path, `运行时归档 ${name}`);
     await updateFile(hash, `archive:${name}`, path);

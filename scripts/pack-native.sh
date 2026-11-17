@@ -33,15 +33,28 @@ NODE_VERSION="24.22.1"
 
 fail() { echo "pack-native: $*" >&2; exit 1; }
 note() { echo "pack-native: $*"; }
+file_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
+if command -v readelf >/dev/null 2>&1; then
+  READELF=readelf
+elif command -v llvm-readelf >/dev/null 2>&1; then
+  READELF=llvm-readelf
+elif command -v xcrun >/dev/null 2>&1 && xcrun --find llvm-readelf >/dev/null 2>&1; then
+  READELF="xcrun llvm-readelf"
+else
+  READELF=""
+fi
 
 # name|library|entry
-COMMANDS='bash|libbash.so|iec_bash_main
-sh|libbash.so|iec_bash_main
+COMMANDS='bash|libbash.so|iec_bash_main|3
+sh|libbash.so|iec_bash_main|3
 toybox|libtoybox.so|bsh_toybox_main
 node|libnode.so|iec_node_main
 npm|libnode.so|iec_npm_main
 npx|libnode.so|iec_npx_main
 pnpm|libnode.so|iec_pnpm_main
+python|libpython.so|Py_BytesMain
+python3|libpython.so|Py_BytesMain
+pip|libpython.so|iec_pip_main
 tar|libbsdtar.so|iec_bsdtar_main
 cpio|libbsdcpio.so|iec_bsdcpio_main
 unzip|libbsdunzip.so|iec_bsdunzip_main
@@ -49,12 +62,45 @@ zip|libzipcmd.so|iec_zip_main
 rg|librg.so|iec_rg_main
 git|libgit.so|iec_git_main
 git-remote-http|libgit-remote-http.so|iec_git_remote_http_main
-git-remote-https|libgit-remote-http.so|iec_git_remote_http_main'
+git-remote-https|libgit-remote-http.so|iec_git_remote_http_main
+git-lfs|libgitlfscmd.so|iec_gitlfs_main
+curl|libcurlcmd.so|iec_curl_main
+jq|libjqcmd.so|iec_jq_main
+bc|libbccmd.so|iec_bc_main
+nc|libnc.so|iec_nc_main
+hexdump|libhexdump.so|iec_hexdump_main
+diff|libdiff.so|iec_diff_main
+ssh|libdropbear.so|iec_dropbear_main
+scp|libdropbear.so|iec_dropbear_main
+ssh-keygen|libdropbear.so|iec_dropbear_main
+dbclient|libdropbear.so|iec_dropbear_main
+dropbear|libdropbear.so|iec_dropbear_main
+dropbearkey|libdropbear.so|iec_dropbear_main
+dropbearconvert|libdropbear.so|iec_dropbear_main
+sftp|libsftpcmd.so|iec_sftp_main
+less|liblesscmd.so|iec_less_main
+more|liblesscmd.so|iec_less_main
+vi|libvimcmd.so|iec_vim_main
+vim|libvimcmd.so|iec_vim_main
+gh|libghcmd.so|iec_gh_main
+openssl|libopensslcmd.so|iec_openssl_main
+tree|libtreecmd.so|iec_tree_main
+sqlite3|libsqlite3cmd.so|iec_sqlite3_main
+rsync|librsynccmd.so|iec_rsync_main
+xz|libxzcmd.so|iec_xz_main
+unxz|libxzcmd.so|iec_xz_main
+xzcat|libxzcmd.so|iec_xz_main
+lzma|libxzcmd.so|iec_xz_main
+unlzma|libxzcmd.so|iec_xz_main
+lzcat|libxzcmd.so|iec_xz_main
+zstd|libzstdcmd.so|iec_zstd_main
+unzstd|libzstdcmd.so|iec_zstd_main
+zstdcat|libzstdcmd.so|iec_zstd_main'
 
 # libarchive.so.13 不是命令行工具，而是 archive_extract.cpp 用 dlopen 加载的共享库：
 # 设备上的 unpackResource()（首次启动解官方引擎和 npm）少了它就会返回非 0。
 # libgit-remote-http.so 同时承载 git-remote-http 与 git-remote-https 两个启动器。
-LIBS='libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so libnode.so librg.so libarchive.so.13 libgit.so libgit-remote-http.so'
+LIBS='libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so libnode.so libpython.so librg.so libarchive.so.13 libgit.so libgit-remote-http.so libgitlfscmd.so libcurlcmd.so libjqcmd.so libbccmd.so libnc.so libhexdump.so libdiff.so libdropbear.so libsftpcmd.so liblesscmd.so libvimcmd.so libghcmd.so libopensslcmd.so libtreecmd.so libsqlite3cmd.so librsynccmd.so libxzcmd.so libzstdcmd.so'
 
 mkdir -p "$PROJECT/entry/libs/$LIB_ARCH" \
          "$PROJECT/entry/src/main/resources/rawfile/tools"
@@ -66,9 +112,11 @@ for lib in $LIBS; do
     [ "$PARTIAL" -eq 1 ] && continue
     fail "缺少原生库 $lib（先构建：scripts/optional/build_node.sh 等）"
   fi
-  readelf -h "$LIB_SRC/$lib" | grep -F "$ELF_MACHINE" >/dev/null || fail "$lib 的 ELF 架构不匹配 $LIB_ARCH"
+  if [ -n "$READELF" ]; then
+    "$READELF" -h "$LIB_SRC/$lib" | grep -F "$ELF_MACHINE" >/dev/null || fail "$lib 的 ELF 架构不匹配 $LIB_ARCH"
+  fi
   cp -f "$LIB_SRC/$lib" "$PROJECT/entry/libs/$LIB_ARCH/$lib"
-  note "libs/$lib $(stat -c%s "$LIB_SRC/$lib") 字节"
+  note "libs/$lib $(file_size "$LIB_SRC/$lib") 字节"
 done
 
 # 运行时目录名由「内容」决定，不能只写死应用版本号：否则换了引擎或原生库却没改
@@ -162,11 +210,13 @@ EOF
     note "警告：未找到 $PNPM_TGZ，设备上将无法安装插件"
   fi
   while IFS= read -r addon; do
-    readelf -h "$addon" | grep -F "$ELF_MACHINE" >/dev/null || fail "原生插件架构不匹配 $LIB_ARCH: $addon"
+    if [ -n "$READELF" ]; then
+      "$READELF" -h "$addon" | grep -F "$ELF_MACHINE" >/dev/null || fail "原生插件架构不匹配 $LIB_ARCH: $addon"
+    fi
   done < <(find "$WORK/engine" -type f -name '*.node')
   tar --sort=name --mtime='2026-01-01 00:00:00' --owner=0 --group=0 --numeric-owner \
       -C "$WORK/engine" -czf "$ENGINE_TAR" .
-  note "official-engine.tar.gz $(stat -c%s "$ENGINE_TAR") 字节"
+  note "official-engine.tar.gz $(file_size "$ENGINE_TAR") 字节"
 else
   note "跳过引擎打包：找不到 $SHIP_LIST"
 fi
@@ -175,12 +225,28 @@ if [ "${#missing[@]}" -gt 0 ]; then
   note "缺库：${missing[*]}"
 fi
 
+# CPython 标准库（含 pip/setuptools/wheel）与 Vim 运行时由各自构建脚本产出。
+PYTHON_STDLIB_SRC="$PROJECT/native/iec/platform/ohos/har/src/main/resources/rawfile/tools/python-stdlib.tar"
+if [ -f "$PYTHON_STDLIB_SRC" ]; then
+  cp -f "$PYTHON_STDLIB_SRC" "$PROJECT/entry/src/main/resources/rawfile/tools/python-stdlib.tar"
+  note "python-stdlib.tar $(file_size "$PROJECT/entry/src/main/resources/rawfile/tools/python-stdlib.tar") 字节"
+else
+  fail "缺少 $PYTHON_STDLIB_SRC（先运行 native/iec/scripts/optional/build_python.sh）"
+fi
+VIM_RUNTIME_SRC="$PROJECT/native/iec/platform/ohos/har/src/main/resources/rawfile/tools/vim-runtime.tar.gz"
+if [ -f "$VIM_RUNTIME_SRC" ]; then
+  cp -f "$VIM_RUNTIME_SRC" "$PROJECT/entry/src/main/resources/rawfile/tools/vim-runtime.tar.gz"
+  note "vim-runtime.tar.gz 已复制"
+else
+  fail "缺少 $VIM_RUNTIME_SRC（先运行 native/iec/scripts/optional/build_vim.sh）"
+fi
+
 # npm 用我们自己编的 Node 源码里的 deps/npm 打包，而不是上游仓库里的旧副本。
 REBUILT_NPM="$NATIVE_ROOT/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz"
 PROJECT_NPM="$PROJECT/native/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz"
 if [ -f "$REBUILT_NPM" ]; then
   cp -f "$REBUILT_NPM" "$PROJECT_NPM"
-  note "npm.tar.gz 取自本次 Node 源码构建（$(stat -c%s "$PROJECT_NPM") 字节）"
+  note "npm.tar.gz 取自本次 Node 源码构建（$(file_size "$PROJECT_NPM") 字节）"
 else
   note "警告：未找到 Node 构建产出的 npm.tar.gz，沿用仓库内副本"
 fi
@@ -193,12 +259,16 @@ fi
   printf '{\n  "version": "",\n  "engineVersion": "%s",\n  "nodeVersion": "%s",\n  "commands": [\n' \
     "$ENGINE_VERSION" "$NODE_VERSION"
   first=1
-  while IFS='|' read -r name library entry; do
+  while IFS='|' read -r name library entry arity; do
     [ -z "$name" ] && continue
     [ -f "$PROJECT/entry/libs/$LIB_ARCH/$library" ] || continue
     [ "$first" -eq 1 ] || printf ',\n'
     first=0
-    printf '    { "name": "%s", "library": "%s", "entry": "%s" }' "$name" "$library" "$entry"
+    if [ -n "$arity" ]; then
+      printf '    { "name": "%s", "library": "%s", "entry": "%s", "arity": %s }' "$name" "$library" "$entry" "$arity"
+    else
+      printf '    { "name": "%s", "library": "%s", "entry": "%s" }' "$name" "$library" "$entry"
+    fi
   done <<< "$COMMANDS"
   printf '\n  ]\n}\n'
 } > "$MANIFEST"

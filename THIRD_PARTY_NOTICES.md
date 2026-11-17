@@ -26,6 +26,26 @@ HAP 分发（应用内路径 `resources/rawfile/notices/`，首次启动后解�
 | toybox | 0.8.14 | 0BSD | `LICENSES/toybox.txt` |
 | libarchive（bsdtar / bsdcpio / unzip / zipcmd） | 3.7.7 | BSD-2-Clause | `LICENSES/libarchive.txt` |
 | ripgrep | 14.1.1 | Unlicense OR MIT | `LICENSES/ripgrep-UNLICENSE.txt`、`LICENSES/ripgrep-MIT.txt` |
+| CPython | 3.12.14，<https://www.python.org> | PSF-2.0 | `LICENSES/Python-PSF.txt` |
+| pip / setuptools / wheel | 24.3.1 / 75.6.0 / 0.45.1，随 Python 标准库分发 | MIT | `LICENSES/pip.txt`、`LICENSES/setuptools.txt`、`LICENSES/wheel.txt` |
+| curl（命令行，`libcurlcmd.so`） | 8.22.0，同 libcurl | curl | `LICENSES/curl.txt` |
+| OpenSSL（命令行，`libopensslcmd.so`） | 3.0.22 | Apache-2.0 | `LICENSES/Apache-2.0-OpenSSL.txt` |
+| jq / oniguruma | jq 1.7.1 / oniguruma 6.9.9 | MIT / BSD-2-Clause | `LICENSES/jq.txt`、`LICENSES/oniguruma.txt` |
+| GNU bc | 1.07.1，<https://ftp.gnu.org/gnu/bc/> | GPL-3.0 | `LICENSES/GPL-3.0.txt` |
+| Dropbear SSH（`ssh`/`scp`/`ssh-keygen` 等） | 源码，<https://github.com/mkj/dropbear> | MIT；libtomcrypt/libtommath 为 public domain | `LICENSES/dropbear.txt`、`LICENSES/libtomcrypt.txt`、`LICENSES/libtommath.txt` |
+| OpenSSH sftp | 9.9p2，<https://www.openssh.com> | BSD-style | `LICENSES/openssh.txt` |
+| less | 668，<https://www.greenwoodsoftware.com/less/> | Less License（BSD 风格） | `LICENSES/less.txt` |
+| GNU Readline / ncurses | 8.2 / 6.4 | GPL-3.0 / MIT-style | `LICENSES/GPL-3.0.txt`、`LICENSES/ncurses.txt` |
+| Vim | 9.1.1000，tiny/small 构建 | Vim License | `LICENSES/vim.txt` |
+| tree | 2.2.1，<https://github.com/Old-Man-Programmer/tree> | GPL-2.0 | `LICENSES/GPL-2.0.txt` |
+| SQLite | 3.50.4 amalgamation | Public domain | `LICENSES/sqlite.txt` |
+| rsync / popt | 3.4.1 / bundled popt | GPL-3.0 / MIT | `LICENSES/rsync.txt`、`LICENSES/popt.txt` |
+| XZ Utils / liblzma | 5.8.1 | Public domain / LGPL-2.1+（liblzma） | `LICENSES/xz.txt` |
+| zstd | 1.5.7，<https://github.com/facebook/zstd> | BSD-3-Clause | `LICENSES/zstd.txt` |
+| GitHub CLI（`gh`） | 源码，<https://github.com/cli/cli> | MIT | `LICENSES/gh.txt` |
+| Git LFS | 源码，<https://github.com/git-lfs/git-lfs> | MIT | `LICENSES/git-lfs.txt` |
+| Go runtime（gh/git-lfs 静态链接） | 随 Go 工具链 | BSD-3-Clause | `LICENSES/Go-BSD.txt` |
+| diff / nc / hexdump 命令 | 本仓库 `native/iec/scripts` | MIT | `LICENSE` |
 | libvterm | 随仓库源码 | MIT | `LICENSES/libvterm.txt` |
 | libc++（`libc++_shared.so`） | DevEco Studio SDK 自带 | Apache-2.0 WITH LLVM-exception | `LICENSES/Apache-2.0-LLVM.txt` |
 | IEC / Bettersh / Guncat | 本仓库 `native/iec` | MIT | `native/iec/LICENSE`、`native/BETTERSH-LICENSE`、`native/GUNCAT-LICENSE` |

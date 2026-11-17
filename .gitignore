@@ -52,6 +52,7 @@ native/iec/thirdparty/*.tar.gz
 native/iec/thirdparty/*.tar.xz
 native/iec/platform/ohos/har/build/
 entry/libs/
+entry/src/main/resources/rawfile/tools/*.tar
 entry/src/main/resources/rawfile/tools/*.tar.gz
 entry/src/main/resources/rawfile/tools/*.tar.xz
 entry/src/main/resources/rawfile/tools/*.zip

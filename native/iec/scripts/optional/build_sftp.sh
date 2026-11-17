@@ -60,10 +60,11 @@ if [ ! -f Makefile ]; then
 		LDFLAGS="-fuse-ld=lld -L$IEC_OPENSSL_DIR/lib -L$IEC_DEPS_LIB" \
 		> "$WORK/configure.log" 2>&1 \
 		|| { tail -30 "$WORK/configure.log" >&2; iec_err "openssh configure failed"; }
-	sed -i 's|^#define SSH_TUN_LINUX 1|/* #undef SSH_TUN_LINUX */|' config.h
+	perl -pi -e 's|^#define SSH_TUN_LINUX 1|/* #undef SSH_TUN_LINUX */|' config.h
 fi
 
-make -j"${JOBS:-8}" sftp > "$WORK/make.log" 2>&1 \
+rm -f sftp.o
+make -j"${JOBS:-8}" SSH_PROGRAM=ssh sftp > "$WORK/make.log" 2>&1 \
 	|| { tail -30 "$WORK/make.log" >&2; iec_err "sftp build failed"; }
 [ -x sftp ] || iec_err "sftp was not built"
 

@@ -130,6 +130,9 @@ export class NativeRuntime {
     this.ensureDir(this.root + '/tmp');
     this.ensureDir(this.context.filesDir + '/harness-home');
     this.ensureDir(this.context.filesDir + '/home');
+    this.ensureDir(this.context.filesDir + '/home/.ssh');
+    this.ensureDir(this.context.filesDir + '/home/.config');
+    this.ensureDir(this.context.filesDir + '/home/.cache');
     this.ensureDir(this.context.filesDir + '/tmp');
     // 启动时的检查只看「标记内容 + 两棵关键子树在不在」，不做内容哈希：
     // 摘要由构建期 scripts/runtime-manifest.mjs 按实际字节算好，设备上不重复校验。
@@ -144,7 +147,9 @@ export class NativeRuntime {
     } catch (error) { /* 标记不可读按未安装处理 */ }
     const complete = installedVersion === manifest.version &&
       fs.accessSync(this.root + '/engine/node_modules/@deepseek-ai/dsh/lib/bin.js') &&
-      fs.accessSync(this.root + '/npm/bin/npm-cli.js');
+      fs.accessSync(this.root + '/npm/bin/npm-cli.js') &&
+      fs.accessSync(this.root + '/python/lib/python3.12/os.py') &&
+      fs.accessSync(this.root + '/vim/runtime/defaults.vim');
     // 启动页据此决定是否提示「首次启动需要解包」，只有这里为 true 时才是真在解包。
     this.installing = !complete;
     if (!complete) {
@@ -168,6 +173,11 @@ export class NativeRuntime {
       }
       const npmCode = unpackResource('tools/npm.tar.gz', this.root);
       if (npmCode !== 0) { throw new Error('npm 解包失败（unpackResource=' + npmCode.toString() + '）'); }
+      const pythonCode = unpackResource('tools/python-stdlib.tar', this.root);
+      if (pythonCode !== 0) { throw new Error('Python 标准库解包失败（unpackResource=' + pythonCode.toString() + '）'); }
+      this.ensureDir(this.root + '/vim');
+      const vimCode = unpackResource('tools/vim-runtime.tar.gz', this.root + '/vim');
+      if (vimCode !== 0) { throw new Error('Vim 运行时解包失败（unpackResource=' + vimCode.toString() + '）'); }
       if (writeTxtFile(this.root + '/.installed', manifest.version) !== 0) { throw new Error('运行时安装标记写入失败'); }
     }
     this.installing = false;
@@ -268,6 +278,16 @@ export class NativeRuntime {
       // 不设这个变量时会去 /usr/libexec/git-core（假根里没有），HTTPS 会失败。
       'GIT_EXEC_PATH': this.root + '/bin',
       'CURL_CA_BUNDLE': caFile,
+      'PYTHONHOME': this.root + '/python',
+      'PIP_CACHE_DIR': stableHome + '/.cache/pip',
+      'VIMRUNTIME': this.root + '/vim/runtime',
+      'PAGER': 'less',
+      'GIT_PAGER': 'less',
+      'EDITOR': 'vi',
+      'VISUAL': 'vi',
+      'GIT_EDITOR': 'vi',
+      // Go's c-shared runtime and the C tools resolve the shell through PATH.
+      'GIT_SSH_COMMAND': this.root + '/bin/ssh',
       'DSH_HOME': this.context.filesDir + '/harness-home',
       'DSH_PRIMARY_RUNTIME': '',
       'DSH_TELEMETRY_DISABLED': '1',

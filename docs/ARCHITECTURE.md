@@ -4,7 +4,7 @@
 ArkUI Index（只留一个 Web 组件 + 启动状态）
   └─ NativeRuntime
       ├─ IEC HAR（libiec_server.so）── execStart/execPoll/execWrite/unpackResource
-      │     └─ 原生子进程：bash / node / toybox / tar / unzip / rg / git
+      │     └─ 原生子进程：bash / node / toybox / tar / unzip / rg / git / python / curl / ssh / jq / less / vim / gh / git-lfs 等
       └─ node bin.js --profile web --port 0 --no-open
             ↕ HTTP + SSE/WebSocket（仅 127.0.0.1）
           Web 组件加载 dsh 打印的 http://127.0.0.1:<port>/?token=…
@@ -52,11 +52,11 @@ filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭
 
 | 场景 | 启动页表现 |
 | --- | --- |
-| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎与 npm」和首次启动说明；解包期间 UI 线程被同步调用占住，进度圈可能停住，但文字提示保留 |
+| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎、Python 与 Vim」和首次启动说明；解包期间 UI 线程被同步调用占住，进度圈可能停住，但文字提示保留 |
 | 覆盖升级但 manifest 版本未变 | 与普通冷启动相同，不出现解包提示；这是复用旧运行时的正确行为 |
 | 普通冷启动 | 「正在启动本地运行时…」→「正在启动官方 Web 服务」→「正在恢复上次会话与工作区…」，首个会话挂载后显示界面 |
 
-本机优化后普通冷启动到可用约 **11–15 秒**；首次安装额外解包约 47 MB 引擎归档，不计入这个数字。定位过程：Node CPU profile 显示 `process.report.getReport()` 占约 32 秒，短路后 `/api/session/create` 从 32.4 秒降到约 0.3 秒。
+本机优化后普通冷启动到可用约 **11–15 秒**；首次安装额外解包约 46 MB 引擎、24 MB Python 标准库与 10 MB Vim 运行时，不计入这个数字。定位过程：Node CPU profile 显示 `process.report.getReport()` 占约 32 秒，短路后 `/api/session/create` 从 32.4 秒降到约 0.3 秒。
 
 ### 运行时版本自动化
 

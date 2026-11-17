@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 审计 HAP 里随包分发的二进制与归档，确认来源都是本机构建或官方 SDK。
 set -u
-P=/mnt/d/forGithub/deepseek-harmony
-HAP="$P/entry/build/default/outputs/default/entry-default-unsigned.hap"
-WA=/var/tmp/deepseek-harmony-audit
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HAP="${HAP:-$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap}"
+WA="${WA:-/var/tmp/pocket-harness-audit}"
 rm -rf "$WA"; mkdir -p "$WA"
 unzip -q "$HAP" -d "$WA" || { echo "HAP 解包失败" >&2; exit 1; }
 
@@ -12,7 +12,7 @@ find "$WA/libs" -name '*.so*' -printf '%f %s\n' 2>/dev/null | sort
 
 echo
 echo '=== 2. 预期集合核对 ==='
-EXPECTED='libnode.so libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so librg.so libarchive.so.13 libgit.so libgit-remote-http.so libiec_server.so libncploader.so libdsh_terminal.so libc++_shared.so'
+EXPECTED='libnode.so libpython.so libbash.so libtoybox.so libbsdtar.so libbsdcpio.so libbsdunzip.so libzipcmd.so librg.so libarchive.so.13 libgit.so libgit-remote-http.so libgitlfscmd.so libcurlcmd.so libjqcmd.so libbccmd.so libnc.so libhexdump.so libdiff.so libdropbear.so libsftpcmd.so liblesscmd.so libvimcmd.so libghcmd.so libopensslcmd.so libtreecmd.so libsqlite3cmd.so librsynccmd.so libxzcmd.so libzstdcmd.so libiec_server.so libncploader.so libdsh_terminal.so libc++_shared.so'
 for name in $EXPECTED; do
   if [ -f "$WA/libs/arm64-v8a/$name" ]; then echo "ok   $name"; else echo "MISS $name"; fi
 done

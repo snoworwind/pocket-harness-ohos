@@ -10,10 +10,10 @@
 | --- | --- |
 | 应用名 | Pocket Harness |
 | 包名 | `com.snoworwind.phoh` |
-| 版本 | `0.1.0.1`（versionCode 2） |
+| 版本 | `0.1.0.2`（versionCode 3） |
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
-| 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1 |
+| 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1、CPython 3.12.14（含 pip）、curl 8.22.0、jq 1.7.1、Dropbear SSH、less/Vim、SQLite 3.50.4、rsync 3.4.1、xz 5.8.1、zstd 1.5.7、gh、Git LFS |
 | 发布产物 | GitHub Release：未签名 HAP + arm64/x86_64 原生库（**本项目暂不打算上架华为应用市场**） |
 
 > 本项目**暂不打算上架华为应用市场**，只通过 GitHub Release 分发未签名的 HAP 与预编译原生库；使用者需要自行用调试证书签名后安装。下文的应用包（`.app`）构建步骤仅作为将来可能上架时的参考保留。
@@ -67,12 +67,33 @@ bash native/build-bash.sh                    # Bash 5.3（GPL-3.0）
 bash native/iec/scripts/build_toybox.sh      # toybox
 bash native/iec/scripts/build_libarchive.sh  # tar/cpio/unzip/zip
 bash native/iec/scripts/optional/build_git.sh # Git 2.56.0（GPL-2.0，含 HTTPS）
+# P0–P2 常用命令（按需；less/vim 依赖 build_python.sh 产出的 ncursesw）
+bash native/iec/scripts/optional/build_python.sh   # Python 3.12 + pip + 标准库
+bash native/iec/scripts/optional/build_curlcmd.sh  # curl
+bash native/iec/scripts/optional/build_dropbear.sh # ssh/scp/ssh-keygen
+bash native/iec/scripts/optional/build_sftp.sh     # sftp
+bash native/iec/scripts/optional/build_jq.sh       # jq
+bash native/iec/scripts/build_extra_commands.sh    # diff/nc/hexdump
+bash native/iec/scripts/optional/build_bc.sh       # bc
+bash native/iec/scripts/optional/build_less.sh     # less/more
+bash native/iec/scripts/optional/build_vim.sh      # vi/vim + runtime
+bash native/iec/scripts/optional/build_gh.sh       # gh（Go c-shared）
+bash native/iec/scripts/optional/build_gitlfs.sh   # git-lfs（Go c-shared）
+bash native/iec/scripts/optional/build_opensslcmd.sh # openssl
+bash native/iec/scripts/optional/build_tree.sh     # tree
+bash native/iec/scripts/optional/build_sqlite3.sh  # sqlite3
+bash native/iec/scripts/optional/build_rsync.sh    # rsync
+bash native/iec/scripts/optional/build_xz.sh       # xz/lzma
+bash native/iec/scripts/optional/build_zstd.sh     # zstd
 bash scripts/pack-native.sh                  # 产物 + 引擎归档 → entry/
 ```
 
 Git 目标会把 zlib、PCRE2、OpenSSL、libcurl 静态链接进两个 `.so`，首次构建时脚本会自动下载并
 编译这些依赖。在 macOS 上交叉编译时，先按 `native/iec/scripts/env.sh.example` 设置 `OHOS_SDK`、
 `CLANG` 与 `JOBS`，并让 `PATH` 里能找到 SDK 的 `llvm-ar`/`llvm-nm` 等工具。
+`build_python.sh` 需要宿主 Python 3.12、`tic`/`infocmp` 和 ncurses/readline 源码；`less`、`vim`
+复用它在 `native/iec/build/python/deps` 下产出的静态 ncursesw。`gh`、`git-lfs` 用 Go 的
+`-buildmode=c-shared` 交叉编译，需要 Go 1.24+ 并能拉取模块。
 
 x86_64 模拟器：见 [docs/X86_64-BUILD.md](docs/X86_64-BUILD.md)，用 `scripts/build-x86-runtime.sh` 的
 `setup / node / tools / bash / addons / rg / pack` 分阶段构建。
@@ -149,7 +170,7 @@ filesDir/
 
 - 运行时目录名由 `scripts/runtime-manifest.mjs` 按内容摘要生成；`build.mjs` 每次构建前会自动
   重算并写回 `runtime-manifest.json`，引擎、npm 或任一原生库变化都会换目录、重新解包，
-  成功后删除旧的 `runtime-*` 目录（约 450 MB/个）；
+  成功后删除旧的 `runtime-*` 目录（约 500 MB/个）；
 - 只改 ArkTS/UI 的覆盖升级不会换运行时；manifest 版本不变时复用旧目录，启动行为与普通
   冷启动完全一致，这是刻意设计，不是漏解包；
 - `.installed` 的内容必须等于当前 `manifest.version`，否则整棵重解；
@@ -161,14 +182,14 @@ filesDir/
 
 | 场景 | 启动页表现 |
 | --- | --- |
-| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎与 npm」和首次启动说明；解包是同步操作，进度圈可能短暂停住 |
+| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎、Python 与 Vim」和首次启动说明；解包是同步操作，进度圈可能短暂停住 |
 | 覆盖升级但运行时未变 | 与普通冷启动相同，不出现解包提示 |
 | 普通冷启动 | 「正在启动本地运行时…」→「正在启动官方 Web 服务」→「正在恢复上次会话与工作区…」；首个会话挂载后才撤掉启动页 |
 
 官方 Web GUI 的 `onPageEnd` 只代表静态资源加载完，此时输入框和右栏仍未就绪。启动页会一直
 盖住 Web 并拦截触摸，直到 `[data-conversation-session]` 出现；首页出现后 60 秒仍无会话才放行；另有 120 秒绝对兜底，避免 Web 页面完全挂死时永久停在启动页。
 
-本机优化后的冷启动到可用约 **11–15 秒**；首次安装仍要额外解包约 47 MB 引擎归档。
+本机优化后的冷启动到可用约 **11–15 秒**；首次安装仍要额外解包约 46 MB 引擎、24 MB Python 标准库与 10 MB Vim 运行时。
 
 ## 运行时补丁
 
@@ -221,9 +242,23 @@ TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可�
 目录项已持久化，而应用沙箱不允许 `open('/data/storage/el2')`，于是任何附件都会在写文件前
 报 `EACCES`。补丁在遇到沙箱边界的 `EACCES`/`EPERM` 时停止向上 fsync，边界以下仍逐级同步。
 
+## 内置命令
+
+运行时清单（`entry/src/main/resources/rawfile/tools/runtime-manifest.json`）里的启动器覆盖：
+
+- 运行时：`node`、`npm`、`npx`、`pnpm`、`python`、`python3`、`pip`
+- Shell/文件：`bash`、`sh`、`toybox`（及 toybox 的 applet）、`tar`、`cpio`、`zip`、`unzip`
+- 搜索/版本控制：`rg`、`git`、`git-remote-http(s)`、`git-lfs`、`gh`
+- 网络/远程：`curl`、`ssh`、`scp`、`sftp`、`ssh-keygen`、`nc`
+- 文本/分页：`jq`、`diff`、`bc`、`less`、`more`、`vi`、`vim`、`tree`、`hexdump`
+- 归档/数据处理：`xz`、`unxz`、`xzcat`、`lzma`、`unlzma`、`lzcat`、`zstd`、`unzstd`、`zstdcat`、`sqlite3`
+- 其他：`openssl`、`rsync`
+
+Python 标准库、pip/setuptools/wheel 与 Vim 运行时分别打包为 `python-stdlib.tar`、`vim-runtime.tar.gz`，首次启动时解到运行时目录；`PYTHONHOME`、`VIMRUNTIME` 由 `NativeRuntime` 设置。
+
 ## 已知边界
 
-- 首次启动要解包 47 MB 的引擎归档（约 2.7 万个文件），真机上一到两分钟；
+- 首次启动要解包 46 MB 引擎、24 MB Python 标准库与 10 MB Vim 运行时（约 2.7 万个文件），真机上一到两分钟；
 - 后台保活用「定位」连续任务：需要授权模糊定位，拒绝时只影响后台存活；
 - `dsh web` 只绑 `127.0.0.1`，界面只在本机 Web 组件里可达，不要改成对外监听；
 - 引擎自带的进程级沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，能力边界靠 permission
@@ -231,7 +266,7 @@ TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可�
 - 图片附件走纯 JS 降级：只做文件头校验与原字节透传，不重编码；EXIF 方向、超大图降采样
   和 16-bit/CMYK 归一化都不再由引擎处理；
 - `fork` 未被拦截，由设备决定；终端 PTY 依赖 `forkpty` 的兼容实现；
-- 未包含：Python、MCP、语音、插件市场、后台常驻执行。
+- 未包含：MCP 控制台、语音、插件市场、后台常驻执行；Python 运行时已随包，但设备端没有 `make`/`cc`，带原生扩展的 pip 包仍需在构建机预编译。
 
 ## 许可证与合规
 

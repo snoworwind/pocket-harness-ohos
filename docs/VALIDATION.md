@@ -43,6 +43,23 @@
 - 登录 / API Key 配置后的真实对话，以及各类网络环境下内置 CA 是否覆盖实际证书链；
 - JIT-less V8 的长任务性能与内存占用。
 
+## 新增命令的构建验证
+
+本机（macOS + DevEco SDK 的 OHOS clang 15 cross target）已重新构建以下 IEC 命令对象，全部为 `aarch64-linux-ohos` 共享库，入口符号用 `llvm-nm -D` 核对：
+
+| 组 | 命令 / 库 | 构建脚本 |
+| --- | --- | --- |
+| P0 | `python`/`python3`/`pip`（`libpython.so`）、`curl`、`ssh`/`scp`/`ssh-keygen`/`dbclient`、`sftp`、`jq` | `build_python.sh`、`build_curlcmd.sh`、`build_dropbear.sh`、`build_sftp.sh`、`build_jq.sh` |
+| P1 | `diff`、`bc`、`nc`、`hexdump`、`less`/`more`、`vi`/`vim`、`gh`、`git-lfs` | `build_extra_commands.sh`、`build_bc.sh`、`build_less.sh`、`build_vim.sh`、`build_gh.sh`、`build_gitlfs.sh` |
+| P2 | `openssl`、`tree`、`sqlite3`、`rsync`、`xz`/`unxz`/`xzcat`/`lzma`/`unlzma`/`lzcat`、`zstd`/`unzstd`/`zstdcat` | `build_opensslcmd.sh`、`build_tree.sh`、`build_sqlite3.sh`、`build_rsync.sh`、`build_xz.sh`、`build_zstd.sh` |
+
+- 运行时清单 51 个启动器、34 个 `.so`；`node scripts/runtime-manifest.mjs check` 通过；
+- `entry-default-unsigned.hap` 已在本地重新打包（约 299 MB），HAP 内清单与 34 个库一一对应；
+- Python 3.12.14 静态模块包含 `_ssl`、`_sqlite3`、`_lzma`、`_ctypes`、`_curses`、`readline`；`python-stdlib.tar` 内含 pip/setuptools/wheel；
+- Vim 9.1.1000 small + `vim-runtime.tar.gz`；`gh`/`git-lfs` 用 Go c-shared，只依赖 `libc.so`；
+- **尚未在真机运行**：Go c-shared 的运行时初始化、Python 交互式 REPL、`ssh` 首次连接、`vim` 终端渲染等仍需设备验证；本轮按要求未连接手机、未推送远程。
+- 调试证书签名已完成：`entry-default-signed.hap`（约 301 MB），`hap-sign-tool verify-app` 返回 `Verify success`，profile 与 `Pocket Harness DebugDebug.p7b` 逐字节一致；SHA-256 `2558ed9494db2793b5c4be2b69d1d9f52240a69b851c8300594b4af60b411226`。
+
 ## 已知缺口与假设
 
 1. **两套 C++ ABI 怎么对齐**：`libiec_server.so` 由 hvigor 用 SDK 头文件构建、引用 `__n1`；交叉编译的产物必须用同名空间。V8 又需要 libc++ 22 的 `<ranges>`，做法是「libc++ 22 头文件 + `__config_site` 改成 `__n1`」，用 `scripts/probe-ranges-n1.sh` 验证过 ranges 能编译且 `-z defs` 链接随包 `libc++_shared.so` 全解析。

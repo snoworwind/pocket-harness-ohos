@@ -21,6 +21,23 @@
 | `librg.so` | ripgrep 14.1.1 源码（crates.io） | `scripts/rg/build-ripgrep.sh`，cargo 目标 `aarch64-unknown-linux-ohos`，编译成导出 `iec_rg_main` 的 cdylib，`llvm-strip` 后 4.9 MB | Unlicense OR MIT |
 | `libgit.so` | Git 2.56.0 源码（github.com/git/git） | `native/iec/scripts/optional/build_git.sh`：`-fPIC` 编译 git.o + builtin + libgit.a，`llvm-objcopy --redefine-sym main=iec_git_main`，再链 IEC shim 与静态 zlib/PCRE2/OpenSSL/libcurl 成共享库；只导出 `iec_git_main` | GPL-2.0 |
 | `libgit-remote-http.so` | Git 2.56.0 的 `remote-curl.c` + `http.c` + `http-walker.c` | 同上脚本，入口 `iec_git_remote_http_main`；同时供 `git-remote-http` 与 `git-remote-https` 两个启动器使用，静态链 libcurl/OpenSSL/zlib | GPL-2.0；静态依赖见 `LICENSES/curl.txt`、`LICENSES/Apache-2.0-OpenSSL.txt`、`LICENSES/zlib.txt` |
+| `libpython.so` | CPython 3.12.14 | `native/iec/scripts/optional/build_python.sh`，静态扩展转为共享对象，入口 `Py_BytesMain` / `iec_pip_main` | PSF-2.0 |
+| `libcurlcmd.so` | curl 8.22.0 命令行 | `native/iec/scripts/optional/build_curlcmd.sh`，复用 libcurl 静态库 | curl |
+| `libopensslcmd.so` | OpenSSL 3.0.22 CLI | `native/iec/scripts/optional/build_opensslcmd.sh` | Apache-2.0 |
+| `libjqcmd.so` | jq 1.7.1 + oniguruma 6.9.9 | `native/iec/scripts/optional/build_jq.sh` | MIT / BSD-2-Clause |
+| `libbccmd.so` | GNU bc 1.07.1 | `native/iec/scripts/optional/build_bc.sh` | GPL-3.0 |
+| `libnc.so`、`libhexdump.so`、`libdiff.so` | 本仓库 `native/iec/scripts/optional/cmd_*.c` | `native/iec/scripts/build_extra_commands.sh` | MIT |
+| `libdropbear.so` | Dropbear SSH（含 bundled libtomcrypt/libtommath） | `native/iec/scripts/optional/build_dropbear.sh`，入口 `iec_dropbear_main`，按 argv[0] 提供 ssh/scp/ssh-keygen 等 | MIT / public domain |
+| `libsftpcmd.so` | OpenSSH 9.9p2 sftp | `native/iec/scripts/optional/build_sftp.sh`，入口 `iec_sftp_main` | BSD-style |
+| `liblesscmd.so` | less 668 | `native/iec/scripts/optional/build_less.sh`，静态链 ncursesw | Less License |
+| `libvimcmd.so` | Vim 9.1.1000（small） | `native/iec/scripts/optional/build_vim.sh`，入口 `iec_vim_main`，运行时单独打包 | Vim License |
+| `libtreecmd.so` | tree 2.2.1 | `native/iec/scripts/optional/build_tree.sh` | GPL-2.0 |
+| `libsqlite3cmd.so` | SQLite 3.50.4 | `native/iec/scripts/optional/build_sqlite3.sh` | Public domain |
+| `librsynccmd.so` | rsync 3.4.1（bundled popt） | `native/iec/scripts/optional/build_rsync.sh` | GPL-3.0 / MIT |
+| `libxzcmd.so` | XZ Utils 5.8.1 | `native/iec/scripts/optional/build_xz.sh` | Public domain / LGPL-2.1+ |
+| `libzstdcmd.so` | zstd 1.5.7 | `native/iec/scripts/optional/build_zstd.sh` | BSD-3-Clause |
+| `libghcmd.so` | GitHub CLI 源码 | `native/iec/scripts/optional/build_gh.sh`，Go c-shared，入口 `iec_gh_main` | MIT / Go BSD-3-Clause |
+| `libgitlfscmd.so` | Git LFS 源码 | `native/iec/scripts/optional/build_gitlfs.sh`，Go c-shared，入口 `iec_gitlfs_main` | MIT / Go BSD-3-Clause |
 
 > 两个 git 库静态链接了 zlib 1.3.1、PCRE2 10.49、OpenSSL 3.0.22、libcurl 8.22.0；它们不单独随包分发，许可证原文分别在 `LICENSES/zlib.txt`、`LICENSES/pcre2.txt`、`LICENSES/Apache-2.0-OpenSSL.txt`、`LICENSES/curl.txt`。
 

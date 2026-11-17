@@ -80,6 +80,11 @@ NM="${NM:-$CLANG_DIR/llvm-nm}"
 READELF="${READELF:-$CLANG_DIR/llvm-readelf}"
 AT_HOST="aarch64-linux-musl"
 
+TIC_BIN="${TIC_BIN:-$(command -v tic 2>/dev/null || true)}"
+INFO_CMP="${INFO_CMP:-$(command -v infocmp 2>/dev/null || true)}"
+[ -n "$TIC_BIN" ] || iec_err "host tic is required to generate ncurses fallbacks"
+[ -n "$INFO_CMP" ] || iec_err "host infocmp is required to generate ncurses fallbacks"
+
 NC_SRC="${IEC_NCURSES_SRC:-}"
 if [ -z "$NC_SRC" ]; then
 	if [ -f "$PARENT/thirdparty/ncurses/configure" ]; then
@@ -190,7 +195,7 @@ if [ ! -f "$PY_DEPS/lib/libncursesw.a" ]; then
 			--without-manpages --without-progs --without-tests \
 			--with-panel --with-menu --with-form --enable-widec \
 			--enable-pc-files --with-pkg-config-libdir="$PY_DEPS/lib/pkgconfig" \
-			--with-fallbacks=xterm-256color --disable-stripping \
+			--with-fallbacks=xterm-256color --with-tic-path="$TIC_BIN" --with-infocmp-path="$INFO_CMP" --disable-stripping \
 			> configure.log 2>&1 ) || iec_err "ncurses configure failed"
 	fi
 	PATH="/usr/bin:$PATH" make -C "$NC_BUILD" -j"$JOBS" > "$BUILD/ncurses-make.log" 2>&1 \
@@ -311,23 +316,41 @@ make -C "$BLD" -j1 Makefile > "$BUILD/py-makefile.log" 2>&1 || true
 make -C "$BLD" -j"$JOBS" > "$BUILD/py-make.log" 2>&1 \
 	|| { tail -30 "$BUILD/py-make.log" >&2; iec_err "CPython make failed"; }
 # Force the link line to reappear in the log; step 4 parses it.
-rm -f "$BLD/python"
-make -C "$BLD" -j"$JOBS" python >> "$BUILD/py-make.log" 2>&1 \
+# On macOS the case-insensitive filesystem makes a bare "python" output
+# collide with the Python/ object directory; CPython then names the binary
+# python.exe. Pick whichever the build produced.
+if [ -f "$BLD/python" ] && [ ! -d "$BLD/python" ]; then
+	rm -f "$BLD/python"
+elif [ -f "$BLD/python.exe" ]; then
+	rm -f "$BLD/python.exe"
+fi
+if make -C "$BLD" -n python.exe >/dev/null 2>&1; then
+	PY_TARGET=python.exe
+else
+	PY_TARGET=python
+fi
+make -C "$BLD" -j"$JOBS" "$PY_TARGET" >> "$BUILD/py-make.log" 2>&1 \
 	|| iec_err "CPython re-link failed"
-[ -x "$BLD/python" ] || iec_err "missing $BLD/python"
+if [ -x "$BLD/python" ] && [ ! -d "$BLD/python" ]; then
+	PY_EXE="$BLD/python"
+elif [ -x "$BLD/python.exe" ]; then
+	PY_EXE="$BLD/python.exe"
+else
+	iec_err "missing $BLD/python or $BLD/python.exe"
+fi
 
 # ── 4. assemble libpython.so ──────────────────────────────────────────────
 iec_log "assemble $OUT"
 LINK_CMD="$(awk '
     { while (sub(/\\$/, "")) { if ((getline nxt) > 0) $0 = $0 " " nxt; else break }
-      if ($0 ~ /-o (\.\/)?python( |$)/) last = $0 }
+      if ($0 ~ /-o (\.\/)?python(\.exe)?( |$)/) last = $0 }
     END { print last }' "$BUILD/py-make.log")"
 [ -n "$LINK_CMD" ] || iec_err "no python link command in $BUILD/py-make.log"
 case "$LINK_CMD" in
-	*"-o python"*|*"-o ./python"*) ;;
+	*"-o python"*|*"-o ./python"*|*"-o python.exe"*) ;;
 	*) iec_err "link command does not use -o python" ;;
 esac
-LINK_CMD="$(printf '%s' "$LINK_CMD" | sed -E "s#-o (\./)?python#-shared -o \"$OUT\"#")"
+LINK_CMD="$(printf '%s' "$LINK_CMD" | sed -E "s#-o (\./)?python(\.exe)?#-shared -o \"$OUT\"#")"
 
 SHIM_CFLAGS=(-O2 -fPIC -DINT_WARP -D_GNU_SOURCE
 	-I "$IEC_ROOT" -I "$IEC_ROOT/common")
@@ -353,7 +376,7 @@ $CC_TARGET -O2 -fPIC -I "$IEC_ROOT/loader" -I "$IEC_ROOT" \
 WRAPS=(symlink symlinkat readlink readlinkat lstat stat fstatat fstat
 	chmod fchmod fchmodat
 	open openat unlink unlinkat rename renameat access faccessat realpath
-	link linkat opendir readdir scandir fopen freopen syscall
+	link linkat opendir readdir scandir fopen freopen utimensat syscall
 	close dup dup2 dup3 fcntl ioctl isatty ttyname ttyname_r
 	tcgetattr tcsetattr tcgetpgrp tcsetpgrp getpt grantpt unlockpt ptsname
 	openpty login_tty forkpty
@@ -402,6 +425,23 @@ DYN_OTHER="$(find "$RT_ROOT/python/lib/python$PY_SERIES/lib-dynload" \
 	|| iec_err "lib-dynload contains $DYN_OTHER non-xxlimited modules"
 rm -rf "$RT_ROOT/python/lib/python$PY_SERIES/lib-dynload"
 mkdir -p "$RT_ROOT/python/lib/python$PY_SERIES/site-packages"
+
+# Bundle pip, setuptools and wheel.  CPython is configured --without-ensurepip,
+# so the launcher's `python -m pip` has nothing to run unless these wheels are
+# unpacked into site-packages at build time.
+PIP_VER="${PIP_VER:-24.3.1}"
+SETUPTOOLS_VER="${SETUPTOOLS_VER:-75.6.0}"
+WHEEL_VER="${WHEEL_VER:-0.45.1}"
+PIP_SITE="$RT_ROOT/python/lib/python$PY_SERIES/site-packages"
+if [ ! -d "$PIP_SITE/pip" ]; then
+	mkdir -p "$BUILD/pip-download"
+	"$HOST_PY" -m pip download --no-deps --only-binary=:all: 		--dest "$BUILD/pip-download" 		"pip==$PIP_VER" "setuptools==$SETUPTOOLS_VER" "wheel==$WHEEL_VER" 		> "$BUILD/pip-download.log" 2>&1 		|| { tail -20 "$BUILD/pip-download.log" >&2; iec_err "pip wheel download failed"; }
+	for whl in "$BUILD/pip-download"/*.whl; do
+		unzip -q "$whl" -d "$PIP_SITE" || iec_err "failed to unpack $whl"
+	done
+fi
+[ -d "$PIP_SITE/pip" ] || iec_err "pip is not present in site-packages"
+
 find "$RT_ROOT" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 tar -C "$RT_ROOT" -cf "$RTAR" python
 [ -f "$RT_ROOT/python/lib/python$PY_SERIES/encodings/__init__.py" ] \
@@ -418,7 +458,7 @@ cp -f "$BLD/pyconfig.h" "$HRT/python-headers/"
 if command -v zstd >/dev/null 2>&1; then
 	mkdir -p "$(dirname "$PYHDR_PKG")"
 	tar -C "$HRT" -cf - python-headers \
-		| zstd -q -f -19 -T"$(nproc)" -o "$PYHDR_PKG"
+		| zstd -q -f -19 -T"$JOBS" -o "$PYHDR_PKG"
 else
 	iec_log "warning: zstd not found; skipping $PYHDR_PKG"
 fi

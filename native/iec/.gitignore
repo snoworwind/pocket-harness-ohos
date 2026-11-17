@@ -56,7 +56,18 @@ vgcore.*
 /thirdparty/libarchive-*/
 /thirdparty/openssl-*/
 /thirdparty/openssl/
+/thirdparty/openssh-*/
 /thirdparty/curl-*/
+/thirdparty/bc-*/
+/thirdparty/gh/
+/thirdparty/git-lfs/
+/thirdparty/less-*/
+/thirdparty/rsync-*/
+/thirdparty/sqlite-autoconf-*/
+/thirdparty/tree-*/
+/thirdparty/vim-*/
+/thirdparty/xz-*/
+/thirdparty/zstd-*/
 /thirdparty/node-*/
 /thirdparty/ncurses/
 /thirdparty/libffi/
@@ -67,6 +78,7 @@ vgcore.*
 
 # ---- Generated runtime resources ----
 /platform/ohos/har/src/main/resources/rawfile/tools/*.tar
+/platform/ohos/har/src/main/resources/rawfile/tools/*.tar.gz
 
 # ---- Local environment ----
 /scripts/env.sh

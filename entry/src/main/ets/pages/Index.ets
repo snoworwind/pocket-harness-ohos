@@ -407,8 +407,8 @@ struct Index {
     if (active === this.unpacking) { return; }
     this.unpacking = active;
     if (active) {
-      this.status = '正在解包官方引擎与 npm';
-    } else if (this.status === '正在解包官方引擎与 npm') {
+      this.status = '正在解包官方引擎、Python 与 Vim';
+    } else if (this.status === '正在解包官方引擎、Python 与 Vim') {
       this.status = '正在启动本地运行时';
     }
   }
