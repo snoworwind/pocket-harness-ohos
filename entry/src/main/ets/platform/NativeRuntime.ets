@@ -206,6 +206,7 @@ export class NativeRuntime {
     this.engineVersion = manifest.engineVersion; this.ready = true;
     this.installHarmonyPlugin();
     this.installTerminalPlugin();
+    this.installAutoReviewPlugin();
     this.installNotices();
     this.migrateLegacyHomePaths();
     // 新版运行时已经就绪，旧版本目录没有保留价值（一个版本约 450 MB）。
@@ -435,15 +436,41 @@ export class NativeRuntime {
 
       const patchPath = profileDir + '/cordis.patch.yml';
       const row = "- insert:\n    - id: harmony-native\n      name: '" + name + "'\n";
-      let text = fs.accessSync(patchPath) ? fs.readTextSync(patchPath) : '';
-      if (text.indexOf(name) < 0) {
-        if (text.length > 0 && !text.endsWith('\n')) { text += '\n'; }
-        text += row;
-        const file = fs.openSync(patchPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-        fs.writeSync(file.fd, text);
-        fs.closeSync(file);
-      }
+      this.appendProfilePatchRow(patchPath, name, row);
     } catch (error) { /* 同步失败只是插件不出现，不影响引擎 */ }
+  }
+  // profile 的 cordis.patch.yml 初始内容是一段注释加空数组「[]」。直接在「[]」后面
+  // 追加 patch 行会让整份 YAML 解析失败（引擎起不来），追加前必须把这行去掉。
+  private normalizeProfilePatch(text: string): string {
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      if (line.trim() === '[]') { continue; }
+      kept.push(line);
+    }
+    return kept.join('\n');
+  }
+  private appendProfilePatchRow(patchPath: string, marker: string, row: string): void {
+    let text = fs.accessSync(patchPath) ? this.normalizeProfilePatch(fs.readTextSync(patchPath)) : '';
+    if (text.indexOf(marker) >= 0) { return; }
+    if (text.length > 0 && !text.endsWith('\n')) { text += '\n'; }
+    text += row;
+    const file = fs.openSync(patchPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    fs.writeSync(file.fd, text);
+    fs.closeSync(file);
+  }
+  // 旧会话的权限预设可能记成 "auto"。这个预设由 dsh-experimental-auto-review 提供
+  // （registerAuto）；web profile 默认不加载它，恢复会话时会报
+  // permission: cannot restore preset "auto" without its active integration，
+  // 会话随即从侧栏消失、重启才回来。随包引擎里有这个包，把插入行补进 profile 即可。
+  private installAutoReviewPlugin(): void {
+    const name = '@deepseek-ai/dsh-experimental-auto-review';
+    const source = this.root + '/engine/node_modules/' + name + '/package.json';
+    const profileDir = this.context.filesDir + '/harness-home/profiles/web';
+    try {
+      if (!fs.accessSync(source)) { return; }
+      this.appendProfilePatchRow(profileDir + '/cordis.patch.yml', name,
+        "- insert:\n    - id: auto-review\n      name: '" + name + "'\n");
+    } catch (error) { /* 缺失只影响记了 auto 预设的旧会话恢复 */ }
   }
   // 原生终端插件：随 HAP 以 rawfile 分发，启动时同步进 profile 的 node_modules，
   // 并往 cordis.patch.yml 写一行插入。它只在浏览器侧注册右侧栏的终端 tab，
@@ -474,7 +501,7 @@ export class NativeRuntime {
       const upstreamName = '@deepseek-ai/dsh-client-ui-sidebar-terminal';
       const upstream = "- id: 'ui-sidebar-terminal'\n  disabled: true\n";
       const stale = "- id: '" + upstreamName + "'\n  disabled: true\n";
-      let text = fs.accessSync(patchPath) ? fs.readTextSync(patchPath) : '';
+      let text = fs.accessSync(patchPath) ? this.normalizeProfilePatch(fs.readTextSync(patchPath)) : '';
       if (text.indexOf(stale) >= 0) { text = text.split(stale).join(''); }
       let changed = false;
       if (text.indexOf(name) < 0) {
