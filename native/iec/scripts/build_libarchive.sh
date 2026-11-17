@@ -11,10 +11,13 @@
 #     be loaded by soname or linked by a command object.
 #
 # The build is deliberately small:
-#   * zlib is enabled (plain tar needs no compression, but gzip archives are
-#     common and zlib is already in IEC_DEPS_DIR);
-#   * bzip2, xz, lz4, zstd, OpenSSL, libxml2, expat and iconv are disabled;
-#   * the bsdtar/bsdcpio/bsdcat/bsdunzip front ends are disabled (library only);
+#   * zlib, bzip2, liblzma (xz) and zstd are enabled, because `tar -z/-j/-J` and
+#     `tar --zstd` must work without spawning external compressor programs (the
+#     device has none for bzip2, and libarchive rejects -J outright when liblzma
+#     is missing: "Unsupported compression option --xz");
+#   * lz4, OpenSSL, libxml2, expat and iconv are disabled;
+#   * the bsdtar/bsdcpio/bsdcat/bsdunzip upstream front ends are disabled as
+#     library targets (the command objects compile their sources directly);
 #   * ACL and xattr support is disabled (the OHOS sysroot does not provide the
 #     interfaces libarchive expects).
 #
@@ -70,6 +73,16 @@ NM="${NM:-$CLANG_DIR/llvm-nm}"
 READELF="${READELF:-$CLANG_DIR/llvm-readelf}"
 
 [ -f "$IEC_DEPS_LIB/libz.a" ] || "$IEC_ROOT/scripts/optional/build_zlib.sh"
+[ -f "$IEC_DEPS_LIB/libbz2.a" ] && [ -f "$IEC_DEPS_INC/bzlib.h" ] \
+	|| "$IEC_ROOT/scripts/optional/build_bzip2.sh"
+[ -f "$IEC_DEPS_LIB/liblzma.a" ] && [ -f "$IEC_DEPS_INC/lzma.h" ] \
+	|| "$IEC_ROOT/scripts/optional/build_xz.sh"
+[ -f "$IEC_DEPS_LIB/libzstd.a" ] && [ -f "$IEC_DEPS_INC/zstd.h" ] \
+	|| "$IEC_ROOT/scripts/optional/build_zstd.sh"
+# Static codec libraries linked into libarchive.a's consumers (and into the
+# shared libarchive.so.13 used by unpackResource()).
+CODEC_LIBS=("$IEC_DEPS_LIB/libz.a" "$IEC_DEPS_LIB/libbz2.a"
+            "$IEC_DEPS_LIB/liblzma.a" "$IEC_DEPS_LIB/libzstd.a")
 
 if [ ! -f "$SRC/configure" ]; then
 	if [ ! -s "$TARBALL" ]; then
@@ -91,7 +104,7 @@ mkdir -p "$BUILD" "$IEC_DEPS_LIB" "$IEC_DEPS_INC"
 SHARED_FLAG=(--disable-shared)
 [ "$SHARED" = "1" ] && SHARED_FLAG=(--enable-shared)
 
-iec_log "configure libarchive $VER (static, zlib only, shared=$SHARED)"
+iec_log "configure libarchive $VER (static, zlib+bz2+lzma+zstd, shared=$SHARED)"
 ( cd "$BUILD" && \
 	CC="$CC_TARGET" AR="$AR" RANLIB="$RANLIB" \
 	CFLAGS="-O2 -fPIC -D__MUSL__ -DOHOS_NDK -I$IEC_DEPS_INC" \
@@ -107,7 +120,7 @@ iec_log "configure libarchive $VER (static, zlib only, shared=$SHARED)"
 		--includedir="$IEC_DEPS_INC" \
 		--enable-static "${SHARED_FLAG[@]}" \
 		--with-zlib \
-		--without-bz2lib --without-lzma --without-lz4 --without-zstd \
+		--with-bz2lib --with-lzma --with-zstd --without-lz4 \
 		--without-openssl --without-xml2 --without-expat --without-nettle \
 		--without-iconv \
 		--disable-bsdtar --disable-bsdcpio --disable-bsdcat --disable-bsdunzip \
@@ -151,7 +164,7 @@ if [ "$SHARED" = "1" ]; then
 	iec_log "link shimmed libarchive.so.13"
 	$CC_TARGET -shared -o "$SO13" \
 		-Wl,--whole-archive "$LIB" -Wl,--no-whole-archive \
-		"$FS_SO_OBJ" "$IEC_DEPS_LIB/libz.a" \
+		"$FS_SO_OBJ" "${CODEC_LIBS[@]}" \
 		-Wl,-soname,libarchive.so.13 -Wl,-Bsymbolic-functions \
 		"${FS_WRAP_FLAGS[@]}" -lpthread -lm \
 		|| iec_err "libarchive.so link failed"
@@ -216,21 +229,32 @@ if [ "$CLI" = "1" ]; then
 		local out="$HAR_LIBS/$out_name"
 		local objs=()
 		local rel obj
+		# bsdunzip's main is wrapped instead of exported: unzip_entry.c answers
+		# -v/--version (Info-ZIP compatibility) and forwards everything else.
+		local main_sym="iec_${fname}_main"
+		[ "$fname" = "bsdunzip" ] && main_sym="iec_bsdunzip_real_main"
 
 		mkdir -p "$dir"
 		for rel in "$@"; do
 			obj="$dir/$(printf '%s' "$rel" | tr '/' '_').o"
 			local extra=()
-			[ "$rel" = "$main_rel" ] && extra=("-Dmain=iec_${fname}_main")
+			[ "$rel" = "$main_rel" ] && extra=("-Dmain=$main_sym")
 			$CC_TARGET "${FRONT_CFLAGS[@]}" "${extra[@]}" \
 				-c "$SRC/$rel" -o "$obj" \
 				|| iec_err "$fname: compile $rel failed"
 			objs+=("$obj")
 		done
+		if [ "$fname" = "bsdunzip" ]; then
+			$CC_TARGET "${FRONT_CFLAGS[@]}" \
+				-c "$IEC_ROOT/scripts/libarchive-ohos/unzip_entry.c" \
+				-o "$dir/unzip_entry.o" \
+				|| iec_err "bsdunzip: compile unzip_entry.c failed"
+			objs+=("$dir/unzip_entry.o")
+		fi
 
 		iec_log "link $out"
 		$CC_TARGET -shared -o "$out" "${objs[@]}" \
-			"$IEC_DEPS_LIB/libarchive.a" "$IEC_DEPS_LIB/libz.a" \
+			"$IEC_DEPS_LIB/libarchive.a" "${CODEC_LIBS[@]}" \
 			"$SHIM_BUILD"/*.o \
 			-Wl,-soname,"$out_name" -Wl,-Bsymbolic-functions \
 			"${WRAP_FLAGS[@]}" -lpthread -ldl -lm \
@@ -269,7 +293,7 @@ if [ "$CLI" = "1" ]; then
 		-c "$IEC_ROOT/scripts/libarchive-ohos/zip_entry.c" -o "$ZIP_ENTRY" \
 		|| iec_err "zip: compile failed"
 	$CC_TARGET -shared -o "$OUT_ZIP" "$ZIP_ENTRY" \
-		"$IEC_DEPS_LIB/libarchive.a" "$IEC_DEPS_LIB/libz.a" \
+		"$IEC_DEPS_LIB/libarchive.a" "${CODEC_LIBS[@]}" \
 		"$SHIM_BUILD"/*.o \
 		-Wl,-soname,libzipcmd.so -Wl,-Bsymbolic-functions \
 		"${WRAP_FLAGS[@]}" -lpthread -ldl -lm \

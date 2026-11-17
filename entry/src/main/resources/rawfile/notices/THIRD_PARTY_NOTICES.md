@@ -25,6 +25,7 @@ HAP 分发（应用内路径 `resources/rawfile/notices/`，首次启动后解�
 | npm | 11.19.1（Node.js 源码树 `deps/npm`） | Artistic-2.0 | `LICENSES/Artistic-2.0.txt` |
 | toybox | 0.8.14 | 0BSD | `LICENSES/toybox.txt` |
 | libarchive（bsdtar / bsdcpio / unzip / zipcmd） | 3.7.7 | BSD-2-Clause | `LICENSES/libarchive.txt` |
+| bzip2 / libbz2（静态链接进 libarchive 前端与 CPython） | 1.0.8，<https://sourceware.org/pub/bzip2/> | bzip2-1.0.8（BSD 风格） | `LICENSES/bzip2.txt` |
 | ripgrep | 14.1.1 | Unlicense OR MIT | `LICENSES/ripgrep-UNLICENSE.txt`、`LICENSES/ripgrep-MIT.txt` |
 | libvterm | 随仓库源码 | MIT | `LICENSES/libvterm.txt` |
 | libc++（`libc++_shared.so`） | DevEco Studio SDK 自带 | Apache-2.0 WITH LLVM-exception | `LICENSES/Apache-2.0-LLVM.txt` |

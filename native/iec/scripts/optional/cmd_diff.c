@@ -29,6 +29,30 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// git diff 不认识 --version/--help（会以 "error: unknown option" 退出 129），
+// 而脚本与包管理器常拿这两个开关探测 diff 是否可用。这里自己回答，不转发。
+static const char DIFF_VERSION[] =
+    "diff (pocket-harness) 1.0\n"
+    "Copyright (C) 2026 pocket-harness-ohos contributors\n"
+    "License MIT: <https://opensource.org/licenses/MIT>\n"
+    "\n"
+    "Backend: git diff --no-index; supports -u, -U NUM, -r, -q and -s.\n";
+
+static const char DIFF_USAGE[] =
+    "Usage: diff [OPTION]... FILES\n"
+    "Compare FILES line by line.\n"
+    "\n"
+    "  -u                 output unified context (3 lines by default)\n"
+    "  -U NUM             output NUM lines of unified context\n"
+    "  -r, --recursive    recursively compare directories\n"
+    "  -q, --brief        report only when files differ\n"
+    "  -s, --report-identical-files\n"
+    "                     report when two files are identical\n"
+    "  -v, --version      output version information and exit\n"
+    "      --help         display this help and exit\n"
+    "\n"
+    "This is a git diff --no-index front end; the output format follows git.\n";
+
 // 逐字节比较两个普通文件。返回 1 相同 / 0 不同 / -1 无法判断（目录、打开失败等）。
 static int files_identical(const char* a, const char* b) {
     unsigned char ba[65536];
@@ -173,7 +197,6 @@ int iec_diff_main(int argc, char** argv) {
     int npath = 0;
     int nowned = 0;
     int report_same = 0;
-    int want_help = 0;
     int endopts = 0;
     int ret = 0;
     int i;
@@ -196,6 +219,15 @@ int iec_diff_main(int argc, char** argv) {
         if (!endopts && strcmp(a, "--") == 0) {
             endopts = 1;
             continue;
+        }
+        // --version/--help 是标准的探测开关，交给我们自己回答，git 不认识它们。
+        if (!endopts && (strcmp(a, "--version") == 0 || strcmp(a, "-v") == 0)) {
+            fputs(DIFF_VERSION, stdout);
+            goto done;
+        }
+        if (!endopts && (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0)) {
+            fputs(DIFF_USAGE, stdout);
+            goto done;
         }
         if (!endopts && (strcmp(a, "-r") == 0 || strcmp(a, "--recursive") == 0)) {
             // git diff --no-index 对目录默认递归，没有 -r 开关；接受 GNU 的写法，
@@ -255,17 +287,8 @@ int iec_diff_main(int argc, char** argv) {
         paths[npath++] = argv[i];
     }
 
-    // --help / --version 这类请求不需要操作数，原样交给 git（输出是 git 的用法，
-    // 与 GNU diff 的 help 文本不同，见 README 的“已知差异”）。
-    for (i = 0; i < nopt; i++) {
-        if (strcmp(opts[i], "--help") == 0 || strcmp(opts[i], "-h") == 0 ||
-            strcmp(opts[i], "--version") == 0 || strcmp(opts[i], "-v") == 0) {
-            want_help = 1;
-        }
-    }
-
     // 与 GNU diff 对齐：操作数不足报错并返回 2（git 只打印 usage 返回 129）。
-    if (!want_help && npath < 2) {
+    if (npath < 2) {
         fprintf(stderr, "diff: missing operand after '%s'\n",
                 argc > 1 ? argv[argc - 1] : argv[0]);
         fprintf(stderr, "diff: Try 'diff --help' for more information.\n");
@@ -274,13 +297,10 @@ int iec_diff_main(int argc, char** argv) {
     }
 
     // 与 GNU diff 对齐：操作数不存在/不可读返回 2（git 是 1 或 128）。
-    if (!want_help) {
-        ret = check_operands(paths[0], paths[1]);
-        if (ret != 0) goto done;
-    }
+    ret = check_operands(paths[0], paths[1]);
+    if (ret != 0) goto done;
 
-    if (report_same && !want_help && npath >= 2 &&
-        files_identical(paths[0], paths[1]) == 1) {
+    if (report_same && files_identical(paths[0], paths[1]) == 1) {
         printf("Files %s and %s are identical\n", paths[0], paths[1]);
         goto done;
     }

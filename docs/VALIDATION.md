@@ -70,3 +70,20 @@
 6. **解包期间 UI 会停顿**：`unpackResource()` 是同步调用，启动页能显示「正在解包」，但进度圈动画会停住；要让动画持续需要把解包移出 UI 线程或增加原生进度回调。
 7. **运行时清单自动化只覆盖命令行构建**：直接使用 DevEco IDE 的 Build 不经过 `scripts/build.mjs`，不会执行 sync/check；发布构建应统一使用 `build.mjs`，或给 hvigor 增加预构建任务。
 8. **`runtime-preload.cjs` 会改变无参 `process.report.getReport()` 的返回**：应用运行时里无参调用只返回 `{ header: {} }`，用于跳过约 30s 的 CPU/network 枚举；需要完整诊断报告时设 `DSH_LITE_REPORT=0`。带 options 的调用不受影响。
+
+## 2026-11-17 设备测试报告修复
+
+设备测试（`pocketharnessohos测试结论.docx`，运行时 0.2.2-rc.1）列出的问题及本轮处理：
+
+| 报告项 | 根因 | 修复 | 本轮验证 |
+| --- | --- | --- | --- |
+| `rg` 任何参数都报 `requires at least one pattern`（P0） | `iec_rg_main` 忽略 `_argc/_argv`，CLI 解析读 `std::env::args()`；dlopen 后那是宿主 argv | `scripts/rg/build-ripgrep.sh` 让解析器读 IEC 传入的参数 | 重建 `librg.so`（OHOS aarch64，4.9 MB）；同一补丁的宿主 `.so` 用 ctypes 调用：pattern/no-match/`--version`/`--files`/`-c` 全部通过 |
+| `gh`、`git-lfs` dlopen 失败，退出码 125（P1） | stock Go 的 c-shared 用 initial-exec TLS（`R_AARCH64_TLS_TPREL64`），鸿蒙 musl 拒绝 | 改用 OpenHarmony Go 工具链（`GOOS=openharmony`，TLSDESC）；新增 `fetch_go_ohos.sh`，构建脚本强制 `GOTOOLCHAIN=local`、固定 tag 并检查产物无 TPREL | 重建 `libghcmd.so`（43 MB）与 `libgitlfscmd.so`（13.6 MB）：`R_AARCH64_TLSDESC`、无 TPREL、`NEEDED` 仅 `libc.so`、入口符号存在。未在真机跑 `gh`/`git lfs` 业务 |
+| `openssl req`/`ca` 失败（P2） | `OPENSSLDIR` 编进了构建机路径 | `--openssldir=/etc/ssl`；随包 `harmony/openssl.cnf` 落到 `<sysroot>/certs/openssl.cnf`，`OPENSSL_CONF` 指向它；建好 `ca` 目录/index/serial | 重建 `libopensslcmd.so`；`libcrypto.a` 内已无 `/Users`、`/mnt/d` 路径，含 `/etc/ssl` |
+| `python3 -m venv` 失败、`_bz2` 缺失（P2） | 构建时删掉 `ensurepip`；没有 `libbz2` | 保留 `ensurepip` 并补 `_bundled` pip wheel；新增 `build_bzip2.sh` 供 `_bz2`；清理 `._*` | 只改了脚本，**本轮未重建 `libpython.so`**（构建机缺 host python3.12），需在构建机重跑 `build_python.sh` |
+| `tar -cjf`/`-cJf` 失败（P3） | libarchive 没编 bzip2/xz/zstd 后端 | `build_libarchive.sh` 静态链四个编解码器 | 重建 `libarchive.so.13`、`libbsdtar.so`、`libbsdcpio.so`、`libbsdunzip.so`、`libzipcmd.so`；符号表确认 `archive_liblzma_version`/`libzstd`/bz2 filter 均在 |
+| `zip -v`、`unzip -v` 不支持（P3） | 前端没有 `-v` | `zip_entry.c` 处理 `-v/--version/--help`；新增 `unzip_entry.c` 包住 bsdunzip：`-v` 无归档时打印版本，有归档时映射到 `-l` | 宿主用 stub libarchive 跑过 `-v`、`--version`、`-v a.zip`、`-qv a.zip`、`-d out -v a.zip`、`-l` |
+| `diff --version` 报错（P3） | 直接转发给 `git diff`，git 不认识 | `cmd_diff.c` 自己回答 `--version/-v` 与 `--help/-h` | 宿主编译验证：两开关退出 0，正常比较/`-q`/`-s` 行为不变 |
+| `node-pty` 在 IEC shell 内 `forkpty` 失败（P3） | 沙箱不允许 `fork`；tty shim 只能接管 pty fd/RPC | 未改代码，记为已知限制（见 `ARCHITECTURE.md`） | — |
+
+本轮构建在 WSL Ubuntu 上完成（OHOS clang 15 + sysroot），未连接真机、未推送远程。`gh`/`git-lfs` 的 `GOOS=openharmony` 产物只做了 ELF/符号层验证，业务链路仍需真机复测；`libpython.so` 需要在有 host python3.12 的构建机重编后才能随包升级。

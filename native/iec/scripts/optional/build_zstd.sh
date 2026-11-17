@@ -46,6 +46,11 @@ make -C "$SRC/lib" -j"$JOBS" libzstd.a \
 	|| { tail -30 "$WORK/libzstd-make.log" >&2; iec_err "libzstd build failed"; }
 [ -f "$SRC/lib/libzstd.a" ] || iec_err "libzstd.a was not built"
 
+# libarchive (tar) links the same static library, so install it next to zlib.
+mkdir -p "$IEC_DEPS_LIB" "$IEC_DEPS_INC"
+cp -f "$SRC/lib/libzstd.a" "$IEC_DEPS_LIB/"
+cp -f "$SRC/lib/zstd.h" "$SRC/lib/zstd_errors.h" "$SRC/lib/zdict.h" "$IEC_DEPS_INC/"
+
 make -C "$SRC/programs" -j"$JOBS" zstd \
 	CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" CFLAGS="-O2 -fPIC" \
 	LDFLAGS="$WORK/compat_qsort_r.o -fuse-ld=lld" \

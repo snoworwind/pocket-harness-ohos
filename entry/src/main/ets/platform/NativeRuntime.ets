@@ -192,6 +192,7 @@ export class NativeRuntime {
     }
     installCaBundle(this.root + '/certs');
     this.installTrustBundle();
+    this.installOpensslConfig();
     this.installFetchPolyfill();
     this.installRuntimePreload();
     this.env = this.buildEnv();
@@ -278,6 +279,10 @@ export class NativeRuntime {
       // 不设这个变量时会去 /usr/libexec/git-core（假根里没有），HTTPS 会失败。
       'GIT_EXEC_PATH': this.root + '/bin',
       'CURL_CA_BUNDLE': caFile,
+      // libcrypto 的 OPENSSLDIR 是 /etc/ssl（构建机路径不能进设备二进制），默认配置
+      // 在沙箱里不存在；`openssl req`/`ca` 找不到配置会直接失败，所以指到随运行时
+      // 落盘的 <sysroot>/certs/openssl.cnf。
+      'OPENSSL_CONF': this.root + '/certs/openssl.cnf',
       'PYTHONHOME': this.root + '/python',
       'PIP_CACHE_DIR': stableHome + '/.cache/pip',
       'VIMRUNTIME': this.root + '/vim/runtime',
@@ -500,7 +505,7 @@ export class NativeRuntime {
       'LICENSES/libvterm.txt', 'LICENSES/Node-MIT.txt', 'LICENSES/ripgrep-MIT.txt',
       'LICENSES/ripgrep-UNLICENSE.txt', 'LICENSES/toybox.txt',
       'LICENSES/Apache-2.0-OpenSSL.txt', 'LICENSES/curl.txt', 'LICENSES/pcre2.txt',
-      'LICENSES/zlib.txt'
+      'LICENSES/zlib.txt', 'LICENSES/bzip2.txt'
     ];
     try {
       this.ensureDir(dest);
@@ -539,6 +544,28 @@ export class NativeRuntime {
       fs.writeSync(out.fd, text);
       fs.closeSync(out);
     } catch (error) { /* 合并失败时 buildEnv 会回退到 cacert.pem */ }
+  }
+  // OpenSSL：libcrypto 里编进去的 OPENSSLDIR 是 /etc/ssl（构建机路径不能进设备），
+  // 沙箱里没有那个目录，`openssl req`/`ca` 会因为找不到 openssl.cnf 直接失败。
+  // 这里把随包的配置写到 <sysroot>/certs/openssl.cnf，buildEnv() 用 OPENSSL_CONF
+  // 指过去；同时建好 `openssl ca` 需要的目录与索引文件。
+  private installOpensslConfig(): void {
+    const dir = this.root + '/certs';
+    try {
+      this.ensureDir(dir);
+      const content = this.context.resourceManager.getRawFileContentSync('harmony/openssl.cnf');
+      const text = util.TextDecoder.create('utf-8').decodeToString(content);
+      const out = fs.openSync(dir + '/openssl.cnf', fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(out.fd, text);
+      fs.closeSync(out);
+      const ca = dir + '/ca';
+      this.ensureDir(ca);
+      this.ensureDir(ca + '/certs');
+      this.ensureDir(ca + '/newcerts');
+      this.ensureDir(ca + '/private');
+      if (!fs.accessSync(ca + '/index.txt')) { writeTxtFile(ca + '/index.txt', ''); }
+      if (!fs.accessSync(ca + '/serial')) { writeTxtFile(ca + '/serial', '1000\n'); }
+    } catch (error) { /* 配置缺失只影响 req/ca；其它 openssl 子命令仍可用 */ }
   }
   private installFetchPolyfill(): void {
     const dir = this.root + '/harmony';

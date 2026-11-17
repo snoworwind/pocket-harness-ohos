@@ -11,19 +11,19 @@
 | `libnode.so` | Node.js v24.22.1 源代码包（nodejs.org，SHA-256 校验） | `native/toolchain/build-node24.sh` → `build_node.sh`，OHOS sysroot + LLVM 22 驱动编译，`llvm-strip --strip-unneeded` | MIT |
 | `libbash.so` | GNU Bash 5.3（ftp.gnu.org） | `native/build-bash.sh`，`--host=aarch64-linux-ohos` | GPL-3.0 |
 | `libtoybox.so` | toybox 0.8.14 | `native/iec/scripts/build_toybox.sh` | BSD |
-| `libbsdtar.so`、`libbsdcpio.so`、`libbsdunzip.so`、`libzipcmd.so` | libarchive 3.7.7 | `native/iec/scripts/build_libarchive.sh` | BSD-2-Clause |
+| `libbsdtar.so`、`libbsdcpio.so`、`libbsdunzip.so`、`libzipcmd.so` | libarchive 3.7.7 | `native/iec/scripts/build_libarchive.sh`；zlib/bzip2/xz/zstd 四个编解码器静态链入（`build_bzip2.sh`、`build_xz.sh`、`build_zstd.sh` 提供 `libbz2.a`/`liblzma.a`/`libzstd.a`），所以 `tar -j/-J/--zstd` 不再依赖不存在的 `bzip2` 命令；`unzip -v` 由 `unzip_entry.c` 补上，`zip -v` 由 `zip_entry.c` 补上 | BSD-2-Clause |
 | `libarchive.so.13` | libarchive 3.7.7 | 同上脚本的 `--enable-shared` 产物（链 `fs/shim.c`，只依赖 `libc.so`）；`scripts/pack-native.sh` 复制进 `entry/libs`，供 `archive_extract.cpp` 在运行期 `dlopen` 解包引擎与 npm | BSD-2-Clause |
 | `libiec_server.so`、`libncploader.so` | `native/iec` 源码（Bettersh/Guncat，随仓库） | hvigor 的 `externalNativeOptions` 用 DevEco NDK 现场编译 | 见 `native/BETTERSH-LICENSE`、`native/GUNCAT-LICENSE` |
 | `libc++_shared.so` | DevEco Studio SDK（华为官方） | hvigor 从 SDK 拷贝 | LLVM Apache-2.0-with-LLVM-exception |
 | `require_builtin.node` | `github.com/deepseek-ai/dsh-node-addon-require-builtin`（DeepSeek 官方，master 分支源码） | `native/toolchain/build-addons.sh`，NAPI_VERSION=9 | MIT |
 | `system.node` | `@deepseek-ai/node-addon-system` 包内 `src/flock.c`（DeepSeek 官方） | 同上脚本编译 | BSD-3-Clause |
 | `pty.node` | node-pty 1.2.0-beta.15 源码里的 `src/unix/pty.cc`（微软，MIT） | `native/toolchain/build-addons.sh` 用 OHOS 工具链 + node-addon-api 编译成 NAPI 插件，加载路径为 `node-pty/build/Release/pty.node` | MIT |
-| `librg.so` | ripgrep 14.1.1 源码（crates.io） | `scripts/rg/build-ripgrep.sh`，cargo 目标 `aarch64-unknown-linux-ohos`，编译成导出 `iec_rg_main` 的 cdylib，`llvm-strip` 后 4.9 MB | Unlicense OR MIT |
+| `librg.so` | ripgrep 14.1.1 源码（crates.io） | `scripts/rg/build-ripgrep.sh`，cargo 目标 `aarch64-unknown-linux-ohos`，编译成导出 `iec_rg_main` 的 cdylib；入口用启动器传入的 `_argc/_argv` 重建参数（dlopen 后 `std::env::args()` 拿到的是宿主 argv，会导致 `rg` 永远“没有 pattern”），`llvm-strip --strip-unneeded` 后 4.9 MB | Unlicense OR MIT |
 | `libgit.so` | Git 2.56.0 源码（github.com/git/git） | `native/iec/scripts/optional/build_git.sh`：`-fPIC` 编译 git.o + builtin + libgit.a，`llvm-objcopy --redefine-sym main=iec_git_main`，再链 IEC shim 与静态 zlib/PCRE2/OpenSSL/libcurl 成共享库；只导出 `iec_git_main` | GPL-2.0 |
 | `libgit-remote-http.so` | Git 2.56.0 的 `remote-curl.c` + `http.c` + `http-walker.c` | 同上脚本，入口 `iec_git_remote_http_main`；同时供 `git-remote-http` 与 `git-remote-https` 两个启动器使用，静态链 libcurl/OpenSSL/zlib | GPL-2.0；静态依赖见 `LICENSES/curl.txt`、`LICENSES/Apache-2.0-OpenSSL.txt`、`LICENSES/zlib.txt` |
-| `libpython.so` | CPython 3.12.14 | `native/iec/scripts/optional/build_python.sh`，静态扩展转为共享对象，入口 `Py_BytesMain` / `iec_pip_main` | PSF-2.0 |
+| `libpython.so` | CPython 3.12.14 | `native/iec/scripts/optional/build_python.sh`，静态扩展转为共享对象，入口 `Py_BytesMain` / `iec_pip_main`；`_bz2` 来自本机编译的 `libbz2.a`，标准库保留 `ensurepip` 并补 `_bundled` pip wheel（`python3 -m venv` 可用，且清掉 macOS 的 `._*` 文件） | PSF-2.0 |
 | `libcurlcmd.so` | curl 8.22.0 命令行 | `native/iec/scripts/optional/build_curlcmd.sh`，复用 libcurl 静态库 | curl |
-| `libopensslcmd.so` | OpenSSL 3.0.22 CLI | `native/iec/scripts/optional/build_opensslcmd.sh` | Apache-2.0 |
+| `libopensslcmd.so` | OpenSSL 3.0.22 CLI | `native/iec/scripts/optional/build_opensslcmd.sh`；`build_openssl.sh` 把 `--openssldir` 固定为 `/etc/ssl`（曾经编进构建机的 `/Users/...`，导致 `openssl req`/`ca` 找不到配置），运行时的真实配置由 `rawfile/harmony/openssl.cnf` 落到 `<sysroot>/certs/openssl.cnf`，`OPENSSL_CONF` 指向它 | Apache-2.0 |
 | `libjqcmd.so` | jq 1.7.1 + oniguruma 6.9.9 | `native/iec/scripts/optional/build_jq.sh` | MIT / BSD-2-Clause |
 | `libbccmd.so` | GNU bc 1.07.1 | `native/iec/scripts/optional/build_bc.sh` | GPL-3.0 |
 | `libnc.so`、`libhexdump.so`、`libdiff.so` | 本仓库 `native/iec/scripts/optional/cmd_*.c` | `native/iec/scripts/build_extra_commands.sh` | MIT |
@@ -36,8 +36,8 @@
 | `librsynccmd.so` | rsync 3.4.1（bundled popt） | `native/iec/scripts/optional/build_rsync.sh` | GPL-3.0 / MIT |
 | `libxzcmd.so` | XZ Utils 5.8.1 | `native/iec/scripts/optional/build_xz.sh` | Public domain / LGPL-2.1+ |
 | `libzstdcmd.so` | zstd 1.5.7 | `native/iec/scripts/optional/build_zstd.sh` | BSD-3-Clause |
-| `libghcmd.so` | GitHub CLI 源码 | `native/iec/scripts/optional/build_gh.sh`，Go c-shared，入口 `iec_gh_main` | MIT / Go BSD-3-Clause |
-| `libgitlfscmd.so` | Git LFS 源码 | `native/iec/scripts/optional/build_gitlfs.sh`，Go c-shared，入口 `iec_gitlfs_main` | MIT / Go BSD-3-Clause |
+| `libghcmd.so` | GitHub CLI 源码 | `native/iec/scripts/optional/build_gh.sh`，Go c-shared，入口 `iec_gh_main`；必须用 OpenHarmony Go 工具链（`GOOS=openharmony`，见 `fetch_go_ohos.sh`）产出 TLSDESC，stock Go 的 initial-exec TLS 会被鸿蒙 musl 拒绝 dlopen | MIT / Go BSD-3-Clause |
+| `libgitlfscmd.so` | Git LFS 源码 | `native/iec/scripts/optional/build_gitlfs.sh`，Go c-shared，入口 `iec_gitlfs_main`；同样要求 OpenHarmony Go 工具链（TLSDESC） | MIT / Go BSD-3-Clause |
 
 > 两个 git 库静态链接了 zlib 1.3.1、PCRE2 10.49、OpenSSL 3.0.22、libcurl 8.22.0；它们不单独随包分发，许可证原文分别在 `LICENSES/zlib.txt`、`LICENSES/pcre2.txt`、`LICENSES/Apache-2.0-OpenSSL.txt`、`LICENSES/curl.txt`。
 

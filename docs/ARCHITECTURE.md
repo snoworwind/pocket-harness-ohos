@@ -138,6 +138,11 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 - **图片附件**：随包引擎没有 sharp 原生模块，`--jitless` 也没有 WASM 兜底。`scripts/pack-native.sh` 在解包后的引擎树上给 `@deepseek-ai/dsh-attachment-local/lib/index.js` 追加 `scripts/engine-patch/attachment-pure-js.epilogue.js`：`probeImage`/`detectImage` 改成 PNG/JPEG/WebP/GIF 文件头解析，`normalizeImage`/`createRequestImage` 原字节透传；并把 `ensureDurableDirectory` 改成在沙箱边界的 `EACCES`/`EPERM` 停止向上 fsync（`/data/storage/el2` 不可读）。补丁按函数名覆盖，升级引擎时名字不匹配会直接让打包失败。
 - **TLS**：启动时把 `certs/cacert.pem`（Mozilla 根证书）与可选的 `rawfile/harmony/extra-ca.pem` 合并成 `certs/bundle.pem`，`SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` 指向它；不做任何运行时放宽。附加 CA 不随仓库分发，仅供会拦截 HTTPS 的开发环境使用。
 - **缩放**：`Web` 组件设置 `zoomAccess(false)`，避免双指缩放破坏终端与侧栏的几何计算。
+- **ripgrep 参数**：`librg.so` 由 IEC dlopen 进 shell 进程，`std::env::args()` 拿到的是宿主 argv（空），所以 `iec_rg_main` 必须用启动器传入的 `_argc/_argv` 重建命令行；否则引擎的代码搜索与 `grep` 工具会一直报 `ripgrep requires at least one pattern`。构建脚本已把 ripgrep 的 CLI 解析改走这份参数，见 `scripts/rg/build-ripgrep.sh`。
+- **Go 命令（`gh`、`git-lfs`）**：stock Go 的 `c-shared` 用 initial-exec TLS，鸿蒙 musl 在 `dlopen` 时直接拒绝（`initial-exec TLS resolves to dynamic definition`，IEC 侧是退出码 125）。`GOOS=android` 也不行：它靠 bionic 的固定 TP 偏移/`pthread_key` 扫描找 goroutine 槽位，musl 的 `tsd` 是独立分配的。正确做法是 OpenHarmony 的 Go 工具链（`GOOS=openharmony`，c-shared 默认 TLSDESC）：先跑 `native/iec/scripts/optional/fetch_go_ohos.sh`，再设 `GO_TOOLCHAIN`；两个构建脚本都会检查产物不含 `R_AARCH64_TLS_TPREL64`。gh 固定在要求 go ≤ 1.26 的 tag（`GH_REF=v2.100.0`），并强制 `GOTOOLCHAIN=local`，否则 `go` 会自动下载官方新工具链、覆盖掉 openharmony 目标。
+- **OpenSSL 配置**：`libcrypto` 的 `OPENSSLDIR` 编译为 `/etc/ssl`（绝不能再是构建机路径）。运行时的真实配置是随包的 `rawfile/harmony/openssl.cnf` → `<sysroot>/certs/openssl.cnf`，`OPENSSL_CONF` 指过去；`openssl req`/`ca` 找不到配置是致命错误，所以这一步不能省。
+- **归档压缩后端**：`tar` 静态链入 bzip2/xz/zstd，`-j`/`-J`/`--zstd` 不再依赖设备上不存在的 `bzip2`/`xz` 命令。
+- **node-pty（已知限制）**：`pty.node` 走 `forkpty(3)`，而鸿蒙应用沙箱不允许 `fork`，IEC 的 tty shim 只能接管 pty 的 fd/RPC，不能凭空变出子进程。因此在内置 shell 里运行依赖 node-pty 的 Node 程序会失败；应用自己的 Bash 工具走管道、右侧栏终端走原生 PTY，不受影响。要支持它得让 node-pty 改走 IEC 的执行服务，而不是 shim 层能解决的。
 
 ## 扩展顺序
 

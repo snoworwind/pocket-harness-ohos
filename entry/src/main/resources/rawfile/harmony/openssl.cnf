@@ -1,0 +1,63 @@
+# Pocket Harness runtime OpenSSL configuration.
+#
+# libcrypto is compiled with --openssldir=/etc/ssl (a build-host path must never
+# leak into the device binary), and the application exports OPENSSL_CONF to this
+# file. Paths therefore resolve from the runtime root (IEC_SYSROOT) instead of
+# being baked in at build time.
+#
+# `openssl req`, `openssl ca` and friends are fatal when the compiled-in config
+# path does not exist, which is why this file ships with the runtime.
+
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+default = default_sect
+
+[default_sect]
+activate = 1
+
+[req]
+default_bits = 2048
+distinguished_name = req_distinguished_name
+attributes = req_attributes
+x509_extensions = v3_ca
+
+[req_distinguished_name]
+
+[req_attributes]
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always, issuer
+
+# `openssl ca` works on a CA directory under <sysroot>/certs/ca. Create the files
+# it expects (index.txt, serial, private/ca.key, cacert.pem) before signing.
+[ca]
+default_ca = CA_default
+
+[CA_default]
+dir = $ENV::IEC_SYSROOT/certs/ca
+certs = $dir/certs
+new_certs_dir = $dir/newcerts
+database = $dir/index.txt
+serial = $dir/serial
+private_key = $dir/private/ca.key
+certificate = $dir/cacert.pem
+default_md = sha256
+default_days = 365
+policy = policy_any
+email_in_dn = no
+unique_subject = no
+
+[policy_any]
+countryName = optional
+stateOrProvinceName = optional
+localityName = optional
+organizationName = optional
+organizationalUnitName = optional
+commonName = supplied
+emailAddress = optional

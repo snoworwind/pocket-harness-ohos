@@ -33,15 +33,79 @@ if '[lib]' not in text:
     text += '\n[lib]\nname = "rg_ohos"\npath = "crates/core/main.rs"\ncrate-type = ["cdylib"]\n'
     open(cargo, 'w', encoding='utf-8').write(text)
 
+# ripgrep 的 CLI 解析直接读 std::env::args()。lib 被 IEC dlopen 到 shell 进程后，
+# 进程 argv 属于宿主（通常是空），所以任何参数都会被忽略，只剩
+# "ripgrep requires at least one pattern"。这里让解析器优先读 IEC 传进来的 argv：
+# iec_rg_main 把 argc/argv 写进 IEC_CLI_ARGS，parse_low() 两处读参数的地方改走
+# cli_args()。没有设置时（独立运行时）仍然回退到进程 argv。
+parse = root + '/crates/core/flags/parse.rs'
+text = open(parse, encoding='utf-8').read()
+if 'IEC_CLI_ARGS' not in text:
+    anchor = 'use std::{borrow::Cow, collections::BTreeSet, ffi::OsString};'
+    if anchor not in text:
+        raise SystemExit('ripgrep parse.rs: cannot find the OsString import anchor')
+    text = text.replace(anchor, anchor + '''
+
+/// IEC 传进来的命令行参数（不含 argv[0]）。lib 模式下进程 argv 是宿主的，
+/// 解析器必须用这个，否则永远拿不到 pattern。
+static IEC_CLI_ARGS: std::sync::Mutex<Option<Vec<OsString>>> =
+    std::sync::Mutex::new(None);
+
+pub(crate) fn set_cli_args(args: Vec<OsString>) {
+    *IEC_CLI_ARGS.lock().unwrap() = Some(args);
+}
+
+fn cli_args() -> Vec<OsString> {
+    if let Some(args) = IEC_CLI_ARGS.lock().unwrap().as_ref() {
+        return args.clone();
+    }
+    std::env::args_os().skip(1).collect()
+}''', 1)
+    for old, new in (
+        ('parser.parse(std::env::args_os().skip(1), &mut low)',
+         'parser.parse(cli_args(), &mut low)'),
+        ('final_args.extend(std::env::args_os().skip(1));',
+         'final_args.extend(cli_args());'),
+    ):
+        if old not in text:
+            raise SystemExit('ripgrep parse.rs: cannot find %r' % old)
+        text = text.replace(old, new)
+    open(parse, 'w', encoding='utf-8').write(text)
+
+flags_mod = root + '/crates/core/flags/mod.rs'
+text = open(flags_mod, encoding='utf-8').read()
+if 'set_cli_args' not in text:
+    old = 'parse::{parse, ParseResult},'
+    if old not in text:
+        raise SystemExit('ripgrep flags/mod.rs: cannot find the parse re-export')
+    text = text.replace(old, 'parse::{parse, set_cli_args, ParseResult},', 1)
+    open(flags_mod, 'w', encoding='utf-8').write(text)
+
 main = root + '/crates/core/main.rs'
 text = open(main, encoding='utf-8').read()
 if 'iec_rg_main' not in text:
     text += '''
-/// IEC 入口：参数由进程环境提供（启动器已设置 argv），返回值作为退出码。
+/// IEC 入口：参数来自启动器，而不是宿主进程的 argv（dlopen 场景下后者不可用）。
 /// 0 = 有匹配或正常完成，1 = 无匹配/搜索失败，2 = 参数或运行错误。
 #[no_mangle]
-pub extern "C" fn iec_rg_main(_argc: i32, _argv: *const *const u8) -> i32 {
+pub extern "C" fn iec_rg_main(argc: i32, argv: *const *const u8) -> i32 {
+    use std::ffi::{CStr, OsString};
     use std::io::Write as _;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let mut args = Vec::new();
+    if argc > 1 && !argv.is_null() {
+        for i in 1..argc as isize {
+            let p = unsafe { *argv.offset(i) };
+            if p.is_null() {
+                break;
+            }
+            let arg = unsafe { CStr::from_ptr(p as *const std::os::raw::c_char) };
+            args.push(OsString::from_vec(arg.to_bytes().to_vec()));
+        }
+    }
+    flags::set_cli_args(args);
+
     let code = match run(flags::parse()) {
         Ok(code) => {
             if code == std::process::ExitCode::SUCCESS { 0 } else { 1 }

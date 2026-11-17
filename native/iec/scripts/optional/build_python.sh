@@ -130,6 +130,11 @@ iec_log "host python = $HOST_PY ($("$HOST_PY" -V 2>&1))"
 
 # ── 1. static dependencies ────────────────────────────────────────────────
 [ -f "$IEC_DEPS_LIB/libz.a" ] || "$IEC_ROOT/scripts/optional/build_zlib.sh"
+# _bz2 and the static extension build both need libbz2.a + bzlib.h in the
+# dependency prefix. Without it CPython silently drops _bz2 and `import bz2`
+# fails on the device.
+[ -f "$IEC_DEPS_LIB/libbz2.a" ] && [ -f "$IEC_DEPS_INC/bzlib.h" ] \
+	|| "$IEC_ROOT/scripts/optional/build_bzip2.sh"
 OPENSSL_DIR="${OPENSSL_DIR:-$IEC_OPENSSL_DIR}"
 [ -f "$OPENSSL_DIR/lib/libssl.a" ] || "$IEC_ROOT/scripts/optional/build_openssl.sh"
 
@@ -299,7 +304,7 @@ if [ ! -f "$BLD/Makefile" ]; then
 			iec_err "CPython configure failed"
 		}
 	iec_log "static module count: $(grep -c '^[a-zA-Z_]' "$BLD/Modules/Setup.stdlib" 2>/dev/null || echo '?')"
-	for m in readline _curses _ctypes pyexpat zlib _decimal _ssl _hashlib; do
+	for m in readline _curses _ctypes pyexpat zlib _bz2 _lzma _decimal _ssl _hashlib; do
 		if grep -qE "^$m " "$BLD/Modules/Setup.stdlib"; then
 			iec_log "  $m"
 		else
@@ -414,10 +419,37 @@ make -C "$BLD" install DESTDIR="$STAGE" > "$BUILD/py-install.log" 2>&1 \
 
 SLIB="$STAGE$PREFIX/lib/python$PY_SERIES"
 [ -f "$SLIB/os.py" ] || iec_err "install tree has no os.py: $SLIB"
+PIP_VER="${PIP_VER:-24.3.1}"
+SETUPTOOLS_VER="${SETUPTOOLS_VER:-75.6.0}"
+WHEEL_VER="${WHEEL_VER:-0.45.1}"
 mkdir -p "$RT_ROOT/python/lib"
 cp -a "$SLIB" "$RT_ROOT/python/lib/"
+# CPython is configured --without-ensurepip: `make install` cannot run the
+# cross-built interpreter, so ensurepip must not be invoked at build time. The
+# module itself is still installed, and the loop below makes sure its
+# `_bundled` pip wheel exists, so on-device `python3 -m venv` can bootstrap pip
+# offline. Without that wheel venv reports "No module named ensurepip".
 ( cd "$RT_ROOT/python/lib/python$PY_SERIES" && \
-	rm -rf test idlelib tkinter ensurepip lib2to3 config-* ) || true
+	rm -rf test idlelib tkinter lib2to3 config-* ) || true
+# macOS checkouts/tarballs carry AppleDouble resource forks (`._venv`), which show
+# up as bogus files in the installed venv. They are not part of any Python tree.
+find "$RT_ROOT" -name '._*' -type f -delete 2>/dev/null || true
+[ -f "$RT_ROOT/python/lib/python$PY_SERIES/ensurepip/__init__.py" ] \
+	|| iec_err "ensurepip is missing from the stdlib (py3 -m venv would fail)"
+# ensurepip installs pip from its bundled wheel; make sure one is actually there.
+if ! ls "$RT_ROOT/python/lib/python$PY_SERIES/ensurepip/_bundled"/*.whl >/dev/null 2>&1; then
+	iec_log "ensurepip has no bundled wheel; staging $PIP_VER for it"
+	mkdir -p "$BUILD/pip-download"
+	[ -n "${PIP_WHEEL:-}" ] || \
+		"$HOST_PY" -m pip download --no-deps --only-binary=:all: \
+			--dest "$BUILD/pip-download" "pip==$PIP_VER" \
+			> "$BUILD/pip-wheel.log" 2>&1 \
+			|| { tail -20 "$BUILD/pip-wheel.log" >&2; iec_err "ensurepip pip wheel download failed"; }
+	mkdir -p "$RT_ROOT/python/lib/python$PY_SERIES/ensurepip/_bundled"
+	cp -f "$BUILD/pip-download"/pip-*.whl \
+		"$RT_ROOT/python/lib/python$PY_SERIES/ensurepip/_bundled/" \
+		|| iec_err "cannot stage the ensurepip wheel"
+fi
 
 DYN_OTHER="$(find "$RT_ROOT/python/lib/python$PY_SERIES/lib-dynload" \
 	-name '*.so' 2>/dev/null | awk '/xxlimited/{next} {n++} END{print n+0}')"
@@ -426,12 +458,9 @@ DYN_OTHER="$(find "$RT_ROOT/python/lib/python$PY_SERIES/lib-dynload" \
 rm -rf "$RT_ROOT/python/lib/python$PY_SERIES/lib-dynload"
 mkdir -p "$RT_ROOT/python/lib/python$PY_SERIES/site-packages"
 
-# Bundle pip, setuptools and wheel.  CPython is configured --without-ensurepip,
-# so the launcher's `python -m pip` has nothing to run unless these wheels are
-# unpacked into site-packages at build time.
-PIP_VER="${PIP_VER:-24.3.1}"
-SETUPTOOLS_VER="${SETUPTOOLS_VER:-75.6.0}"
-WHEEL_VER="${WHEEL_VER:-0.45.1}"
+# Bundle pip, setuptools and wheel into site-packages so `python -m pip` works
+# even before a venv is created. ensurepip (kept in the stdlib) is what makes
+# `python3 -m venv` install pip into the new environment.
 PIP_SITE="$RT_ROOT/python/lib/python$PY_SERIES/site-packages"
 if [ ! -d "$PIP_SITE/pip" ]; then
 	mkdir -p "$BUILD/pip-download"

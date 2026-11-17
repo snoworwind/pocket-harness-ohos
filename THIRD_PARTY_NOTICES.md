@@ -25,6 +25,7 @@ HAP 分发（应用内路径 `resources/rawfile/notices/`，首次启动后解�
 | npm | 11.19.1（Node.js 源码树 `deps/npm`） | Artistic-2.0 | `LICENSES/Artistic-2.0.txt` |
 | toybox | 0.8.14 | 0BSD | `LICENSES/toybox.txt` |
 | libarchive（bsdtar / bsdcpio / unzip / zipcmd） | 3.7.7 | BSD-2-Clause | `LICENSES/libarchive.txt` |
+| bzip2 / libbz2（静态链接进 libarchive 前端与 CPython） | 1.0.8，<https://sourceware.org/pub/bzip2/> | bzip2-1.0.8（BSD 风格） | `LICENSES/bzip2.txt` |
 | ripgrep | 14.1.1 | Unlicense OR MIT | `LICENSES/ripgrep-UNLICENSE.txt`、`LICENSES/ripgrep-MIT.txt` |
 | CPython | 3.12.14，<https://www.python.org> | PSF-2.0 | `LICENSES/Python-PSF.txt` |
 | pip / setuptools / wheel | 24.3.1 / 75.6.0 / 0.45.1，随 Python 标准库分发 | MIT | `LICENSES/pip.txt`、`LICENSES/setuptools.txt`、`LICENSES/wheel.txt` |

@@ -243,6 +243,7 @@ static int AddPath(struct archive* a, const char* fs_path,
 int main(int argc, char** argv)
 {
     int recurse = 0, junk = 0, store = 0;
+    int want_version = 0, want_help = 0;
     int i = 1;
 
     for (; i < argc; i++) {
@@ -250,6 +251,16 @@ int main(int argc, char** argv)
         if (!strcmp(argv[i], "--")) {
             i++;
             break;
+        }
+        // Long options are accepted for compatibility probes (`zip --version`),
+        // which Info-ZIP also answers without an archive operand.
+        if (!strcmp(argv[i], "--version")) {
+            want_version = 1;
+            continue;
+        }
+        if (!strcmp(argv[i], "--help")) {
+            want_help = 1;
+            continue;
         }
         // Info-ZIP accepts bundled short options ("zip -qr out.zip dir"). The
         // parser used to compare whole words, so the common -qr form failed
@@ -259,11 +270,31 @@ int main(int argc, char** argv)
             else if (*p == 'q') g_quiet = 1;
             else if (*p == 'j') junk = 1;
             else if (*p == '0') store = 1;
+            // -v is Info-ZIP's "show version and exit"; scripts use it to probe
+            // for a working zip. It used to be rejected as an unknown option.
+            else if (*p == 'v') want_version = 1;
+            else if (*p == 'h') want_help = 1;
             else {
                 fprintf(stderr, "zip: unknown option -%c\n", *p);
                 return 2;
             }
         }
+    }
+
+    if (want_version) {
+        printf("Pocket Harness zip 1.0 (libarchive %s)\n",
+               archive_version_string());
+        printf("Usage: zip [-rq0j] archive.zip file...\n");
+        return 0;
+    }
+    if (want_help) {
+        printf("Usage: zip [-rq0jv] archive.zip file...\n"
+               "  -r  recurse into directories\n"
+               "  -q  quiet\n"
+               "  -0  store without compression\n"
+               "  -j  junk paths (use the basename for entries)\n"
+               "  -v  show version and exit\n");
+        return 0;
     }
 
     if (i + 1 >= argc) {
