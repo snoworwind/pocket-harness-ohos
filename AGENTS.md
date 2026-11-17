@@ -10,6 +10,7 @@
 - 进程模型：`Index` → `NativeRuntime` → 启动 IEC 原生执行/终端服务 → `node engine/bin.js --profile web` → ArkWeb 加载 `http://127.0.0.1:<port>`；右侧栏终端由 libvterm 原生绘制。
 - 运行时目录：`filesDir/runtime-<manifest.version>/`，每次清单版本变化会在设备上整棵重解包并清理旧目录；`harness-home/` 保存会话/设置，升级不删。
 - 命令不是 ELF：每个命令是 `runtime-<ver>/bin/<name>` 的 `#IECSOv2` 文本启动器，指向随 HAP 安装的 `.so` 与入口符号，由 IEC 执行服务装载。
+- 应用启动时会往 `$DSH_HOME/AGENTS.md` 写入一份**内置全局说明**（每次启动覆盖），DSH 会把它加载进每个会话。用户/项目规则应写在工作区的 `AGENTS.md`，不要改这份内置文件。
 
 关键目录：
 

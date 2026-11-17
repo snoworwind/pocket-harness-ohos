@@ -6,6 +6,8 @@ require('../entry/src/main/resources/rawfile/harmony/fetch-polyfill.cjs');
 const assert = require('node:assert');
 const http = require('node:http');
 const zlib = require('node:zlib');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const server = http.createServer((req, res) => {
   if (req.url === '/json') {
@@ -196,6 +198,24 @@ function pass(name) { console.log('PASS', name); }
     setTimeout(() => controller.abort(), 50);
     await assert.rejects(pending, (error) => error.name === 'AbortError');
     pass('abort');
+
+    // 16. undici 的 fetch 导出应被换成补丁实现（dsh-web-fetch-http 不走全局 fetch）
+    const fixtureRoot = fs.mkdtempSync(path.join(__dirname, '.tmp-undici-'));
+    try {
+      const undiciDir = path.join(fixtureRoot, 'undici');
+      fs.mkdirSync(undiciDir);
+      const undiciEntry = path.join(undiciDir, 'index.js');
+      fs.writeFileSync(undiciEntry, 'exports.fetch = function nativeFetch() { return "native"; };\nexports.Agent = function Agent() {};\n');
+      const fakeUndici = require(undiciEntry);
+      assert.strictEqual(fakeUndici.fetch, globalThis.fetch, 'undici.fetch 应指向补丁实现');
+      assert.strictEqual(typeof fakeUndici.Agent, 'function', 'undici 的其它导出应保持原样');
+      const res = await fakeUndici.fetch(base + '/json', { redirect: 'manual', headers: { 'user-agent': 'x' } });
+      assert.strictEqual(res.status, 200);
+      assert.deepStrictEqual(await res.json(), { ok: true });
+      pass('undici fetch override');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
 
     console.log('ALL PASS');
   } finally {

@@ -301,4 +301,38 @@
     }
   };
   globalThis.fetch.__harmonyPolyfill = true;
+  installUndiciFetchOverride(globalThis.fetch);
+
+  // dsh-web-fetch-http 的 provider 不走 globalThis.fetch，而是
+  // `const { fetch } = await import("undici")`。undici 解析响应时依赖 WASM
+  // （llhttp），而本应用的 Node 跑在 --jitless 下，WebAssembly 是 undefined，
+  // 于是 web_fetch 稳定报 TypeError: fetch failed（cause: WebAssembly is not defined）。
+  //
+  // 这里在 CJS 加载器返回 module.exports 之前把 undici.fetch 换成上面的补丁实现。
+  // 必须在这个时机改：Node 为 CJS 包构建 ESM 命名空间时是快照，先 import 再改
+  // exports 不会生效。只改 fetch，Agent/Pool/ProxyAgent 等保持原样，避免破坏
+  // dsh-http-proxy 的代理安装逻辑。
+  function installUndiciFetchOverride(polyfillFetch) {
+    try {
+      const Module = require('node:module');
+      if (Module.__dshFetchPolyfillHooked) return;
+      Module.__dshFetchPolyfillHooked = true;
+      const originalLoad = Module._load;
+      Module._load = function patchedLoad(request) {
+        const exported = originalLoad.apply(this, arguments);
+        const name = String(request);
+        const isUndici = name === 'undici' || /[\\/]undici[\\/](index\.js|index\.mjs)$/.test(name);
+        if (isUndici && exported && typeof exported.fetch === 'function' && exported.fetch !== polyfillFetch) {
+          try {
+            exported.fetch = polyfillFetch;
+          } catch (error) {
+            console.error('[fetch-polyfill] 改写 undici.fetch 失败', error && error.message);
+          }
+        }
+        return exported;
+      };
+    } catch (error) {
+      console.error('[fetch-polyfill] 无法挂上 undici 覆盖钩子', error && error.message);
+    }
+  }
 })();

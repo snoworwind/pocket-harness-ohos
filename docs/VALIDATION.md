@@ -174,3 +174,11 @@ bash native/iec/scripts/test_iec_native_host.sh   # 45 + 15 项，含 sidecar/�
 - 修复后真机复测：engine 解包 20:49:33.817 → 20:49:41.734，stdlib/vim 至 20:49:45.322，
   共约 11.5 秒，流式 hilog 中无 `THREAD_BLOCK`/`APP_FREEZE`；20:49:48 `bin/node` 启动，
   `http://127.0.0.1:40085` 加载出官方 Web GUI，进程 50 秒后仍存活。
+
+### web_fetch 的 undici 覆盖（2026-11-17 深夜）
+
+- 症状：`web_fetch` 对任意 URL 稳定报 `TypeError: fetch failed`；`web_search`、页面 `/api`、终端里的 `node -e "fetch(...)"` 都正常。
+- 根因：`@deepseek-ai/dsh-web-fetch-http` 的 `requestOnce()` 用 `await import("undici")` 而不是 `globalThis.fetch`；undici 在响应解析阶段依赖 WASM（llhttp），而 Node 以 `--jitless` 运行，`WebAssembly` 为 `undefined`。
+- 修复：`harmony/fetch-polyfill.cjs` 在 `Module._load` 返回 CJS 导出之前把 `undici.fetch` 换成补丁实现（ESM 命名空间是加载时快照，import 后再改 exports 不生效）；只改 `fetch`，`Agent`/`Pool`/`ProxyAgent` 保持原样，避免破坏 `dsh-http-proxy`。
+- 回归：`scripts/test-fetch-polyfill.cjs` 新增“假 undici 模块 + 真实请求”用例（16 项 ALL PASS）；`scripts/test.cjs` 51 项通过；`runtime-manifest.mjs check` 不变（`rawfile/harmony` 不计入清单）。
+- 验证：设备内 agent 用同一补丁确认 `web_fetch https://example.com/` 通过；本仓库 HAP 待重装复核。

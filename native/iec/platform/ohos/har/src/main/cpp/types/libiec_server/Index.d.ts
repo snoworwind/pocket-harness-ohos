@@ -44,7 +44,10 @@ export const ensureDir: (path: string) => number;
 export const writeSoLauncher: (target: string, so: string, entry: string,
                                arity: number, primary?: number) => number;
 
-// Extracts a tar stored in rawfile `name` into `dest`, on a NAPI worker thread so
+// Copies rawfile `name` to `target` byte for byte, with default permissions.
+// Used for the built-in AGENTS.md, which is rewritten on every application start.
+export const installRawfileFile: (name: string, target: string) => number;
+
 // the UI thread is not blocked (a first-run extraction would otherwise trip the
 // THREAD_BLOCK_6S watchdog). Resolves to 0 on success, 1 on failure. Symlinks
 // become <name>.IEC_SYMLINK marker files.

@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { execStart, execPoll, execWrite, execCloseStdin, execTerminate, execRelease,
-  initIecResourceManager, installCaBundle, probeCaps, startIecServer, unpackResource,
+  initIecResourceManager, installCaBundle, installRawfileFile, probeCaps, startIecServer, unpackResource,
   writeSoLauncher, writeTxtFile } from 'iec';
 import { EngineHooks, EnginePipe, OfficialRpc } from '../core/OfficialRpc';
 import { Settings } from '../core/Types';
@@ -130,6 +130,7 @@ export class NativeRuntime {
     this.ensureDir(this.root + '/home');
     this.ensureDir(this.root + '/tmp');
     this.ensureDir(this.context.filesDir + '/harness-home');
+    this.installBuiltinAgents();
     this.ensureDir(this.context.filesDir + '/home');
     this.ensureDir(this.context.filesDir + '/home/.ssh');
     this.ensureDir(this.context.filesDir + '/home/.config');
@@ -602,6 +603,16 @@ export class NativeRuntime {
       if (!fs.accessSync(ca + '/index.txt')) { writeTxtFile(ca + '/index.txt', ''); }
       if (!fs.accessSync(ca + '/serial')) { writeTxtFile(ca + '/serial', '1000\n'); }
     } catch (error) { /* 配置缺失只影响 req/ca；其它 openssl 子命令仍可用 */ }
+  }
+  // DSH 会把 $DSH_HOME/AGENTS.md 当作用户级全局指令读进每个会话。这里写入的是
+  // 应用内置说明：每次启动重写，避免用户/Agent 的改动被当成持久规则；
+  // 用户自己的规则应写到工作区的 AGENTS.md（优先级更高）。
+  private installBuiltinAgents(): void {
+    const target = this.context.filesDir + '/harness-home/AGENTS.md';
+    const code = installRawfileFile('agents/AGENTS.md', target);
+    if (code !== 0) {
+      console.warn('[agents] 内置 AGENTS.md 写入失败：' + code.toString());
+    }
   }
   private installFetchPolyfill(): void {
     const dir = this.root + '/harmony';

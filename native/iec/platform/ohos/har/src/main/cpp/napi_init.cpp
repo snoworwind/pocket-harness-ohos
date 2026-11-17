@@ -641,6 +641,42 @@ napi_value WriteTxtFile(napi_env env, napi_callback_info info) {
     return IntResult(env, 0);
 }
 
+// 把 rawfile 原样写到 target（内置 AGENTS.md 等），使用默认权限。
+napi_value InstallRawfileFile(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+    std::string name, target;
+    if (argc < 2 ||
+        !ReadStringArg(env, argv[0],
+                       "installRawfileFile(name, target)", name) ||
+        !ReadStringArg(env, argv[1],
+                       "installRawfileFile(name, target)", target))
+        return nullptr;
+
+    if (!g_res_mgr) {
+        Logger::GetInstance()->LogE("[iec] install %s: no resource manager",
+                                    name.c_str());
+        return IntResult(env, 1);
+    }
+
+    std::vector<unsigned char> data;
+    if (!ReadRawFile(g_res_mgr, name, &data)) {
+        Logger::GetInstance()->LogE("[iec] install %s: rawfile read failed",
+                                    name.c_str());
+        return IntResult(env, 1);
+    }
+
+    if (!WriteFile(target, data.data(), data.size(), 0644)) {
+        Logger::GetInstance()->LogE("[iec] install %s -> %s failed",
+                                    name.c_str(), target.c_str());
+        return IntResult(env, 1);
+    }
+    Logger::GetInstance()->LogI("[iec] installed %s -> %s (%zu bytes)",
+                                name.c_str(), target.c_str(), data.size());
+    return IntResult(env, 0);
+}
 napi_value Init(napi_env env, napi_value exports) {
     // The logger has no OHOS dependency of its own. Register hilog as a custom
     // sink here, where the NAPI/hilog libraries are already linked.
@@ -675,6 +711,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"writeSoLauncher",             nullptr, WriteSoLauncher,           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"unpackResource",              nullptr, UnpackResource,            nullptr, nullptr, nullptr, napi_default, nullptr},
         {"writeTxtFile",                nullptr, WriteTxtFile,              nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"installRawfileFile",          nullptr, InstallRawfileFile,        nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

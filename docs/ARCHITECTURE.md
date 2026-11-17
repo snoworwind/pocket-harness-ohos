@@ -38,6 +38,7 @@ filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭
 - 运行时目录名、版本自动化和 `.installed` 校验见下文「启动页与阶段提示」「运行时版本自动化」两节。
 - 目录被改坏时的恢复分三层：三项存在性探测失败 → 整棵重解；引擎启动报 `Cannot find module` / `failed to import` → 自动重解一次（`NativeRuntime.repair()`）；仍失败 → 界面提供「重新解包运行时」按钮。`repair()` 只删 `runtime-*`，不碰 `harness-home`。
 - `harness-home` 永不被应用删除：覆盖升级保留会话与设置，卸载才清空。
+- 启动时会往 `harness-home/AGENTS.md` 写入一份内置全局说明（源文件是 `rawfile/agents/AGENTS.md`，每次启动覆盖）；DSH 把它作为用户级指令加载进每个会话，用户规则应写在工作区的 `AGENTS.md`。
 
 - 解包用的是 HAR 里的 `unpackResource()`：先把 rawfile 读进内存，再用 libarchive 的 write-disk 解到目标目录。它是异步的（返回 `Promise<number>`）：rawfile 读取与解包都在 NAPI 工作线程，首解包约 11 秒也不会阻塞 UI 线程——同步做过一次，`THREAD_BLOCK_6S` 看门狗会在解包结束时把进程杀掉。`libarchive.so.13` 是运行期 `dlopen` 的共享库，必须随 HAP 打进 `libs/arm64-v8a/`。
 - 解包失败会留下半棵树，所以失败时清掉 `engine/` 再抛出；`fs.mkdirSync` 在目录已存在时会抛 `13900015 File exists`（即使 `recursion=true`），所以所有建目录都先 `accessSync` 判断。
@@ -139,7 +140,7 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 ## 运行时补丁
 
 - **启动性能**：`node-addon-native-custom-loader` 在 OHOS 上无法从 ELF interpreter / `/proc/self/maps` 识别 libc，会退回 `process.report.getReport()` 判断 musl/glibc。该报告枚举 CPU/网络，真机上阻塞 Node 事件循环约 32 秒，连带把 `/api/session/create` 和 account 请求拖到同一时刻返回。`harmony/runtime-preload.cjs` 通过 `NODE_OPTIONS` 预加载，只对**无参** `getReport()` 返回最小报告（`header` 为空即按 musl），带 options 的调用仍走 Node 原实现；`DSH_LITE_REPORT=0` 可关闭。真机 CPU profile 确认该调用从 32 秒降到毫秒级，冷启动到可用从约 50–55 秒降到约 11–15 秒。
-- **fetch**：鸿蒙上 Node 以 `--jitless` 运行，V8 不暴露 WebAssembly，undici 的 fetch 不可用。运行时把纯 JS 的 `harmony/fetch-polyfill.cjs` 通过 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，覆盖 JSON、SSE、重定向、压缩、AbortSignal、FormData/Blob 等语义。
+- **fetch**：鸿蒙上 Node 以 `--jitless` 运行，V8 不暴露 WebAssembly，undici 的 fetch 不可用。运行时把纯 JS 的 `harmony/fetch-polyfill.cjs` 通过 `NODE_OPTIONS=--require` 预加载到宿主和终端里的 node，覆盖 JSON、SSE、重定向、压缩、AbortSignal、FormData/Blob 等语义；它还在 `Module._load` 返回 CJS 导出之前把 `undici.fetch` 换成补丁实现，因为 `dsh-web-fetch-http` 用 `await import("undici")` 绕开了全局 `fetch`（undici 解析响应依赖 WASM，`--jitless` 下必然失败）。
 - **文档资源地址**：ArkWeb 把 `dsh-resource://file/…` 当 opaque URL，`new URL(...).hostname` 恒为空；官方 `@deepseek-ai/dsh-client-resources` 的 `protocolOf()` 用 `hostname` 当协议键，于是所有文件预览都被判成「没有 provider」，侧栏文件、聊天文件链接、交付物统一显示「文件资源服务不可用」。`Index.ets` 在文档起点注入 `RESOURCE_URL_DOCUMENT_SCRIPT`：只对 `dsh-resource:` 且原生 hostname 为空的 URL 补出 host，其它 scheme 与解析正常的引擎不受影响（回归测试 `tests/resource-url-shim.cjs`）。
 - **附件上传**：`dsh-client-file-upload` 默认用 blob URL 建 Worker 上传，ArkWeb 上不可靠。`Index.ets` 通过 `javaScriptOnDocumentStart` 注入 `globalThis.__DSH_FILE_UPLOAD__ = { fetch }`，客户端启动时优先使用，把上传退回主线程同源 `fetch`；Blob 请求体被拒时退成 ArrayBuffer 重试一次。
 - **图片附件**：随包引擎没有 sharp 原生模块，`--jitless` 也没有 WASM 兜底。`scripts/pack-native.sh` 在解包后的引擎树上给 `@deepseek-ai/dsh-attachment-local/lib/index.js` 追加 `scripts/engine-patch/attachment-pure-js.epilogue.js`：`probeImage`/`detectImage` 改成 PNG/JPEG/WebP/GIF 文件头解析，`normalizeImage`/`createRequestImage` 原字节透传；并把 `ensureDurableDirectory` 改成在沙箱边界的 `EACCES`/`EPERM` 停止向上 fsync（`/data/storage/el2` 不可读）。补丁按函数名覆盖，升级引擎时名字不匹配会直接让打包失败。
