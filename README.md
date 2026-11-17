@@ -10,7 +10,7 @@
 | --- | --- |
 | 应用名 | Pocket Harness |
 | 包名 | `com.snoworwind.phoh` |
-| 版本 | `0.1.0.3`（versionCode 4） |
+| 版本 | `0.1.0.4`（versionCode 5） |
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
 | 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1、CPython 3.12.14（含 pip）、curl 8.22.0、jq 1.7.1、Dropbear SSH、less/Vim、SQLite 3.50.4、rsync 3.4.1、xz 5.8.1、zstd 1.5.7、gh、Git LFS |
