@@ -175,6 +175,7 @@ gh release create vX.Y.Z.Z --title "Pocket Harness X.Y.Z.Z" \
 - **禁止在文档/提交里写真实设备标识**（SN/IMEI/MAC/手机号）和本机用户名路径；用“真机”“测试机 A”代替。
 - `entry/libs/`、`entry/src/main/resources/rawfile/tools/*.tar*`、HAP/`.app`、构建目录都在 `.gitignore` 中，不要 `git add -f` 提交。
 - 建议每台开发机执行 `npm run hooks:install`；提交/推送前也可手动 `npm run secrets:scan`。服务端 GitHub Actions 也会跑敏感扫描。
+  - **设备端（HarmonyOS 沙箱）例外，不要跑 `hooks:install`**：应用进程无法 `execve` 普通脚本，钩子里的 `#!/bin/sh` 解析不到解释器，`core.hooksPath=.githooks` 会让 `git hook run pre-commit` 返回 127、**每次 `git commit` 直接失败**。设备上应改为在 `.git/hooks/` 放包装脚本，shebang 写 `$IEC_SYSROOT/bin/sh` 的**真实绝对路径**，正文 `exec node .githooks/secret-scan.mjs --staged`（`pre-push` 用 `--pre-push`），并确认 `git config core.hooksPath` 为空。`.git/hooks/` 不入库，绝对路径可按机器写。详见 `.githooks/README.md`。
 - 提交信息沿用现有风格（`fix(runtime): ...` / `chore(release): ...`），说明“根因 → 修复 → 验证”。
 
 ---

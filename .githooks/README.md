@@ -16,6 +16,27 @@ node scripts/install-hooks.mjs
 git config core.hooksPath .githooks
 ```
 
+## 设备端（HarmonyOS 沙箱）不要用这个开关
+
+`core.hooksPath` 要求 git 能 `execve` 钩子脚本本身。设备上应用进程不能直接执行普通脚本，且 `#!/bin/sh` 解析不到解释器，结果是 `git hook run pre-commit` 返回 **127**、**每次 `git commit` 直接失败**（只剩 `--no-verify` 能提交）。所以设备上执行 `node scripts/install-hooks.mjs` 等于把提交锁死。
+
+设备上的正确做法是绕过 `core.hooksPath`，在 `.git/hooks/` 放两个本地包装脚本（该目录不入库，绝对路径可按机器写）：
+
+```sh
+git config --unset core.hooksPath      # 确认 git config core.hooksPath 为空
+```
+
+`.git/hooks/pre-commit`（`pre-push` 同理，末参换成 `--pre-push`）：
+
+```sh
+#!<IEC_SYSROOT>/bin/sh
+exec node .githooks/secret-scan.mjs --staged
+```
+
+- shebang 必须是 `$IEC_SYSROOT/bin/sh` 的**真实绝对路径**（如 `.../files/runtime-<ver>/bin/sh`），不能写 `#!/bin/sh`，也不能用 `/usr/bin/env`（设备上没有）。
+- 钩子逻辑仍只有 `.githooks/secret-scan.mjs` 一份，包装脚本只做 `exec node`。
+- 验证：`git hook run pre-commit` 退出码为 0；故意 `git add` 一个假的 `AKIA...` 文件应被拦下。
+
 ## 覆盖范围
 
 | 钩子 | 时机 | 扫描对象 |
