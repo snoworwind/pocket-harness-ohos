@@ -8,6 +8,11 @@ const zlib = require('node:zlib');
 
 const root = path.join(__dirname, '..');
 const engineArchive = path.join(root, 'entry/src/main/resources/rawfile/tools/official-engine.tar.gz');
+// 引擎归档是构建产物（.gitignore），clean checkout / CI 里不存在；依赖它的用例
+// 跳过而不是让整个宿主测试失败。本地打包后仍会完整执行。
+const engineArchiveSkip = fs.existsSync(engineArchive)
+  ? false
+  : '缺少 entry/src/main/resources/rawfile/tools/official-engine.tar.gz（构建产物，clean checkout 不提供）';
 const attachmentSourcePath = './node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js';
 
 // ── 上传钩子：直接从 Index.ets 取出实际注入的脚本，避免测试与实现漂移 ────────────
@@ -122,6 +127,7 @@ function readTarFile(archive, wantedSuffix) {
 }
 
 async function loadPatchedAttachmentModule() {
+  if (!fs.existsSync(engineArchive)) return null;
   const { applyAttachmentPatch } = await import('../scripts/engine-patch/attachment-pure-js.mjs');
   const extracted = readTarFile(engineArchive, attachmentSourcePath);
   if (extracted === null) return null;
@@ -218,9 +224,9 @@ function load() {
   return loadedPromise;
 }
 
-test('attachment patch is idempotent and rejects an unknown module layout', async () => {
+test('attachment patch is idempotent and rejects an unknown module layout', async (t) => {
   const loaded = await load();
-  if (loaded === null) return;
+  if (loaded === null) return t.skip(engineArchiveSkip);
   const once = loaded.applyAttachmentPatch(loaded.source);
   assert.equal(once.changed, false);
   assert.throws(() => loaded.applyAttachmentPatch('export { };\n'), /not found/);
@@ -228,7 +234,7 @@ test('attachment patch is idempotent and rejects an unknown module layout', asyn
 
 test('image admission parses PNG/JPEG/WebP/GIF headers without sharp', async (t) => {
   const loaded = await load();
-  if (loaded === null) return t.skip('engine archive not present');
+  if (loaded === null) return t.skip(engineArchiveSkip);
   const { prepareImageFile } = loaded.api;
   const cases = [
     ['image/png', PNG_1X1, 1, 1],
@@ -251,7 +257,7 @@ test('image admission parses PNG/JPEG/WebP/GIF headers without sharp', async (t)
 
 test('image admission still rejects malformed and mismatched images', async (t) => {
   const loaded = await load();
-  if (loaded === null) return t.skip('engine archive not present');
+  if (loaded === null) return t.skip(engineArchiveSkip);
   const { prepareImageFile } = loaded.api;
   await assert.rejects(
     prepareImageFile({ data: new Uint8Array(32), mediaType: 'image/png' }, LIMITS, POLICY),
@@ -269,7 +275,7 @@ test('image admission still rejects malformed and mismatched images', async (t) 
 
 test('request projection passes stored image bytes through unchanged', async (t) => {
   const loaded = await load();
-  if (loaded === null) return t.skip('engine archive not present');
+  if (loaded === null) return t.skip(engineArchiveSkip);
   const { prepareImageFile, readRequestImageFile } = loaded.api;
   const data = new Uint8Array(makeJpeg(2600, 1800, { app1: true }));
   const prepared = await prepareImageFile({ data, mediaType: 'image/jpeg' }, LIMITS, POLICY);
@@ -288,7 +294,7 @@ test('request projection passes stored image bytes through unchanged', async (t)
 
 test('stored images can be read back and verified with header facts', async (t) => {
   const loaded = await load();
-  if (loaded === null) return t.skip('engine archive not present');
+  if (loaded === null) return t.skip(engineArchiveSkip);
   const { prepareImageFile, readImageFile } = loaded.api;
   const data = new Uint8Array(makeJpeg(12, 8));
   const prepared = await prepareImageFile({ data, mediaType: 'image/jpeg' }, LIMITS, POLICY);
@@ -308,7 +314,7 @@ test('stored images can be read back and verified with header facts', async (t) 
 
 test('durability walk stops at an inaccessible sandbox boundary', async (t) => {
   const loaded = await load();
-  if (loaded === null) return t.skip('engine archive not present');
+  if (loaded === null) return t.skip(engineArchiveSkip);
   if (process.platform === 'win32') return t.skip('POSIX permission semantics required');
   const { LocalAttachmentStore } = loaded.api;
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ph-attachment-boundary-'));
