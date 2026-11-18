@@ -31,12 +31,15 @@ source "$ENV_FILE"
 source "$ROOT/scripts/lib/common.sh"
 
 TOYBOX_SRC="${TOYBOX_SRC:-$ROOT/thirdparty/toybox}"
+# 固定到审查基线时的 master commit（api.github.com/repos/landley/toybox/commits/master）。
+TOYBOX_COMMIT="$(iec_sha_or IEC_TOYBOX_COMMIT 6a0c0ef5eeb2c43e4feef9781398c1718b8bddcb)"
 PATCH_DIR="${TOYBOX_PATCH_DIR:-$ROOT/scripts/toybox-ohos/patches}"
 SRC="$ROOT/build/toybox-iec"
 OUTDIR="$ROOT/platform/ohos/har/libs/arm64-v8a"
 OUT="$OUTDIR/libtoybox.so"
 
-[ -f "$TOYBOX_SRC/Makefile" ] || iec_clone_if_missing "$TOYBOX_SRC" "${IEC_TOYBOX_REPO:-}"
+[ -f "$TOYBOX_SRC/Makefile" ] || \
+	iec_clone_if_missing "$TOYBOX_SRC" "${IEC_TOYBOX_REPO:-}" "" "$TOYBOX_COMMIT"
 
 CC=""; EXTRA=""
 if [ -n "${TOYBOX_CC:-}" ]; then

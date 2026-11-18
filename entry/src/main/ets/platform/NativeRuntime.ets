@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { execStart, execPoll, execWrite, execCloseStdin, execTerminate, execRelease,
   initIecResourceManager, installCaBundle, installRawfileFile, probeCaps, startIecServer, unpackResource,
@@ -11,8 +11,46 @@ interface NativeCommand { name: string; library: string; entry: string; arity?: 
 interface RuntimeManifest { version: string; engineVersion: string; nodeVersion: string; commands: NativeCommand[] }
 interface ServerIdentity { serverInfo: ServerInfo }
 interface ServerInfo { name: string; version: string }
+// .installed 的新格式；旧版本这里只有一行 manifest.version 文本。
+interface InstalledRecord { version: string; schema: number; manifestSha256: string; files: Record<string, string> }
 
 function pause(ms: number): Promise<void> { return new Promise<void>((resolve) => { setTimeout(resolve, ms); }); }
+
+// 启动时抽查的运行时文件（相对 runtime-<版本> 根目录）。只挑体积小且启动必经的
+// 文件：node/bash 是文本启动器，bin.js 是 Web 服务入口。libnode.so 等 ELF 在只读
+// bundle 目录、由包管理器负责完整性，且体积大，不放进每次启动的抽样范围。
+// 本仓库没有 bin/dsh 启动器：Web GUI 走 bin/node + engine/.../lib/bin.js。
+const INTEGRITY_FILES: string[] = [
+  'engine/node_modules/@deepseek-ai/dsh/lib/bin.js',
+  'engine/node_modules/@deepseek-ai/dsh/package.json',
+  'bin/node',
+  'bin/bash',
+  'npm/bin/npm-cli.js',
+  'python/lib/python3.12/os.py'
+];
+// .installed 结构版本；格式变更时必须递增，旧记录会因 schema 不符触发一次重解。
+const INSTALLED_SCHEMA = 2;
+const LOG_ROTATE_BYTES = 4 * 1024 * 1024;
+const LOG_BACKUP_COUNT = 2;
+
+// 日志落盘前的统一脱敏（纯函数，Node 侧可单独 transpile 后测试）。
+// 只替换值、保留键名，避免把 token/Authorization/密钥写进诊断包。
+export function redactLogText(text: string): string {
+  if (text.length === 0) { return text; }
+  let out = text;
+  // Authorization 头（含 Basic/Bearer/Token 等任意值形态）；值到行尾或引号为止。
+  out = out.replace(/(authorization\s*:\s*)([^\r\n"']+)/gi, '$1***');
+  // 只出现 header 值时仍可能以 "Bearer xxx" 形式被打印。
+  out = out.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1***');
+  // JSON/带引号的键："token": "..."、"password": "..."。
+  out = out.replace(/("(?:[A-Za-z0-9_.-]*(?:token|password|secret|api[_-]?key|access[_-]?key|private[_-]?key))"\s*:\s*")([^"]*)(")/gi, '$1***$3');
+  // 键不带引号但值是引号包起来的：password: "..." / secret = '...'。
+  out = out.replace(/([A-Za-z0-9_.-]*(?:token|password|secret|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*\s*[=:]\s*")([^"]*)(")/gi, '$1***$3');
+  out = out.replace(/([A-Za-z0-9_.-]*(?:token|password|secret|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*\s*[=:]\s*')([^']*)(')/gi, "$1***$3");
+  // key=value / key: value（URL query、环境变量、命令行赋值）：值截到分隔符。
+  out = out.replace(/(^|[^A-Za-z0-9])([A-Za-z0-9_.-]*(?:token|password|secret|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*\s*[=:]\s*)([^\s&,;"'\\]+)/gi, '$1$2***');
+  return out;
+}
 
 // 唯一进程入口是 IEC；没有 adb、Linux rootfs 或设备外服务器回退。
 export class NativeProcess implements EnginePipe {
@@ -96,6 +134,10 @@ export class NativeRuntime {
   private owned: Set<string> = new Set<string>();
   private env: Record<string, string> = {};
   private installing: boolean = false;
+  // 日志轮转用的累计字节数：只在本进程内维护，启动时 stat 一次，
+  // 避免每次 appendLog 都 stat（引擎 stdout 很频繁）。
+  private logBytes: Record<string, number> = {};
+  private logEncoder = new util.TextEncoder();
   engineVersion: string = '';
   // 终端页复用同一个运行时实例：ensure() 已经做过 probeCaps/startIecServer，
   // 再 new 一个实例会在 UI 线程重复探测，造成输入阻塞。
@@ -136,22 +178,24 @@ export class NativeRuntime {
     this.ensureDir(this.context.filesDir + '/home/.config');
     this.ensureDir(this.context.filesDir + '/home/.cache');
     this.ensureDir(this.context.filesDir + '/tmp');
-    // 启动时的检查只看「标记内容 + 两棵关键子树在不在」，不做内容哈希：
-    // 摘要由构建期 scripts/runtime-manifest.mjs 按实际字节算好，设备上不重复校验。
-    // 加这两条存在性检查是为了半棵树（解包中断、沙箱被清了一部分）能自愈，
-    // 否则 .installed 会让每次启动都跳过重解，直接卡在同一个错误上。
-    // 标记内容必须等于 manifest.version：目录被复用/标记被旧包留下时也能重解。
-    let installedVersion = '';
-    try {
-      if (fs.accessSync(this.root + '/.installed')) {
-        installedVersion = fs.readTextSync(this.root + '/.installed').trim();
-      }
-    } catch (error) { /* 标记不可读按未安装处理 */ }
-    const complete = installedVersion === manifest.version &&
-      fs.accessSync(this.root + '/engine/node_modules/@deepseek-ai/dsh/lib/bin.js') &&
-      fs.accessSync(this.root + '/npm/bin/npm-cli.js') &&
-      fs.accessSync(this.root + '/python/lib/python3.12/os.py') &&
-      fs.accessSync(this.root + '/vim/runtime/defaults.vim');
+    // 启动时的完整性检查：.installed 保存版本号 + 关键文件的 SHA-256 清单。
+    // 构建期清单（scripts/runtime-manifest.mjs）只按归档/so 字节算版本号，
+    // 没有逐文件摘要，所以清单由应用在安装完成时按实际落盘文件计算并写入；
+    // 启动时抽查关键文件，能发现安装后同 UID 对运行时的篡改。
+    // 旧版 .installed 只有一行版本号：无法确认现有文件是否被改过，按未安装处理
+    // （fail-closed，整棵重解一次），不把未知状态“补写”成可信基线。
+    // 存在性检查保留，用于半棵树（解包中断、沙箱被清一部分）自愈。
+    // 校验失败/文件缺失都只重解运行时，不删除 harness-home 用户数据。
+    this.prepareLogs();
+    let complete = false;
+    const installed = this.readInstalled();
+    if (installed !== undefined && installed.version === manifest.version) {
+      complete = fs.accessSync(this.root + '/engine/node_modules/@deepseek-ai/dsh/lib/bin.js') &&
+        fs.accessSync(this.root + '/npm/bin/npm-cli.js') &&
+        fs.accessSync(this.root + '/python/lib/python3.12/os.py') &&
+        fs.accessSync(this.root + '/vim/runtime/defaults.vim') &&
+        await this.verifyInstalled(installed);
+    }
     // 启动页据此决定是否提示「首次启动需要解包」，只有这里为 true 时才是真在解包。
     this.installing = !complete;
     if (!complete) {
@@ -180,7 +224,6 @@ export class NativeRuntime {
       this.ensureDir(this.root + '/vim');
       const vimCode = await unpackResource('tools/vim-runtime.tar.gz', this.root + '/vim');
       if (vimCode !== 0) { throw new Error('Vim 运行时解包失败（unpackResource=' + vimCode.toString() + '）'); }
-      if (writeTxtFile(this.root + '/.installed', manifest.version) !== 0) { throw new Error('运行时安装标记写入失败'); }
     }
     this.installing = false;
     if (onInstalling !== undefined) { onInstalling(false); }
@@ -203,6 +246,9 @@ export class NativeRuntime {
     this.installOpensslConfig();
     this.installFetchPolyfill();
     this.installRuntimePreload();
+    // 安装/重解成功后才写标记：清单里的哈希对应最终字节，写标记前任何一步失败
+    // 都会让下次启动重新解包。已通过校验的启动不重写，避免每次开机重复哈希。
+    if (!complete) { await this.writeInstalled(manifest); }
     this.env = this.buildEnv();
     const applets = await this.capture('toybox', ['--long']);
     for (const item of applets.split(/\s+/)) {
@@ -214,12 +260,71 @@ export class NativeRuntime {
     this.engineVersion = manifest.engineVersion; this.ready = true;
     this.installHarmonyPlugin();
     this.installTerminalPlugin();
-    this.installAutoReviewPlugin();
+    // L-03：实验性 auto-review 默认关闭，只有用户在 harmony-native.json 里显式
+    // 打开才注册；关闭时还要清掉旧版本写进 profile 的插入行，否则升级后仍生效。
+    if (this.readAutoReview()) {
+      this.installAutoReviewPlugin();
+    } else {
+      this.uninstallAutoReviewPlugin();
+    }
     this.installNotices();
     this.migrateLegacyHomePaths();
     // 新版运行时已经就绪，旧版本目录没有保留价值（一个版本约 450 MB）。
     // 放在成功之后做：本次解包失败时不动旧的，用户还能降级回上一个包。
     this.pruneOldRuntimes();
+  }
+  // 读取 .installed：新格式是 JSON（版本号 + 每文件 sha256 + 清单摘要）；
+  // 旧格式只有版本号，返回 undefined 让调用方按未安装处理。
+  private readInstalled(): InstalledRecord | undefined {
+    try {
+      const path = this.root + '/.installed';
+      if (!fs.accessSync(path)) { return undefined; }
+      const text = fs.readTextSync(path).trim();
+      if (text.length === 0 || text.charAt(0) !== '{') { return undefined; }
+      const record = JSON.parse(text) as InstalledRecord;
+      if (record === null || typeof record.version !== 'string') { return undefined; }
+      return record;
+    } catch (error) { return undefined; }
+  }
+  // 抽查 INTEGRITY_FILES 的哈希并核对清单自身的摘要。任何缺失/不可读/不一致
+  // 都返回 false，由 ensure() 走整棵重解；这里不删除 harness-home。
+  private async verifyInstalled(record: InstalledRecord): Promise<boolean> {
+    try {
+      if (record.schema !== INSTALLED_SCHEMA || record.files === undefined ||
+        typeof record.manifestSha256 !== 'string') { return false; }
+      for (const relative of INTEGRITY_FILES) {
+        const expected = record.files[relative];
+        if (typeof expected !== 'string' || expected.length === 0) { return false; }
+        const actual = await hash.hash(this.root + '/' + relative, 'sha256');
+        if (actual.toLowerCase() !== expected) { return false; }
+      }
+      const raw = this.context.resourceManager.getRawFileContentSync('tools/runtime-manifest.json');
+      return this.sha256Bytes(raw) === record.manifestSha256;
+    } catch (error) { return false; }
+  }
+  // 安装成功后按实际落盘字节生成完整性清单。清单只覆盖关键文件（见
+  // INTEGRITY_FILES 的取舍说明）；未列入的文件仍由整包重解恢复。
+  private async writeInstalled(manifest: RuntimeManifest): Promise<void> {
+    const files: Record<string, string> = {};
+    for (const relative of INTEGRITY_FILES) {
+      files[relative] = (await hash.hash(this.root + '/' + relative, 'sha256')).toLowerCase();
+    }
+    const raw = this.context.resourceManager.getRawFileContentSync('tools/runtime-manifest.json');
+    const record: InstalledRecord = {
+      version: manifest.version, schema: INSTALLED_SCHEMA,
+      manifestSha256: this.sha256Bytes(raw), files: files
+    };
+    if (writeTxtFile(this.root + '/.installed', JSON.stringify(record) + '\n') !== 0) {
+      throw new Error('运行时安装标记写入失败');
+    }
+  }
+  // 对小块的 rawfile 字节算 sha256（用于清单自校验）；大文件走 file.hash。
+  private sha256Bytes(bytes: Uint8Array): string {
+    const digest = hash.createHash('sha256');
+    const buffer = new ArrayBuffer(bytes.length);
+    new Uint8Array(buffer).set(bytes);
+    digest.update(buffer);
+    return digest.digest().toLowerCase();
   }
   // 终端默认落在用户的工作区（DSH 的 home 工作区）而不是沙箱根目录。
   workspaceDirectory(): string {
@@ -324,6 +429,18 @@ export class NativeRuntime {
       const text = fs.readTextSync(file);
       const parsed = JSON.parse(text) as Record<string, boolean>;
       return parsed.keepAlive === true;
+    } catch (error) { return false; }
+  }
+  // L-03：auto-review 是实验性“自动批准”预设（danger-full-access + LLM 裁决），
+  // 默认不注册。需要恢复使用过 auto 预设的旧会话时，在
+  // <filesDir>/harness-home/harmony-native.json 里写 {"autoReview": true} 再重启应用。
+  readAutoReview(): boolean {
+    try {
+      const file = this.context.filesDir + '/harness-home/harmony-native.json';
+      if (!fs.accessSync(file)) { return false; }
+      const text = fs.readTextSync(file);
+      const parsed = JSON.parse(text) as Record<string, boolean>;
+      return parsed.autoReview === true;
     } catch (error) { return false; }
   }
   // 一次性迁移：旧版本把 HOME 放在 runtime-<版本>/home，升级后该目录被删，
@@ -468,10 +585,11 @@ export class NativeRuntime {
     fs.writeSync(file.fd, text);
     fs.closeSync(file);
   }
+  // 只有 harmony-native.json 的 autoReview=true 才会走到这里（见 ensure()）。
   // 旧会话的权限预设可能记成 "auto"。这个预设由 dsh-experimental-auto-review 提供
   // （registerAuto）；web profile 默认不加载它，恢复会话时会报
   // permission: cannot restore preset "auto" without its active integration，
-  // 会话随即从侧栏消失、重启才回来。随包引擎里有这个包，把插入行补进 profile 即可。
+  // 会话随即从侧栏消失、重启才回来。显式开启后把插入行补进 profile 即可。
   private installAutoReviewPlugin(): void {
     const name = '@deepseek-ai/dsh-experimental-auto-review';
     const source = this.root + '/engine/node_modules/' + name + '/package.json';
@@ -481,6 +599,24 @@ export class NativeRuntime {
       this.appendProfilePatchRow(profileDir + '/cordis.patch.yml', name,
         "- insert:\n    - id: auto-review\n      name: '" + name + "'\n");
     } catch (error) { /* 缺失只影响记了 auto 预设的旧会话恢复 */ }
+  }
+  // 开关关闭时移除旧版本（或无开关版本）自动写进 profile 的 auto-review 行。
+  // 不删的话覆盖升级后旧行仍在，默认关闭就只是“不再新增”，没有真正生效。
+  private uninstallAutoReviewPlugin(): void {
+    const name = '@deepseek-ai/dsh-experimental-auto-review';
+    const profileDir = this.context.filesDir + '/harness-home/profiles/web';
+    const patchPath = profileDir + '/cordis.patch.yml';
+    try {
+      if (!fs.accessSync(patchPath)) { return; }
+      const text = this.normalizeProfilePatch(fs.readTextSync(patchPath));
+      const row = "- insert:\n    - id: auto-review\n      name: '" + name + "'\n";
+      if (text.indexOf(row) < 0) { return; }
+      let next = text.split(row).join('');
+      if (next.trim().length === 0) { next = '[]\n'; }
+      const file = fs.openSync(patchPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, next);
+      fs.closeSync(file);
+    } catch (error) { /* 清理失败只意味着旧插入行仍在 */ }
   }
   // 原生终端插件：随 HAP 以 rawfile 分发，启动时同步进 profile 的 node_modules，
   // 并往 cordis.patch.yml 写一行插入。它只在浏览器侧注册右侧栏的终端 tab，
@@ -665,24 +801,94 @@ export class NativeRuntime {
     if (onInstalling !== undefined) { onInstalling(false); }
   }
   // 引擎的 stdout/stderr 追加写文件，排查终端/API 报错时能直接看。
+  // 落盘前统一脱敏（redactLogText），并按累计字节轮转，避免凭据入盘/磁盘无限增长。
   private appendLog(name: string, text: string): void {
     try {
       const dir = this.context.filesDir + '/logs';
       if (!fs.accessSync(dir)) { fs.mkdirSync(dir, true); }
-      const file = fs.openSync(dir + '/' + name, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.APPEND);
-      fs.writeSync(file.fd, text);
+      const path = dir + '/' + name;
+      const safe = redactLogText(text);
+      const bytes = this.logEncoder.encodeInto(safe).length;
+      let size = this.logBytes[name];
+      if (size === undefined) {
+        size = 0;
+        try { if (fs.accessSync(path)) { size = fs.statSync(path).size; } } catch (error) { /* 按空文件累计 */ }
+      }
+      if (size > 0 && size + bytes > LOG_ROTATE_BYTES) {
+        this.rotateLog(path);
+        size = 0;
+      }
+      const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.APPEND);
+      fs.writeSync(file.fd, safe);
       fs.closeSync(file);
+      this.logBytes[name] = size + bytes;
     } catch (error) { /* 日志失败不影响运行 */ }
   }
   // 真机排查用：把引擎输出写到 files/logs 下，hdc shell 可以直接读。
+  // 这里同样脱敏：dsh.log 会带 token，诊断用的 web-error.log 也不该留明文。
   private writeLog(name: string, text: string): void {
     try {
       const dir = this.context.filesDir + '/logs';
       if (!fs.accessSync(dir)) { fs.mkdirSync(dir, true); }
       const file = fs.openSync(dir + '/' + name, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, text);
+      fs.writeSync(file.fd, redactLogText(text));
       fs.closeSync(file);
     } catch (error) { /* 日志写不进去不能影响主流程 */ }
+  }
+  // 启动时准备日志目录并检查上次遗留的 dsh.log：连续写入只在累计超限时轮转，
+  // 启动这次 stat 用来把“上次已经很大”的文件先转走并给本进程一个准确基数。
+  private prepareLogs(): void {
+    try {
+      const dir = this.context.filesDir + '/logs';
+      if (!fs.accessSync(dir)) { fs.mkdirSync(dir, true); }
+      for (const name of ['dsh.log', 'web-stderr.log']) {
+        const path = dir + '/' + name;
+        let size = 0;
+        if (fs.accessSync(path)) { size = fs.statSync(path).size; }
+        if (size > LOG_ROTATE_BYTES) {
+          this.rotateLog(path);
+          size = 0;
+        }
+        this.logBytes[name] = size;
+      }
+      this.pruneNativeLogs(dir);
+    } catch (error) { /* 日志目录不可用时 appendLog 会再尝试 */ }
+  }
+  // 原生 logger 每次进程启动都会生成新的 iec-<pid>-<时间>.log（含 .1/.2 分片），
+  // 进程退出后不再写入。只保留最近 10 个，避免 files/logs 长期累积。
+  private pruneNativeLogs(dir: string): void {
+    try {
+      const entries: string[] = [];
+      const times: Record<string, number> = {};
+      let count = 0;
+      for (const name of fs.listFileSync(dir)) {
+        if (!/^iec-.*\.log(\.\d+)?$/.test(name)) { continue; }
+        try {
+          times[name] = fs.statSync(dir + '/' + name).mtime;
+          entries.push(name);
+          count += 1;
+        } catch (error) { /* 单个文件不可读时跳过 */ }
+      }
+      if (count <= 10) { return; }
+      entries.sort((left: string, right: string) => (times[right] ?? 0) - (times[left] ?? 0));
+      for (let index = 10; index < entries.length; index++) {
+        try { fs.unlinkSync(dir + '/' + entries[index]); } catch (error) { /* 删不掉就留着 */ }
+      }
+    } catch (error) { /* 列表失败不影响启动 */ }
+  }
+  // dsh.log -> dsh.log.1 -> dsh.log.2；超过 LOG_BACKUP_COUNT 的旧分片删除。
+  private rotateLog(path: string): void {
+    try {
+      for (let index = LOG_BACKUP_COUNT - 1; index >= 1; index--) {
+        const from = path + '.' + index.toString();
+        const to = path + '.' + (index + 1).toString();
+        if (!fs.accessSync(from)) { continue; }
+        if (fs.accessSync(to)) { fs.unlinkSync(to); }
+        fs.renameSync(from, to);
+      }
+      if (fs.accessSync(path + '.1')) { fs.unlinkSync(path + '.1'); }
+      if (fs.accessSync(path)) { fs.renameSync(path, path + '.1'); }
+    } catch (error) { /* 轮转失败时保持原文件继续追加 */ }
   }
   async connect(key: string, settings: Settings, hooks: EngineHooks): Promise<OfficialRpc> {
     if (this.rpc) { return this.rpc; }

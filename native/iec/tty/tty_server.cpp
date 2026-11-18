@@ -39,6 +39,7 @@
 // real pty does.
 #include "tty_server.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -54,6 +55,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <string>
 
 #include "logger/logger.h"
 #include "proc.h"
@@ -75,6 +77,10 @@ constexpr size_t kQueueMax = 64 * 1024;
 struct Pty {
     bool used = false;
     int pts_n = 0;
+    // The client that allocated this pty, from SO_PEERCRED. Property changes
+    // are only accepted from this process, or from a process that can prove it
+    // holds one of the pty's socket ends (see CallerOwnsPty).
+    pid_t owner_pid = 0;
     int term_fd = -1;    // A[1], our end of the terminal side
     int app_fd = -1;     // B[0], our end of the program side
     int slave_fd = -1;   // B[1], ours only until OPENPTS hands it to the client
@@ -117,6 +123,58 @@ Pty* findByPts(int pts_n) {
     for (int i = 0; i < kMaxPtys; i++)
         if (g_pty[i].used && g_pty[i].pts_n == pts_n) return &g_pty[i];
     return nullptr;
+}
+
+// Whether pid already holds a descriptor naming this socket object. The shim
+// hands the pty ends to whatever process calls openpty()/login_tty(), so a
+// shell that inherited stdin/stdout/stderr or duplicated a saved fd counts as
+// the owner even though its pid differs from the allocator's. /proc is the
+// authority: a socket fd shows up as "socket:[<inode>]".
+bool ProcessHoldsInode(pid_t pid, ino_t inode) {
+    if (pid <= 0 || inode == 0) return false;
+
+    char dir_path[64];
+    std::snprintf(dir_path, sizeof dir_path, "/proc/%d/fd", static_cast<int>(pid));
+    DIR* dir = opendir(dir_path);
+    if (dir == nullptr) return false;
+
+    bool found = false;
+    while (dirent* entry = readdir(dir)) {
+        if (entry->d_name[0] == '.') continue;
+        char fd_path[512];
+        std::snprintf(fd_path, sizeof fd_path, "%s/%s", dir_path, entry->d_name);
+        char target[256];
+        const ssize_t n = readlink(fd_path, target, sizeof target - 1);
+        if (n <= 0) continue;
+        target[n] = '\0';
+        if (std::strncmp(target, "socket:[", 8) != 0) continue;
+        const unsigned long long seen = std::strtoull(target + 8, nullptr, 10);
+        if (static_cast<ino_t>(seen) == inode) {
+            found = true;
+            break;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+bool CallerOwnsPty(const Pty& e, pid_t caller) {
+    if (caller <= 0) return false;
+    if (e.owner_pid == caller) return true;
+    return ProcessHoldsInode(caller, e.ino_master) ||
+           ProcessHoldsInode(caller, e.ino_slave);
+}
+
+// Property changes are refused for a caller that is neither the allocating
+// process nor one holding the pty. The protocol is unchanged: the request is
+// still a pts number, so an older client can still ask -- it just has to be a
+// legitimate holder. Reads are left alone.
+bool RejectNonOwner(const Pty& e, const Packet& req, const char* operation) {
+    if (CallerOwnsPty(e, static_cast<pid_t>(req.caller))) return false;
+    Logger::GetInstance()->LogW(
+        "[tty] %s for pts/%d refused: caller %u is not an owner (owner %d)",
+        operation, e.pts_n, req.caller, static_cast<int>(e.owner_pid));
+    return true;
 }
 
 enum class Role { None, Term, App };
@@ -428,7 +486,12 @@ bool TtyServer::onForkpty(const Packet& req, Reply& reply) {
 }
 
 bool TtyServer::onOpenPtmx(const Packet& req, Reply& reply) {
-    (void)req;
+    // Without SO_PEERCRED there is no owner to check later requests against,
+    // so an unattributable pty is not created at all.
+    if (req.caller == 0) {
+        Logger::GetInstance()->LogW("[server] openptmx: caller identity unavailable");
+        return false;
+    }
 
     int a[2] = {-1, -1};
     int b[2] = {-1, -1};
@@ -457,6 +520,7 @@ bool TtyServer::onOpenPtmx(const Packet& req, Reply& reply) {
 
     e->used = true;
     e->pts_n = g_next_pts++;
+    e->owner_pid = static_cast<pid_t>(req.caller);
     e->term_fd = a[1];
     e->app_fd = b[0];
     e->slave_fd = b[1];
@@ -495,6 +559,7 @@ bool TtyServer::onOpenPts(const Packet& req, Reply& reply) {
         Logger::GetInstance()->LogW("[server] openpts: pts/%d not found", pts_n);
         return false;
     }
+    if (RejectNonOwner(*e, req, "openpts")) return false;
     if (e->slave_fd < 0) {
         Logger::GetInstance()->LogW("[server] openpts: pts/%d slave already handed over", pts_n);
         return false;
@@ -525,6 +590,7 @@ bool TtyServer::onTcgetattr(const Packet& req, Reply& reply) {
 bool TtyServer::onTcsetattr(const Packet& req, Reply& reply) {
     Pty* e = ptyOfRequest(req, 8 + sizeof(termios));
     if (!e) return false;
+    if (RejectNonOwner(*e, req, "tcsetattr")) return false;
 
     // The action only chooses which queue to discard, and input is drained
     // continuously here, so TCSANOW/TCSADRAIN/TCSAFLUSH all land in one place.
@@ -576,6 +642,7 @@ bool TtyServer::onTcsetpgrp(const Packet& req, Reply& reply) {
     if (req.body.size() < 8) return false;
     Pty* e = ptyOfRequest(req, req.body.size());
     if (!e) return false;
+    if (RejectNonOwner(*e, req, "tcsetpgrp")) return false;
 
     pid_t group = static_cast<pid_t>(get32(req.body.data() + 4));
     pid_t sid = req.body.size() >= 12
@@ -611,6 +678,7 @@ bool TtyServer::onGetWinsz(const Packet& req, Reply& reply) {
 bool TtyServer::onSetWinsz(const Packet& req, Reply& reply) {
     Pty* e = ptyOfRequest(req, 4 + sizeof(winsize));
     if (!e) return false;
+    if (RejectNonOwner(*e, req, "setwinsz")) return false;
 
     winsize ws;
     memcpy(&ws, req.body.data() + 4, sizeof ws);

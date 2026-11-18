@@ -44,6 +44,61 @@ set(IEC_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/loader")
 
+# ── hardening ─────────────────────────────────────────────────────────────
+# Enable only what the compiler/linker in use accepts: the OHOS cross
+# toolchain and an older host clang do not all support every flag, and a test
+# or device build must not fail because one of them is missing.
+include(CheckCXXCompilerFlag)
+include(CheckPIESupported)
+
+check_cxx_compiler_flag("-fstack-protector-strong" IEC_CC_HAS_STACK_PROTECTOR)
+# FORTIFY is a no-op (and warns) without optimization; apply it when the build
+# is optimized, which is what the test script and the release build use.
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$" OR
+   CMAKE_CXX_FLAGS MATCHES "-O[1-9s]")
+    check_cxx_compiler_flag("-D_FORTIFY_SOURCE=2" IEC_CC_HAS_FORTIFY)
+endif()
+check_cxx_compiler_flag("-Wl,-z,relro,-z,now" IEC_CC_HAS_RELRO_NOW)
+check_pie_supported()
+if(CMAKE_C_LINK_PIE_SUPPORTED AND CMAKE_CXX_LINK_PIE_SUPPORTED)
+    set(IEC_PIE_SUPPORTED ON)
+endif()
+
+# Compile-side flags common to the server, the parser object and the shim.
+# The optional second argument is the CMake scope: iec_caps is built PUBLIC so
+# the OHOS HAR (which links it from its own CMakeLists.txt) gets the same flags
+# without duplicating this logic there.
+function(iec_compile_hardening target)
+    set(scope PRIVATE)
+    if(ARGC GREATER 1)
+        set(scope ${ARGV1})
+    endif()
+    if(MSVC)
+        return()
+    endif()
+    if(IEC_CC_HAS_STACK_PROTECTOR)
+        target_compile_options(${target} ${scope} "-fstack-protector-strong")
+    endif()
+    if(IEC_CC_HAS_FORTIFY)
+        target_compile_options(${target} ${scope} "-D_FORTIFY_SOURCE=2")
+    endif()
+endfunction()
+
+# Link-side flags. A static library has no link of its own, so the PUBLIC form
+# is what carries RELRO/NOW into the executable or shared object that links it.
+function(iec_link_hardening target)
+    set(scope PRIVATE)
+    if(ARGC GREATER 1)
+        set(scope ${ARGV1})
+    endif()
+    if(MSVC)
+        return()
+    endif()
+    if(IEC_CC_HAS_RELRO_NOW)
+        target_link_options(${target} ${scope} "-Wl,-z,relro,-z,now")
+    endif()
+endfunction()
+
 # ── caps ──────────────────────────────────────────────────────────────────
 # A separate object so the OHOS HAR can reuse it without pulling in either the
 # server or the preload shim. Logger rides along because caps logs its result.
@@ -52,6 +107,8 @@ target_include_directories(iec_caps PUBLIC ${IEC_INCLUDES})
 target_compile_definitions(iec_caps PRIVATE _GNU_SOURCE)
 target_compile_options(iec_caps PRIVATE -Wall)
 set_target_properties(iec_caps PROPERTIES POSITION_INDEPENDENT_CODE ON)
+iec_compile_hardening(iec_caps PUBLIC)
+iec_link_hardening(iec_caps PUBLIC)
 
 # ── server ────────────────────────────────────────────────────────────────
 add_executable(iec_server
@@ -83,6 +140,11 @@ target_compile_definitions(iec_server PRIVATE
     "PATH_QEMU_AARCH64_SO=\"${IEC_QEMU_DIR}/libqemu-aarch64.so\"")
 target_compile_options(iec_server PRIVATE -Wall)
 target_link_libraries(iec_server PRIVATE iec_caps dl pthread)
+if(IEC_PIE_SUPPORTED)
+    # CMake adds the matching -fPIE/-pie pair itself; adding them by hand as
+    # well would only duplicate the flags.
+    set_property(TARGET iec_server PROPERTY POSITION_INDEPENDENT_CODE TRUE)
+endif()
 
 # ── preload shim ──────────────────────────────────────────────────────────
 # tty/shim.c, exec/shim.c and fs/shim.c are the client side; rpc.c and
@@ -104,6 +166,8 @@ target_compile_definitions(iec_preload PRIVATE
     _GNU_SOURCE)
 target_compile_options(iec_preload PRIVATE -Wall)
 target_link_libraries(iec_preload PRIVATE dl)
+iec_compile_hardening(iec_preload)
+iec_link_hardening(iec_preload)
 
 set_target_properties(iec_preload PROPERTIES
     PREFIX "lib"

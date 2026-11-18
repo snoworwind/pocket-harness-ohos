@@ -16,7 +16,11 @@ source "$ENV_FILE"
 source "$IEC_ROOT/scripts/lib/common.sh"
 
 TREE_VER="${TREE_VER:-2.2.1}"
+# tag 2.2.1 的 commit（api.github.com/repos/Old-Man-Programmer/tree/git/tags/2.2.1）。
+TREE_COMMIT="$(iec_sha_or IEC_TREE_COMMIT d501b58ff9cbfd64272c8cbcad0bda36a3fada06)"
 TAR="$IEC_THIRDPARTY/tree-$TREE_VER.tar.gz"
+# GitHub 归档没有官方 checksum 文件；未固定哈希时普通构建告警，CI 失败。
+SHA256="$(iec_sha_or IEC_TREE_SHA256 6daa27cd1f01f1b2d806f1c71b3cb78f896987e197d4215ea834f09373ff5fdf)"
 SRC="$IEC_THIRDPARTY/tree-$TREE_VER"
 WORK="$IEC_ROOT/build/tree"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -24,12 +28,8 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$WORK" "$OUT_DIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR.part" \
-		"https://github.com/Old-Man-Programmer/tree/archive/refs/tags/$TREE_VER.tar.gz" \
-		|| iec_err "tree download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://codeload.github.com/Old-Man-Programmer/tree/tar.gz/$TREE_COMMIT" \
+	"$TAR" "$SHA256" "tree $TREE_VER"
 if [ ! -f "$SRC/tree.c" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

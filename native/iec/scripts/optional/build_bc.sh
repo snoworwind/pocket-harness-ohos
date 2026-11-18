@@ -27,6 +27,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 VER="1.07.1"
 TAR="$IEC_THIRDPARTY/bc-$VER.tar.gz"
+# GNU ftp 只提供 .sig，没有 SHA-256 文件；未固定时 CI 失败，普通构建告警。
+SHA256="$(iec_sha_or IEC_BC_SHA256 62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a)"
 SRC="$IEC_THIRDPARTY/bc-$VER"
 WORK="$IEC_ROOT/build/bc"
 HOST="$WORK/host"
@@ -35,11 +37,7 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$WORK" "$OUT_DIR"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR" "https://ftp.gnu.org/gnu/bc/bc-$VER.tar.gz" \
-		|| curl -L --retry 3 -m 600 -o "$TAR" "https://mirrors.kernel.org/gnu/bc/bc-$VER.tar.gz" \
-		|| iec_err "bc download failed"
-fi
+iec_fetch_verified "https://ftp.gnu.org/gnu/bc/bc-$VER.tar.gz" "$TAR" "$SHA256" "bc $VER"
 [ -d "$SRC" ] || tar xzf "$TAR" -C "$IEC_THIRDPARTY"
 
 # 1) 目标 libbc.a + bc 目标文件

@@ -78,11 +78,13 @@ test('shim 在文档起点、早于上传与桥脚本注入', () => {
   const source = fs.readFileSync(INDEX, 'utf8');
   const block = /\.javaScriptOnDocumentStart\(\[([\s\S]*?)\]\)/.exec(source);
   assert.ok(block, 'Index.ets 里找不到 javaScriptOnDocumentStart');
-  const order = [...block[1].matchAll(/script:\s*([A-Z_]+)/g)].map((m) => m[1]);
+  // 桥脚本在文档起点注入前会替换 nonce 占位符，因此是 bridgeDocumentScript()；
+  // 顺序仍然是资源地址补丁 → 上传钩子 → 桥。
+  const order = [...block[1].matchAll(/script:\s*(?:this\.)?([A-Za-z_]+)/g)].map((m) => m[1]);
   assert.deepEqual(order, [
     'RESOURCE_URL_DOCUMENT_SCRIPT',
     'UPLOAD_DOCUMENT_SCRIPT',
-    'BRIDGE_DOCUMENT_SCRIPT',
+    'bridgeDocumentScript',
   ]);
 });
 

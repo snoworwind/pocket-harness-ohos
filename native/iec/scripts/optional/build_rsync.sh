@@ -18,6 +18,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 RSYNC_VER="${RSYNC_VER:-3.4.1}"
 TAR="$IEC_THIRDPARTY/rsync-$RSYNC_VER.tar.gz"
+# 上游目录只提供 .asc 签名，没有 SHA-256 文件；未固定时 CI 失败，普通构建告警。
+SHA256="$(iec_sha_or IEC_RSYNC_SHA256 2924bcb3a1ed8b551fc101f740b9f0fe0a202b115027647cf69850d65fd88c52)"
 SRC="$IEC_THIRDPARTY/rsync-$RSYNC_VER"
 BLD="$IEC_ROOT/build/rsync"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -25,12 +27,8 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$BLD" "$OUT_DIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 900 -o "$TAR.part" \
-		"https://download.samba.org/pub/rsync/src/rsync-$RSYNC_VER.tar.gz" \
-		|| iec_err "rsync download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://download.samba.org/pub/rsync/src/rsync-$RSYNC_VER.tar.gz" \
+	"$TAR" "$SHA256" "rsync $RSYNC_VER"
 if [ ! -f "$SRC/configure" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

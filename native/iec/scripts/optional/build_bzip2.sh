@@ -21,6 +21,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 BZ2_VER="${BZ2_VER:-1.0.8}"
 URL="${BZ2_URL:-https://sourceware.org/pub/bzip2/bzip2-$BZ2_VER.tar.gz}"
+# 上游只发布 sha512.sum，没有 SHA-256；未固定时普通构建告警，CI/AUDIT_STRICT=1 失败。
+SHA256="$(iec_sha_or IEC_BZIP2_SHA256 ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269)"
 SOURCE_CACHE="${IEC_SOURCE_CACHE:-$IEC_ROOT/thirdparty}"
 [ -d "$SOURCE_CACHE" ] || SOURCE_CACHE="$IEC_THIRDPARTY"
 TAR="$SOURCE_CACHE/bzip2-$BZ2_VER.tar.gz"
@@ -35,13 +37,8 @@ if [ -f "$IEC_DEPS_LIB/libbz2.a" ] && [ -f "$IEC_DEPS_INC/bzlib.h" ]; then
 fi
 
 if [ ! -f "$SRC/Makefile" ]; then
-	if [ ! -s "$TAR" ]; then
-		mkdir -p "$SOURCE_CACHE"
-		iec_log "download $URL"
-		curl -L --retry 3 -m 600 -o "$TAR.part" "$URL" \
-			|| iec_err "bzip2 download failed: $URL"
-		mv "$TAR.part" "$TAR"
-	fi
+	mkdir -p "$SOURCE_CACHE"
+	iec_fetch_verified "$URL" "$TAR" "$SHA256" "bzip2 $BZ2_VER"
 	iec_log "extract bzip2 $BZ2_VER -> $SOURCE_CACHE"
 	mkdir -p "$SRC"
 	tar -xzf "$TAR" -C "$SRC" --strip-components=1

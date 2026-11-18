@@ -1,6 +1,62 @@
 # 验证说明
 
-记录截至 2026-11-17 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+记录截至 2026-11-18 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+
+## 2026-11-18 安全审查整改
+
+针对 `SECURITY-REVIEW-2026-11-18.md` 的整改。本轮**没有连接设备、没有交叉编译原生库、没有重打包 HAP/引擎归档**；宿主侧验证项与真机未验收项严格分开。
+
+| 报告项 | 修复 | 本轮验证 |
+| --- | --- | --- |
+| H-01 生产包开启 WebView 调试 | `EntryAbility` 改用 `BuildProfile.DEBUG`：debug 开、release 显式关；删除 `pages/KbTest`、`kbtest.html` 与 `main_pages.json` 注册 | 本机 hvigor 生成的 `BuildProfile.ets` 有 `DEBUG` 字段，SDK `@ohos.web.webview.d.ts` 有 `setWebDebuggingAccess(boolean)`；release 产物的 `DEBUG=false` 未构建验证 |
+| H-02 定位权限用于保活 | **按用户决定保持现状，未改**；接受风险写入 [SECURITY.md](SECURITY.md) 与 README | — |
+| M-01 WebView 跨源桥/注入/console | `javaScriptProxy.permission` 限定 `http://127.0.0.1:<port>`；`scriptRules` 只给本地 origin；终端/下载桥加每次启动随机 nonce（终端插件与 rawfile 副本同步）；console 校验 `getSourceId()` 来源；下载分片限 256 KiB、单任务 256 MiB、8 个任务、5 分钟超时；`fileAccess`/`databaseAccess` 关闭；主框架导航按 `url.URL.origin` 收口 | `node scripts/test.cjs` 桥脚本顺序测试通过；nonce/配额逻辑在 Node 侧做过临时验证（未入库）；ArkWeb 的 permission/scriptRules/getSourceId 真机行为未验证 |
+| M-02 fetch 跨源重定向泄漏认证头 + HTTPS→HTTP 降级 | 跨 origin 剥离 `authorization`/`proxy-authorization`/`cookie`/`cookie2`/`host`；303 与 301/302 POST→GET 清理请求体头；拒绝 HTTPS→HTTP 与非 http(s) 目标 | `node scripts/test-fetch-polyfill.cjs` 16 项通过；新增 `node tests/fetch-redirect.cjs` 12 项通过（含自签证书端到端降级用例） |
+| M-03 上游/二进制缺校验 | `lib/common.sh` 新增 `iec_fetch_verified`（curl + SHA-256，失败即退）与按 commit 的 clone 校验；所有上游依赖已固定 SHA-256 或 commit（依据见 `docs/SOURCES.md`）；`pack-native.sh` 缺新 npm/引擎产物时失败，归档生成 `ENGINE-MANIFEST.sha256`/`official-engine.sha256`；`runtime-manifest.mjs` 校验 sidecar | 所有改动的 shell 脚本 `bash -n` 通过；`runtime-manifest check` 通过；15 个上游 tarball 已按官方地址实测计算 SHA-256（zstd 另有官方 `.sha256` 对得上）；npm/引擎归档已重建 |
+| M-04 原生二进制加固不足 | `native/iec/CMakeLists.txt` 按编译器能力启用 `-fstack-protector-strong`、`-D_FORTIFY_SOURCE=2`、PIE、RELRO/now；`build_git.sh`/`build_curl.sh` 默认打开 FORTIFY，仅 `IEC_NO_FORTIFY=1` 显式降级；审计脚本检查 ELF 加固标志 | 宿主 CMake Release 构建确认 `Type: DYN`、`BIND_NOW`、`__stack_chk_fail`、FORTIFY 宏；OHOS HAR 已用 DevEco NDK 重建，HAP 内 `libiec_server.so` 确认 `__n1` ABI、`BIND_NOW`、`__stack_chk_fail` |
+| M-05 运行时完整性只靠目录名 | `.installed` 改为 JSON schema 2：版本 + 6 个关键文件 SHA-256 + 随包清单摘要；启动时重算抽查，不符/旧格式整棵重解，不删 `harness-home`；安装标记改到最后一步写 | `node scripts/runtime-manifest.mjs check` 通过；Node 侧语法转译通过；真机启动耗时与哈希 API 行为未验证 |
+| M-06 日志含 token/argv/env 且无轮转 | 壳层 `appendLog`/`writeLog` 落盘前脱敏，`dsh.log`/`web-stderr.log` 4 MiB 轮转保留 2 份；原生 `Logger::Redact` 统一脱敏所有 sink，文件 sink 4 MiB 轮转；启动时清理旧的 `iec-*.log`（保留最近 10 个）；exec_server 完整 argv/env 降到 Debug（`IEC_LOG_DEBUG=1`） | 脱敏纯函数 10 组样例通过（临时脚本，未入库）；原生轮转/脱敏手写 7 MiB 验证；`node scripts/test.cjs` 通过 |
+| M-07 原生边界 DoS/完整性 | py_runner：输出 64 MiB 上限、并发 16、env/arg 256、单字符串 64 KiB、内联 stdin 16 MiB、文件 stdin 流式且 64 MiB 上限、读空闲 30s/写 60s 超时；归档硬链接/符号链接越界 fail-closed + `SECURE_SYMLINKS`/`SECURE_NOABSOLUTEPATHS`；`exec_so` 改单次 `open(O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC)` + `fstat`；fork 前构造环境、去掉子进程 `setenv`；延迟 kill 校验 `starttime`；TTY 归属校验；procmap 5 分钟 TTL + 1024 上限；`SO_PEERCRED` 不可用改拒绝 | WSL 宿主回归 `bash native/iec/scripts/test_iec_native_host.sh`：80 checks 通过、fs shim 15 checks（1 项既有 SKIP）；`native/iec/tests/py_runner/run.sh` 19 项通过；CMake 构建 iec_server 通过 |
+| L-01 终端 cwd 换行注入 | `Terminal.writeCd()` 拒绝含 `\n`/`\r`/`\0` 的 cwd，保留单引号转义 | Node 侧对照验证通过；真机未验收 |
+| L-02 URL 过滤偏宽/能力面 | 改用 `url.URL` 解析比较 origin；主框架只允许本地 http(s)；`data:`/`blob:`/`javascript:`/`file:` 拦截；关闭 `fileAccess`/`databaseAccess` | 未真机验证；`about:blank` 拦截是否影响首屏需真机确认 |
+| L-03 默认注册实验性 auto-review | 默认不注册；仅 `harmony-native.json` 里 `autoReview: true` 时注入，关闭时清掉旧插入行；`harmony-compat` 镜像文件改为合并写，保留其它字段 | 未真机验证 |
+| L-04 插件无沙箱 | 在 README 与 `docs/SECURITY.md` 明确“安装插件 = 完全信任”，不再把 `PluginGuard` 描述为隔离 | 文档 |
+| L-05 CI/发布门禁不完整 | 新增 `host-tests.yml`、`runtime-manifest.yml`、`binary-audit.yml`；action 固定 commit SHA；`build.mjs` 增加 `--release`，release 默认强制严格清单校验；`secret-scan.yml` 增加历史扫描 | 4 个 workflow YAML 解析通过；GitHub Actions 未实际运行 |
+| L-06 secret-scan 覆盖不足 | 增加华为 AK/SK、`sk-proj-`、PEM 私钥、GitLab/阿里云/腾讯云/Stripe/npm/HuggingFace/SendGrid/Google OAuth 规则；pre-push 扫推送范围内所有提交；新增 `--history` 与提交信息扫描；对历史中已移除的公开 CA 与无口令构建模板按精确 blob SHA-256 豁免 | `node --test tests/secret-scan.cjs` 7/7 通过；`--all` 与 `--history`（默认 200 提交）本机通过 |
+| L-07 调试页进入 release | 已删除 `KbTest.ets`、`kbtest.html`、页面注册 | 全仓无残留引用；HAP 未重建 |
+| L-08 导出 Ability 与外部入口 | 未改：`EntryAbility` 仍 `exported: true`（桌面启动器需要），当前无外部 want 参数处理；边界写入 SECURITY.md | — |
+| L-09 原生进程生命周期 | 与 M-07 合并处理：`SO_PEERCRED` 不可用拒绝、延迟 kill 身份校验、procmap 清理、TTY 归属 | 宿主回归覆盖 TTY 归属与 pid 身份判据 |
+
+### 本轮未验收（明确不写成已通过）
+
+- release 构建实际产物里 `BuildProfile.DEBUG=false`、DevTools 无法附着；
+- ArkWeb 的 `javaScriptProxy.permission`、`scriptRules` 精确 origin（含端口）、`ConsoleMessage.getSourceId()`、`fileAccess(false)` 在 API 18 真机上的行为；
+- nonce 桥端到端（终端 tab、下载保存、外链跳转）与同源预览仍可读 nonce 的残余风险；
+- 运行时 `.installed` 哈希校验的真机耗时、`hash.hash` 行为与旧版升级首启重解；
+- 壳层/原生日志脱敏与轮转在设备上的实际效果；
+- 真机只验证了覆盖安装、运行时重解包与 Web GUI 首屏；nonce 桥（终端 tab/下载/外链）、日志轮转、TTY 归属、py_runner 上限、`autoReview` 开关等仍未逐项验收；
+- 本轮只重建了 IEC 服务端库（`libiec_server.so`、`libncploader.so`、`libdsh_terminal.so`）与 npm 归档；`libnode`、`libpython`、`git`、`gh` 等命令库沿用上一轮产物，其 `CANARY=no` 仍待单独重编；
+- 4 个 GitHub Actions workflow 未实际运行；发布页尚未真正发布，只有本地 `dist/SHA256SUMS` 自校验；
+
+### 交叉编译与重打包（2026-11-18）
+
+| 项目 | 操作 / 结果 |
+| --- | --- |
+| OHOS 交叉编译 | WSL SDK 的 libc++ 命名空间是 `__h`，与设备随包 `libc++_shared.so` 的 `__n1` 不一致，直接链接报 `std::__h::basic_string` 未定义；改用 DevEco NDK（`__n1`）经 hvigor 重建 HAR，WSL 只负责 npm/引擎归档 |
+| `libiec_server.so` | `node scripts/build.mjs --clean`：HAR 重编，未 strip 4,721,016 B；HAP 内 strip 后 1,012,864 B，SHA-256 `7b7bdc48f273482c3e20ab5fffb36d1445b2378ba8a497905de0f944ac83a8ab`；确认 `__n1` ABI、`BIND_NOW`、`__stack_chk_fail`，且包含本轮新增的 “unsafe symlink”“caller identity is unavailable”“output limit” 等路径 |
+| `npm.tar.gz` | `build_node.sh npm` 从 Node v24.22.1 `deps/npm` 重打，2,788,831 B，SHA-256 `c051c4e26fa673550db6b2fe8267923847cc9a47bd9b7727eb2a2bf2f66e7df1` |
+| `official-engine.tar.gz` | 重打包（含 harmony-compat nonce、`ENGINE-MANIFEST.sha256` 26,685 个文件、package-lock），49,355,576 B，SHA-256 `f070799c2a506c69f63d09453936ede46408be48760fbcca4c637e503d80a970`；sidecar 自校验通过 |
+| 运行时清单 | `0.2.2-rc.1-26cc87b18562`；Windows 与 WSL 两个 Node 环境算出的版本一致（修复了 `localeCompare` 排序与路径分隔符导致的跨平台摘要不一致）；`node scripts/runtime-manifest.mjs check` OK；HAP 内 `runtime-manifest.json` 与之一致 |
+| 二进制审计 | `audit-binaries.sh`、`audit-sources.sh` 通过：随包 ELF 全部 RELRO/NOW/NX=yes；`libiec_server`/`libncploader`/`libdsh_terminal`/`libpython`/`librg` 的 CANARY=yes |
+| 发布资产（本地） | `dist/PocketHarness-0.1.0.5-arm64-unsigned.hap`（312,689,580 B）SHA-256 `3d3e12b720b759c8c8b6fa4de6f50e9609fb6a2b7c32e59b2a77284ca04516d9`；`dist/pocket-harness-native-arm64-v8a.zip`（34 个库）SHA-256 `c9241108ad712ea4e40ea2c72935bef145bac540219998686da004e84dba8db1`；`sha256sum -c dist/SHA256SUMS` 通过 |
+| 说明 | 本次是默认 debug 构建（`BuildProfile.DEBUG=true`）；release 构建与真机安装仍未验收。命令库（node/python/git/gh 等）未重编，CANARY=no 保留。 |
+
+### 真机覆盖安装（2026-11-18）
+
+- `hdc install -r entry-default-signed.hap` → `install bundle successfully`；设备上 `versionCode=6`、`versionName=0.1.0.5`，应用数据保留。
+- 新运行时 `runtime-0.2.2-rc.1-26cc87b18562` 在设备上完成解包：`official-engine.tar.gz` 49,355,576 B、`npm.tar.gz` 2,788,831 B；`.installed` 为 schema 2 JSON，含 `manifestSha256` 与 6 个关键文件哈希。
+- 删除 `.installed` 强制整棵重解包两次，进程均存活（观察 200s/240s），无 `THREAD_BLOCK`/`APP_FREEZE`；Web GUI 首屏正常显示，ArkWeb `ExecuteJavaScript` 轮询运行中。
+- **已知问题（未定位）**：覆盖安装后的第一次启动曾出现一次闪退；当时未保留日志。随后 3 次启动（含 2 次强制重解包）均未复现，暂记为偶发，后续真机回归时继续观察。
 
 ## 已确认
 

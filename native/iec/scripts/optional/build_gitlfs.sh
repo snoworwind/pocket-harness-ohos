@@ -19,6 +19,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 SRC="${GITLFS_SRC:-$IEC_ROOT/thirdparty/git-lfs}"
 # 与 gh 相同，固定到要求 go <= 1.26 的 tag（OpenHarmony 工具链基于 go1.26.5）。
 GITLFS_REF="${GITLFS_REF:-v3.7.1}"
+# tag v3.7.1 的 commit（api.github.com/repos/git-lfs/git-lfs/git/tags/v3.7.1）。
+GITLFS_COMMIT="$(iec_sha_or IEC_GITLFS_COMMIT b84b33847fe6458f36ef521534dc0eac953cb379)"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
 OUT="$OUT_DIR/libgitlfscmd.so"
 WRAP="$SRC/cmd/gitlfsohos"
@@ -33,7 +35,7 @@ GO_OS="${GO_OS:-openharmony}"
 command -v "$GO_TOOLCHAIN" >/dev/null 2>&1 || iec_err "Go toolchain not found: $GO_TOOLCHAIN"
 "$GO_TOOLCHAIN" tool dist list 2>/dev/null | grep -qx "$GO_OS/arm64" \
 	|| iec_err "Go toolchain $("$GO_TOOLCHAIN" version) has no $GO_OS/arm64 target. Run scripts/optional/fetch_go_ohos.sh and set GO_TOOLCHAIN=<repo>/build/go-ohos/bin/go"
-iec_clone_if_missing "$SRC" "https://github.com/git-lfs/git-lfs.git" "$GITLFS_REF"
+iec_clone_if_missing "$SRC" "https://github.com/git-lfs/git-lfs.git" "$GITLFS_REF" "$GITLFS_COMMIT"
 
 # ── HarmonyOS: start IEC command objects without execve ────────────────────
 # The sandbox denies execve() of ELF files in every path the app can see, and

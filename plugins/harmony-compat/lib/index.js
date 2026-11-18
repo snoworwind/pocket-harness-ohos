@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { dshHomePath } from "@deepseek-ai/dsh-home-paths";
@@ -64,8 +64,17 @@ export function apply(ctx, config) {
 
 	const mirror = () => {
 		const keepAlive = keepAliveOf(config);
-		const body = JSON.stringify({ keepAlive });
 		tail = tail.then(async () => {
+			// 应用壳层还会往同一文件写 autoReview 等开关；这里只更新 keepAlive，
+			// 必须保留其它字段，否则插件一挂载就把手工/未来的设置冲掉。
+			let previous = {};
+			try {
+				const parsed = JSON.parse(await readFile(file, "utf8"));
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) previous = parsed;
+			} catch (error) {
+				/* 首次写入或文件损坏：按空对象处理 */
+			}
+			const body = JSON.stringify({ ...previous, keepAlive });
 			await mkdir(dirname(file), { recursive: true });
 			const temporary = `${file}.${process.pid}.tmp`;
 			await writeFile(temporary, body, "utf8");

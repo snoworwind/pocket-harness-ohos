@@ -17,6 +17,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 LESS_VER="${LESS_VER:-668}"
 TAR="$IEC_THIRDPARTY/less-$LESS_VER.tar.gz"
+# 上游下载页未提供机器可读的 SHA-256 文件；未固定时 CI 失败，普通构建告警。
+SHA256="$(iec_sha_or IEC_LESS_SHA256 2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8)"
 SRC="$IEC_THIRDPARTY/less-$LESS_VER"
 BLD="$IEC_ROOT/build/less"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -26,12 +28,8 @@ CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 [ -f "$NC/lib/libncursesw.a" ] || iec_err "missing $NC/lib/libncursesw.a (run scripts/optional/build_python.sh first)"
 mkdir -p "$BLD" "$OUT_DIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR.part" \
-		"https://www.greenwoodsoftware.com/less/less-$LESS_VER.tar.gz" \
-		|| iec_err "less download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://www.greenwoodsoftware.com/less/less-$LESS_VER.tar.gz" \
+	"$TAR" "$SHA256" "less $LESS_VER"
 if [ ! -f "$SRC/configure" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

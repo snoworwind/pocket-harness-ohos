@@ -21,12 +21,14 @@ git config core.hooksPath .githooks
 | 钩子 | 时机 | 扫描对象 |
 | --- | --- | --- |
 | `pre-commit` | `git commit` | 暂存区新增/修改的文件 |
-| `pre-push` | `git push` | 本次推送区间内每个提交新增/修改的文件；密钥在中间提交加入、后续删除也会被拦下；新分支扫描完整树 |
+| `pre-push` | `git push` | 本次推送区间内每个提交新增/修改的文件 + 提交信息；密钥在中间提交加入、后续删除也会被拦下；新分支扫描推送范围内的每个提交（不只 tip 树） |
 
 手动全量检查：
 
 ```bash
-node .githooks/secret-scan.mjs --all
+node .githooks/secret-scan.mjs --all       # 当前跟踪树
+node .githooks/secret-scan.mjs --history   # 历史提交 + 提交信息（默认最近 200 个）
+SECRET_SCAN_HISTORY_LIMIT=1000 node .githooks/secret-scan.mjs --history
 ```
 
 GitHub Actions（`.github/workflows/secret-scan.yml`）也会在 push / pull request 时跑一遍，
@@ -38,7 +40,7 @@ GitHub Actions（`.github/workflows/secret-scan.yml`）也会在 push / pull req
   `local.properties`、`.env*`（`.env.example` 除外）、`.npmrc`、`.ohpmrc`、
   `*.p12` / `*.p7b` / `*.cer` / `*.csr` / `*.jks` / `*.keystore` / `*.key`、
   `id_rsa` 等私钥文件、`extra-ca.pem`。
-- 内容：私钥块、AWS/GitHub/OpenAI/DeepSeek/Slack/Google 常见 token、长 Bearer token。
+- 内容：PEM 私钥块（含 ENCRYPTED）、AWS/GitHub/GitLab/OpenAI（含 `sk-proj-`）/DeepSeek/Slack/Google/Stripe/npm/HuggingFace/SendGrid token、华为云 AK/SK、阿里云 AccessKey、腾讯云 SecretId、长 Bearer token。
 
 命中时只打印文件路径、行号和规则名，不回显密钥内容。
 

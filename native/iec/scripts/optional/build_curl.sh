@@ -16,6 +16,9 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 VER="$IEC_CURL_VER"
 TAR="$IEC_THIRDPARTY/curl-$VER.tar.gz"
+# curl 官方下载页只提供 PGP 签名（.asc），没有 SHA-256 文件；这里固定脚本
+# 实际使用的官方 tarball 的 SHA-256，作为可复现基线。
+SHA256="$(iec_sha_or IEC_CURL_SHA256 d54dd598bf05927a726deb38df31c6a255ba83ff1de57c5d1464dac3ed8f44a1)"
 SRC="$IEC_THIRDPARTY/curl-$VER"
 BLD="$IEC_ROOT/build/curl-build"
 PREFIX="$IEC_CURL_DIR"
@@ -28,18 +31,20 @@ fi
 [ -f "$IEC_OPENSSL_DIR/lib/libssl.a" ] || iec_err "openssl is missing (run build_openssl.sh first)"
 
 if [ ! -f "$SRC/configure" ]; then
-	if [ ! -s "$TAR" ]; then
-		iec_log "download $IEC_CURL_URL"
-		curl -L --retry 3 -m 600 -o "$TAR.part" "$IEC_CURL_URL" \
-			|| iec_err "curl download failed"
-		mv "$TAR.part" "$TAR"
-	fi
+	iec_fetch_verified "$IEC_CURL_URL" "$TAR" "$SHA256" "curl $VER"
 	mkdir -p "$IEC_THIRDPARTY"
 	tar xzf "$TAR" -C "$IEC_THIRDPARTY"
 fi
 [ -f "$SRC/configure" ] || iec_err "unexpected curl source layout: $SRC"
 
-NO_FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+# OHOS sysroot 的 musl + clang 支持 _FORTIFY_SOURCE=2，默认打开；只有确实不支持
+# 的精简 sysroot 才允许通过 IEC_NO_FORTIFY=1 显式降级（原因会写进构建日志）。
+if [ "${IEC_NO_FORTIFY:-0}" = "1" ]; then
+	NO_FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+	iec_log "warning: FORTIFY 按 IEC_NO_FORTIFY=1 显式关闭（仅在 sysroot 缺少 fortified 头时使用）"
+else
+	NO_FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fstack-protector-strong"
+fi
 rm -rf "$BLD"
 mkdir -p "$BLD"
 

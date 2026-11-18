@@ -20,7 +20,12 @@ source "$ENV_FILE"
 source "$IEC_ROOT/scripts/lib/common.sh"
 
 VIM_VER="${VIM_VER:-9.1.1000}"
+# tag v9.1.1000 的 commit（api.github.com/repos/vim/vim/git/tags/v9.1.1000）。
+# 归档按 commit 取，不再跟随可移动的 tag；SHA-256 仍未固定（CI 会失败）。
+VIM_COMMIT="$(iec_sha_or IEC_VIM_COMMIT ebea31e454b9a1731cde845226f2c28ca5c097b1)"
 TAR="$IEC_THIRDPARTY/vim-$VIM_VER.tar.gz"
+# commit 已固定；commit 归档没有官方 checksum，这里固定该归档的 SHA-256。
+SHA256="$(iec_sha_or IEC_VIM_SHA256 9eac83abda00a15712e67ebb2073a0b74bd37a431ed93ebba510c1b6896c0793)"
 SRC="$IEC_THIRDPARTY/vim-$VIM_VER"
 BLD="$IEC_ROOT/build/vim"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -31,12 +36,8 @@ CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 [ -f "$NC/lib/libncursesw.a" ] || iec_err "missing $NC/lib/libncursesw.a (run scripts/optional/build_python.sh first)"
 mkdir -p "$BLD" "$OUT_DIR" "$RESDIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 900 -o "$TAR.part" \
-		"https://github.com/vim/vim/archive/refs/tags/v$VIM_VER.tar.gz" \
-		|| iec_err "vim download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://codeload.github.com/vim/vim/tar.gz/$VIM_COMMIT" \
+	"$TAR" "$SHA256" "vim $VIM_VER"
 if [ ! -f "$SRC/src/configure" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

@@ -132,6 +132,11 @@ SHIP_LIST="${ENGINE_SHIP_LIST:-$PROJECT/scripts/engine-ship-files.txt}"
 
 # 引擎：精简后的 sdk 闭包 + harmony 宿主脚本。
 ENGINE_TAR="$PROJECT/entry/src/main/resources/rawfile/tools/official-engine.tar.gz"
+ENGINE_SUMS="$PROJECT/entry/src/main/resources/rawfile/tools/official-engine.sha256"
+[ -d "$NATIVE_ROOT/official-engine/node_modules" ] \
+  || fail "缺少 $NATIVE_ROOT/official-engine/node_modules（先在本机 npm install 官方引擎，再打包）"
+[ -f "$SHIP_LIST" ] \
+  || fail "缺少引擎文件清单 $SHIP_LIST（不能跳过 official-engine.tar.gz）"
 if [ -f "$SHIP_LIST" ]; then
   rm -rf "$WORK/engine"
   mkdir -p "$WORK/engine/node_modules" "$WORK/engine/harmony"
@@ -217,11 +222,27 @@ EOF
       "$READELF" -h "$addon" | grep -F "$ELF_MACHINE" >/dev/null || fail "原生插件架构不匹配 $LIB_ARCH: $addon"
     fi
   done < <(find "$WORK/engine" -type f -name '*.node')
+  # 完整性清单：上游依赖树可能没有 lockfile；有则一并归档，并总是生成逐文件
+  # SHA-256 清单（ENGINE-MANIFEST.sha256），便于 runtime-manifest/审计抽查。
+  if [ -f "$NATIVE_ROOT/official-engine/package-lock.json" ]; then
+    cp -f "$NATIVE_ROOT/official-engine/package-lock.json" "$WORK/engine/package-lock.json"
+    note "已归档 package-lock.json"
+  else
+    note "警告：$NATIVE_ROOT/official-engine 缺少 package-lock.json，仅依赖逐文件 SHA-256 清单"
+  fi
+  ( cd "$WORK/engine" && \
+    find . -type f ! -name ENGINE-MANIFEST.sha256 -print0 | sort -z | xargs -0 -r sha256sum \
+  ) > "$WORK/engine/ENGINE-MANIFEST.sha256" \
+    || fail "生成 ENGINE-MANIFEST.sha256 失败"
+  note "引擎完整性清单：$(wc -l < "$WORK/engine/ENGINE-MANIFEST.sha256") 个文件"
   tar --sort=name --mtime='2026-01-01 00:00:00' --owner=0 --group=0 --numeric-owner \
       -C "$WORK/engine" -czf "$ENGINE_TAR" .
   note "official-engine.tar.gz $(file_size "$ENGINE_TAR") 字节"
-else
-  note "跳过引擎打包：找不到 $SHIP_LIST"
+  ( cd "$(dirname "$ENGINE_SUMS")" && sha256sum official-engine.tar.gz ) > "$ENGINE_SUMS" \
+    || fail "生成 official-engine.sha256 失败"
+  ( cd "$(dirname "$ENGINE_SUMS")" && sha256sum -c official-engine.sha256 >/dev/null ) \
+    || fail "official-engine.sha256 自校验失败"
+  note "official-engine.sha256 已写入并自校验通过"
 fi
 
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -245,19 +266,22 @@ else
 fi
 
 # npm 用我们自己编的 Node 源码里的 deps/npm 打包，而不是上游仓库里的旧副本。
+# npm.tar.gz 已改为构建产物（不再跟踪）：缺少本次构建产物时直接失败，绝不回退到
+# 仓库里的旧归档；--partial 只影响原生库缺失，不改变这条规则。
 REBUILT_NPM="$NATIVE_ROOT/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz"
-PROJECT_NPM="$PROJECT/native/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz"
-if [ -f "$REBUILT_NPM" ]; then
-  cp -f "$REBUILT_NPM" "$PROJECT_NPM"
-  note "npm.tar.gz 取自本次 Node 源码构建（$(file_size "$PROJECT_NPM") 字节）"
-else
-  note "警告：未找到 Node 构建产出的 npm.tar.gz，沿用仓库内副本"
-fi
+PROJECT_NPM="$PROJECT/entry/src/main/resources/rawfile/tools/npm.tar.gz"
+[ -f "$REBUILT_NPM" ] \
+  || fail "缺少本次 Node 构建产出的 npm.tar.gz：$REBUILT_NPM（先跑 scripts/optional/build_node.sh；不要复用旧副本）"
+cp -f "$REBUILT_NPM" "$PROJECT_NPM"
+note "npm.tar.gz 取自本次 Node 源码构建（$(file_size "$PROJECT_NPM") 字节）"
 
 # 运行时清单。version 不在这里手算：交给 scripts/runtime-manifest.mjs 按实际
 # 随包字节（引擎/npm 归档、entry/libs 下所有 .so、commands 列表）计算。这样
 # 换引擎、换 npm、重编任一原生库，甚至换一台构建机，版本都会自动变化；不再
 # 依赖绝对路径的 sha256sum 输出，也不会出现「产物变了但清单没变」。
+[ -s "$ENGINE_TAR" ] || fail "缺少 $ENGINE_TAR（引擎归档未生成，拒绝继续）"
+[ -s "$ENGINE_SUMS" ] || fail "缺少 $ENGINE_SUMS（引擎完整性清单未生成，拒绝继续）"
+[ -s "$PROJECT_NPM" ] || fail "缺少 $PROJECT_NPM（npm.tar.gz 未生成，拒绝继续）"
 {
   printf '{\n  "version": "",\n  "engineVersion": "%s",\n  "nodeVersion": "%s",\n  "commands": [\n' \
     "$ENGINE_VERSION" "$NODE_VERSION"

@@ -21,6 +21,12 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 JQ_VER="1.7.1"
 ONIG_VER="6.9.9"
+# GitHub tag 归档没有官方 SHA-256；这里固定当前 tag/commit 归档的 SHA-256
+# （由官方 codeload 地址下载后计算），作为可复现基线。
+# 官方来源：https://github.com/jqlang/jq/releases/tag/jq-1.7.1
+#           https://github.com/kkos/oniguruma/releases/tag/v6.9.9
+JQ_SHA="$(iec_sha_or IEC_JQ_SHA256 fc75b1824aba7a954ef0886371d951c3bf4b6e0a921d1aefc553f309702d6ed1)"
+ONIG_SHA="$(iec_sha_or IEC_ONIG_SHA256 001aa1202e78448f4c0bf1a48c76e556876b36f16d92ce3207eccfd61d99f2a0)"
 WORK="$IEC_ROOT/build/jq"
 PREFIX="$WORK/prefix"
 SRC="$WORK/jq-src"
@@ -31,10 +37,10 @@ CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 mkdir -p "$WORK" "$OUT"
 cd "$WORK"
 
-[ -f jq.tar.gz ] || curl -L --retry 3 -m 600 -o jq.tar.gz \
-	"https://codeload.github.com/jqlang/jq/tar.gz/refs/tags/jq-$JQ_VER"
-[ -f onig.tar.gz ] || curl -L --retry 3 -m 600 -o onig.tar.gz \
-	"https://codeload.github.com/kkos/oniguruma/tar.gz/refs/tags/v$ONIG_VER"
+[ -f jq.tar.gz ] || iec_fetch_verified \
+	"https://codeload.github.com/jqlang/jq/tar.gz/refs/tags/jq-$JQ_VER" jq.tar.gz "$JQ_SHA" "jq $JQ_VER"
+[ -f onig.tar.gz ] || iec_fetch_verified \
+	"https://codeload.github.com/kkos/oniguruma/tar.gz/refs/tags/v$ONIG_VER" onig.tar.gz "$ONIG_SHA" "oniguruma $ONIG_VER"
 [ -d jq-src ] || { tar xzf jq.tar.gz && mv "jq-jq-$JQ_VER" jq-src; }
 [ -d onig-src ] || { tar xzf onig.tar.gz && mv "oniguruma-$ONIG_VER" onig-src; }
 

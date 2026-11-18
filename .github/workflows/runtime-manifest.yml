@@ -1,0 +1,36 @@
+name: runtime-manifest
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # 来源：https://api.github.com/repos/actions/checkout/git/ref/tags/v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # 来源：https://api.github.com/repos/actions/setup-node/git/ref/tags/v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Check runtime manifest
+        run: |
+          TOOLS=entry/src/main/resources/rawfile/tools
+          missing=0
+          for f in official-engine.tar.gz official-engine.sha256 npm.tar.gz python-stdlib.tar vim-runtime.tar.gz; do
+            [ -f "$TOOLS/$f" ] || { echo "::warning::缺少运行时归档 $f（构建产物不入库，需在打包机上校验）"; missing=1; }
+          done
+          if [ "$missing" -eq 1 ]; then
+            # 发布 tag 不允许跳过清单校验；普通 CI 明确标注后继续。
+            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+              echo "::error::发布 tag 缺少运行时归档，无法校验 runtime-manifest"
+              exit 1
+            fi
+            echo "runtime-manifest: SKIP（缺归档，clean checkout 预期行为）"
+            exit 0
+          fi
+          node scripts/runtime-manifest.mjs check

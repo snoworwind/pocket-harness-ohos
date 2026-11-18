@@ -30,6 +30,22 @@
   const { Readable } = require('node:stream');
 
   const MAX_REDIRECTS = 20;
+  // 跨源重定向时必须剥离的请求头（大小写不敏感）。host 也在内：否则会把
+  // 原站点主机名带给新源。浏览器同样不会跨源转发这些凭据头。
+  const SENSITIVE_REDIRECT_HEADERS = [
+    'authorization',
+    'proxy-authorization',
+    'cookie',
+    'cookie2',
+    'host',
+  ];
+  // 重定向后方法被改写为 GET（请求体被丢弃）时，不能残留请求体相关头。
+  const BODY_REDIRECT_HEADERS = [
+    'content-type',
+    'content-length',
+    'content-encoding',
+    'transfer-encoding',
+  ];
   const agents = {
     'http:': new http.Agent({ keepAlive: true }),
     'https:': new https.Agent({ keepAlive: true }),
@@ -74,6 +90,51 @@
 
   function setHeader(headers, name, value) {
     if (!hasHeader(headers, name)) headers[name] = value;
+  }
+
+  function deleteHeader(headers, name) {
+    const lower = name.toLowerCase();
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === lower) delete headers[key];
+    }
+  }
+
+  function originOf(url) {
+    const parsed = url instanceof URL ? url : new URL(url);
+    let port = parsed.port;
+    if (!port) {
+      if (parsed.protocol === 'https:') port = '443';
+      else if (parsed.protocol === 'http:') port = '80';
+    }
+    return parsed.protocol + '//' + parsed.hostname.toLowerCase() + ':' + port;
+  }
+
+  function isSameOrigin(a, b) {
+    return originOf(a) === originOf(b);
+  }
+
+  // 纯函数：判定一次重定向是否允许、是否跨源、需要剥离哪些请求头。
+  // 非 http(s) 目标与 https→http 降级都以 TypeError 拒绝，不静默跟随。
+  // bodyDropped 表示本次重定向按规范丢弃了请求体（303，或 301/302 的 POST）。
+  function redirectPlan(fromUrl, toUrl, method, nextMethod, bodyDropped) {
+    const from = fromUrl instanceof URL ? fromUrl : new URL(fromUrl);
+    const to = toUrl instanceof URL ? toUrl : new URL(toUrl);
+    if (to.protocol !== 'http:' && to.protocol !== 'https:') {
+      throw new TypeError('fetch failed: redirect to unsupported protocol ' + to.protocol);
+    }
+    if (from.protocol === 'https:' && to.protocol === 'http:') {
+      throw new TypeError('fetch failed: HTTPS redirect to HTTP is not allowed');
+    }
+    const sameOrigin = isSameOrigin(from, to);
+    const dropsBody = bodyDropped === undefined ? nextMethod !== method : bodyDropped;
+    const names = new Set();
+    if (!sameOrigin) {
+      for (const name of SENSITIVE_REDIRECT_HEADERS) names.add(name);
+    }
+    if (dropsBody) {
+      for (const name of BODY_REDIRECT_HEADERS) names.add(name);
+    }
+    return { sameOrigin, stripHeaders: Array.from(names) };
   }
 
   function isNodeReadable(value) {
@@ -228,15 +289,33 @@
               response.resume();
               let nextMethod = method;
               let nextBody = init.body;
-              if (status === 303 || ((status === 301 || status === 302) && method === 'POST')) {
+              const dropsBody = status === 303 ||
+                ((status === 301 || status === 302) && method === 'POST');
+              if (dropsBody) {
                 nextMethod = 'GET';
                 nextBody = undefined;
               }
-              const next = new URL(location, parsed).toString();
-              requestOnce(next, Object.assign({}, init, {
+              let nextURL;
+              let plan;
+              try {
+                nextURL = new URL(location, parsed);
+                plan = redirectPlan(parsed, nextURL, method, nextMethod, dropsBody);
+              } catch (error) {
+                reject(error instanceof TypeError
+                  ? error
+                  : new TypeError('fetch failed: ' + error.message, { cause: error }));
+                return;
+              }
+              const nextInit = Object.assign({}, init, {
                 method: nextMethod,
                 body: nextBody,
-              }), redirects - 1, true).then(resolve, reject);
+              });
+              if (plan.stripHeaders.length > 0) {
+                const nextHeaders = headerObject(init.headers);
+                for (const name of plan.stripHeaders) deleteHeader(nextHeaders, name);
+                nextInit.headers = nextHeaders;
+              }
+              requestOnce(nextURL.toString(), nextInit, redirects - 1, true).then(resolve, reject);
               return;
             }
             // manual：返回 3xx 本身，不自动跟随。
@@ -301,6 +380,18 @@
     }
   };
   globalThis.fetch.__harmonyPolyfill = true;
+  // 纯函数实现仅供主机侧单测（尤其是无法启动自签 HTTPS 服务时验证降级规则），
+  // 不参与生产请求路径，也不改变 fetch 语义；只有强制安装时才会暴露。
+  if (force) {
+    globalThis.__dshFetchPolyfillInternals = {
+      originOf,
+      isSameOrigin,
+      redirectPlan,
+      SENSITIVE_REDIRECT_HEADERS,
+      BODY_REDIRECT_HEADERS,
+      MAX_REDIRECTS,
+    };
+  }
   installUndiciFetchOverride(globalThis.fetch);
 
   // dsh-web-fetch-http 的 provider 不走 globalThis.fetch，而是

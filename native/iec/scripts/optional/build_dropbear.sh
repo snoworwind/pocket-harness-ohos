@@ -40,6 +40,8 @@ source "$ENV_FILE"
 source "$IEC_ROOT/scripts/lib/common.sh"
 
 SRC_SUBMODULE="${DROPBEAR_SRC:-$IEC_ROOT/thirdparty/dropbear}"
+# 固定到审查基线时的 main commit（api.github.com/repos/mkj/dropbear/git/ref/heads/main）。
+DROPBEAR_COMMIT="$(iec_sha_or IEC_DROPBEAR_COMMIT 99baf1828c13e88de048e641d03694bfe8923251)"
 SRC="${DROPBEAR_SRC_COPY:-$IEC_ROOT/build/dropbear-src}"
 BUILD="${DROPBEAR_BUILD:-$IEC_ROOT/build/dropbear}"
 PATCH="${DROPBEAR_PATCH:-$IEC_ROOT/scripts/dropbear-ohos.patch}"
@@ -62,7 +64,7 @@ log() { echo "=== $* ===" >&2; }
 err() { echo "ERROR: $*" >&2; exit 1; }
 
 [ -f "$SRC_SUBMODULE/configure" ] || \
-	iec_clone_if_missing "$SRC_SUBMODULE" "${IEC_DROPBEAR_REPO:-}"
+	iec_clone_if_missing "$SRC_SUBMODULE" "${IEC_DROPBEAR_REPO:-}" "" "$DROPBEAR_COMMIT"
 [ -f "$SRC_SUBMODULE/configure" ] || err "missing dropbear sources: $SRC_SUBMODULE"
 [ -f "$PATCH" ] || err "missing patch: $PATCH"
 [ -x "$OBJCOPY" ] || err "missing objcopy: $OBJCOPY"

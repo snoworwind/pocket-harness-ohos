@@ -1,0 +1,33 @@
+name: binary-audit
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      # 来源：https://api.github.com/repos/actions/checkout/git/ref/tags/v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install binutils (readelf)
+        run: sudo apt-get update && sudo apt-get install -y binutils unzip
+      - name: Source manifest / archive audit
+        run: |
+          TOOLS=entry/src/main/resources/rawfile/tools
+          if [ -f "$TOOLS/official-engine.tar.gz" ] && [ -f "$TOOLS/npm.tar.gz" ]; then
+            bash scripts/audit-binaries.sh
+          else
+            echo "::warning::缺少 official-engine.tar.gz / npm.tar.gz（构建产物不入库），跳过二进制审计"
+          fi
+      - name: HAP binary audit (when a HAP artifact is present)
+        run: |
+          if ls entry/build/default/outputs/default/*.hap >/dev/null 2>&1; then
+            bash scripts/audit-sources.sh
+          else
+            echo "::warning::没有 HAP 产物，跳过 HAP 审计"
+          fi

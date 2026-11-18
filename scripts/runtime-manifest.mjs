@@ -35,6 +35,21 @@ function requireFile(path, label) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`找不到${label}：${path}`);
 }
 
+/** @param {string} value */
+function toPosix(value) {
+  // 摘要里的路径标签必须与构建机平台无关：Windows 用 `\`，Linux 用 `/`。
+  return value.replace(/\\/g, '/');
+}
+
+/** @param {string} a @param {string} b */
+function compareBytes(a, b) {
+  // 不能用 localeCompare：Windows 的区域设置与 Linux/C locale 排序不同，
+  // 同一批随包字节会算出两个不同的 manifest.version（违反可复现性）。
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 /** @param {string} dir @returns {string[]} */
 function listSoFiles(dir) {
   const out = [];
@@ -48,7 +63,7 @@ function listSoFiles(dir) {
   };
   if (!existsSync(dir)) fail(`找不到原生库目录：${dir}`);
   walk(dir);
-  return out.sort((a, b) => relative(root, a).localeCompare(relative(root, b)));
+  return out.sort((a, b) => compareBytes(toPosix(relative(root, a)), toPosix(relative(root, b))));
 }
 
 /** @param {import('node:crypto').Hash} hash @param {string} label @param {string|Buffer} value */
@@ -61,11 +76,37 @@ function update(hash, label, value) {
 
 /** @param {import('node:crypto').Hash} hash @param {string} label @param {string} path */
 async function updateFile(hash, label, path) {
-  update(hash, `${label}:path`, relative(root, path));
+  update(hash, `${label}:path`, toPosix(relative(root, path)));
   hash.update(`${label}:content`);
   hash.update('\0');
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   hash.update('\0');
+}
+
+/** @param {string} path @returns {Promise<string>} */
+async function fileSha256(path) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+// pack-native.sh 在生成 official-engine.tar.gz 时同时写 official-engine.sha256
+// （内容为 "<sha256>  official-engine.tar.gz"）。这里核对两者一致，防止归档被
+// 替换/拼接后仍沿用旧清单。
+async function verifyEngineChecksum() {
+  const archive = join(toolsDir, 'official-engine.tar.gz');
+  const sums = join(toolsDir, 'official-engine.sha256');
+  requireFile(archive, '运行时归档 official-engine.tar.gz');
+  requireFile(sums, '完整性清单 official-engine.sha256（pack-native.sh 生成）');
+  const text = readFileSync(sums, 'utf8').trim();
+  const expected = /^([0-9a-f]{64})\s+official-engine\.tar\.gz$/i.exec(text);
+  if (expected === null) {
+    fail(`official-engine.sha256 格式不合法：${JSON.stringify(text.slice(0, 120))}`);
+  }
+  const actual = await fileSha256(archive);
+  if (actual !== expected[1].toLowerCase()) {
+    fail(`official-engine.tar.gz SHA-256 与清单不一致（清单 ${expected[1]}，实际 ${actual}）`);
+  }
 }
 
 /** @param {any} manifest @returns {Promise<string>} */
@@ -90,9 +131,10 @@ async function expectedVersion(manifest) {
       arity: command.arity === 3 ? 3 : 2,
       elfStub: command.elfStub === true,
     }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => compareBytes(a.name, b.name));
   update(hash, 'commands', JSON.stringify(commands));
 
+  await verifyEngineChecksum();
   for (const name of ['official-engine.tar.gz', 'npm.tar.gz', 'python-stdlib.tar', 'vim-runtime.tar.gz']) {
     const path = join(toolsDir, name);
     requireFile(path, `运行时归档 ${name}`);
@@ -104,7 +146,7 @@ async function expectedVersion(manifest) {
     const path = join(toolsDir, name);
     if (existsSync(path)) await updateFile(hash, `stub:${name}`, path);
   }
-  for (const path of listSoFiles(libsDir)) await updateFile(hash, `so:${relative(libsDir, path)}`, path);
+  for (const path of listSoFiles(libsDir)) await updateFile(hash, `so:${toPosix(relative(libsDir, path))}`, path);
 
   return `${manifest.engineVersion}-${hash.digest('hex').slice(0, 12)}`;
 }

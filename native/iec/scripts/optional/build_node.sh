@@ -48,8 +48,8 @@ source "$ENV_FILE"
 source "$IEC_ROOT/scripts/lib/common.sh"
 
 PHASE="${1:-all}"
-NODE_VER="v22.19.0"
-NODE_SHA256="4cea680423f98abc6a2a5ca127fb34c5f6586c24217f57749be6ea886c9be9a6"
+NODE_VER="v24.22.1"
+NODE_SHA256="$(iec_sha_or IEC_NODE_SHA256 001773d9bd53fbd27a25efd42aa6a9693ebfe500998ca9bec635e9b6ee79bc91)"
 NODE_URL="https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}.tar.gz"
 
 SOURCE_CACHE="${IEC_SOURCE_CACHE:-$IEC_ROOT/thirdparty}"
@@ -143,21 +143,7 @@ make_wrappers
 
 # ── 1. source ──────────────────────────────────────────────────────────────
 fetch_src() {
-	if [ ! -f "$SRC_TGZ" ] || ! echo "$NODE_SHA256  $SRC_TGZ" | sha256sum -c - >/dev/null 2>&1; then
-		iec_log "download node $NODE_VER (about 85 MB, resumed on interruption)"
-		mkdir -p "$(dirname "$SRC_TGZ")"
-		local n=0
-		while :; do
-			n=$((n + 1))
-			if curl -L -C - --connect-timeout 20 --max-time 2400 -sS "$NODE_URL" -o "$SRC_TGZ"; then
-				break
-			fi
-			[ "$n" -ge 8 ] && iec_err "download failed after $n attempts (delete $SRC_TGZ)"
-			iec_log "download interrupted; resuming ($n)"
-			sleep 3
-		done
-		echo "$NODE_SHA256  $SRC_TGZ" | sha256sum -c - || iec_err "sha256 mismatch: $SRC_TGZ"
-	fi
+	iec_fetch_verified "$NODE_URL" "$SRC_TGZ" "$NODE_SHA256" "node $NODE_VER"
 	if [ ! -f "$SRC/src/node.cc" ]; then
 		iec_log "extract -> $SRC"
 		mkdir -p "$SOURCE_CACHE"
@@ -310,6 +296,13 @@ do_build() {
 	iec_log "done: $OUT ($(du -h "$OUT" | cut -f1))"
 
 	# ── npm: pure JavaScript, packed as a rawfile tar ─────────────────────
+	pack_npm
+}
+
+# Only repackage deps/npm from an existing Node source tree. This is the `npm`
+# phase: it needs neither a compiler nor a configured Node build, so an existing
+# tree (or a checked-out Node source tarball) is enough to refresh the archive.
+pack_npm() {
 	local npm_src="$SRC/deps/npm"
 	[ -f "$npm_src/bin/npm-cli.js" ] || iec_err "missing npm source: $npm_src"
 	iec_log "pack npm.tar.gz"
@@ -324,7 +317,8 @@ case "$PHASE" in
 	src)       fetch_src ;;
 	configure) do_configure ;;
 	build)     do_build ;;
+	npm)       pack_npm ;;
 	all)       do_configure; do_build ;;
-	*)         iec_err "usage: $0 [src|configure|build|all]" ;;
+	*)         iec_err "usage: $0 [src|configure|build|npm|all]" ;;
 esac
 iec_log "build_node.sh complete (phase $PHASE)"

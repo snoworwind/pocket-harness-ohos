@@ -1,6 +1,7 @@
 import { UIAbility, ConfigurationConstant, common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
+import BuildProfile from 'BuildProfile';
 
 // 沉浸式：全屏布局 + 隐藏系统栏。
 //
@@ -24,7 +25,9 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageCreate(stage: window.WindowStage): void {
-    try { webview.WebviewController.setWebDebuggingAccess(true); } catch (error) { /* 调试开关 */ }
+    // DevTools 只在 debug 构建开启；release 显式传 false，不依赖系统默认值。
+    // BuildProfile 由 hvigor 在每个构建模式生成（release 时 DEBUG=false）。
+    try { webview.WebviewController.setWebDebuggingAccess(BuildProfile.DEBUG); } catch (error) { /* 调试开关 */ }
     try {
       const context = this.context as common.UIAbilityContext;
       context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);

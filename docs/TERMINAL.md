@@ -14,7 +14,8 @@
   - `libdsh_terminal.so`（libvterm 封装）负责屏幕单元与光标；
   - 用 IEC `execStart` 起 `bin/bash -i`（`pty: true`，保持 stdin），25ms 轮询输出，输入与窗口尺寸通过 `execWrite` / `execResize` 下发。
 - `entry/src/main/ets/pages/Index.ets`
-  - `onConsole` 解析 `DSH_TERM:` 桥消息，维护 stage 矩形与浮层状态；
+  - `onConsole` 解析 `DSH_TERM:<nonce>:` 桥消息（nonce 由文档起点脚本注入，每次启动
+  随机生成，防止跨源页面伪造），维护 stage 矩形与浮层状态；
   - 返回手势：终端可见时先收起右侧栏，会话继续运行；只有 tab 的 × 才 `close` 并终止会话。
 
 ## 关键修复

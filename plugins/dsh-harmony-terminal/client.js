@@ -6,8 +6,9 @@
  *  - 壳层在这块矩形上铺自己的终端视图，会话、PTY、键盘都归壳层；
  *  - tab 的 × 触发 close 处理器，壳层据此停止会话。
  *
- * 页面 → 壳层没有 JS 桥对象可用，走 `console.log('DSH_TERM:' + json)`，
- * 壳层用 Web 组件的 onConsole 接收。
+ * 页面 → 壳层没有 JS 桥对象可用，走
+ * `console.log('DSH_TERM:<nonce>:' + json)`，nonce 由壳层在文档起点注入，
+ * 壳层用 Web 组件的 onConsole 接收并校验。
  */
 window.__ModuleLoader__.load({
   id: '@local/dsh-harmony-terminal',
@@ -22,7 +23,12 @@ window.__ModuleLoader__.load({
 
     function send(op, payload) {
       try {
-        console.log('DSH_TERM:' + JSON.stringify(Object.assign({ op: op }, payload)));
+        // 只允许主框架上报：预览/内置浏览器里的子框架不应驱动壳层终端。
+        if (window.top !== window) return;
+        // 壳层只接受带本次启动 nonce 的桥消息；nonce 由壳层在文档起点注入。
+        const nonce = window.__dshNonce;
+        if (typeof nonce !== 'string' || nonce === '') return;
+        console.log('DSH_TERM:' + nonce + ':' + JSON.stringify(Object.assign({ op: op }, payload)));
       } catch (error) {
         /* 控制台不可用时静默：终端本身仍然可用 */
       }

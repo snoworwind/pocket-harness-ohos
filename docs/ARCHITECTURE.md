@@ -19,7 +19,7 @@ ArkUI Index（只留一个 Web 组件 + 启动状态）
 1. `ensure()`：读 `rawfile/tools/runtime-manifest.json`，校验每个命令的 `.so` 已随包安装；
 2. `initIecResourceManager` + `probeCaps()`：确认设备允许创建原生子进程，不允许就直接报错，不做降级运行时；
 3. `startIecServer()`：启动执行/终端服务；
-4. 首次安装时把 `rawfile/tools/official-engine.tar.gz` 解到 `filesDir/runtime-<version>/engine`，把 `tools/npm.tar.gz` 解到运行时根，成功后写 `.installed` 标记；解包是同步阻塞调用，动手前先经 `onInstalling` 回调把「正在解包」交给界面并让出一帧，否则 300ms 轮询永远观察不到 `installing=true`，首次启动提示不会出现；
+4. 首次安装时把 `rawfile/tools/official-engine.tar.gz` 解到 `filesDir/runtime-<version>/engine`，把 `tools/npm.tar.gz` 解到运行时根；启动器、CA、预加载补丁全部落盘后才写 `.installed`（JSON：版本号 + 关键文件 SHA-256 + 清单摘要）；解包是同步阻塞调用，动手前先经 `onInstalling` 回调把「正在解包」交给界面并让出一帧，否则 300ms 轮询永远观察不到 `installing=true`，首次启动提示不会出现；
 5. 为每个命令写 `#IECSOv2` 启动器到 `runtime-<version>/bin`，toybox 的 applet 也逐个写；
 6. 合并 CA bundle（Mozilla 根证书 + 可选附加 CA），构造环境变量；
 7. 起 `node <engine>/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --port 0 --no-open`，从 stdout 里取出 `dsh web: <url>` 那一行；
@@ -81,7 +81,7 @@ node scripts/runtime-manifest.mjs check
 node scripts/build.mjs --strict-runtime-manifest --deveco-home "<DevEco>"
 ```
 
-`scripts/build.mjs` 默认在 hvigor 前执行 `sync`，`pack-native.sh` 也调用同一脚本，不再手算摘要；因此 `pack-native.sh` 现在要求构建机有 Node 18+。设备端 `ensure()` 读取 `.installed` 的内容并与当前 `manifest.version` 比较，内容不符时整棵重解，而不是只看标记是否存在。
+`scripts/build.mjs` 默认在 hvigor 前执行 `sync`，`pack-native.sh` 也调用同一脚本，不再手算摘要；因此 `pack-native.sh` 现在要求构建机有 Node 18+。设备端 `ensure()` 读取 `.installed`（JSON，schema 2）：版本号必须等于当前 `manifest.version`，并对 `bin/node`、`bin/bash`、引擎 `bin.js`、npm CLI、Python stdlib 入口重算 SHA-256、核对随包清单摘要；任何不一致或旧格式标记都按未安装处理，整棵重解 `runtime-<version>`，不触碰 `harness-home`。同 UID 可改写 `.installed` 与运行时，因此这层校验只发现“只改文件、不改标记”的意外损坏或部分篡改，边界见 [SECURITY.md](SECURITY.md)。
 
 注意：直接点 DevEco IDE 的 Build 不经过 `build.mjs`，不会自动 sync/check。发布流程应统一走命令行入口，或后续给 hvigor 增加预构建任务。
 
@@ -121,19 +121,22 @@ Windows 版的 DSH 退出时会停引擎；这里反过来——`aboutToDisappea
 
 ## 文件与安全边界
 
-官方 Web GUI 直接暴露官方引擎的能力面：工作区选择、文件读写、终端、命令执行。安全边界因此只剩两条：
+官方 Web GUI 直接暴露官方引擎的能力面：工作区选择、文件读写、终端、命令执行。真正的能力闸门仍是引擎的 permission preset / 工具开关（默认 `workspace-write + ask`）；引擎自带沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，探测失败返回 `SANDBOX_UNAVAILABLE`。壳层在此之上收口 Web 侧入口：
 
-1. 服务只监听回环地址，界面只在本机 Web 组件里加载；
-2. 应用沙箱和引擎自带的沙箱策略。引擎的策略（bwrap / Landlock）在鸿蒙上大概率不可用，探测失败会返回 `SANDBOX_UNAVAILABLE`。
+1. 服务只监听回环地址；WebView 只加载本地 origin，主框架导航、文档起点脚本与 `javaScriptProxy.permission` 都限定在当前 `http://127.0.0.1:<port>`，`fileAccess`/`databaseAccess` 关闭；
+2. 页面 → 壳层的终端/下载桥要求本次启动的 nonce（`window.__dshNonce`，随机 UUID），消息与下载任务 id 都校验；下载分片另有单分片/总字节/任务数/超时配额；
+3. 执行服务校验调用者：`SO_PEERCRED` 不可用时拒绝，TTY 绑定创建者，延迟 kill 前比对进程 `starttime`；归档解包对越界硬链接/符号链接 fail-closed；
+4. 日志（壳层 `dsh.log` 与原生 `iec-*.log`）写盘前脱敏并按大小轮转；`.installed` 抽查关键文件 SHA-256；
+5. release 构建关闭 WebView 调试，`pages/KbTest` 调试页已移除。
 
-真要把模型的能力收紧，得从引擎的 permission preset / 工具开关入手，而不是在界面层拦。
+**同 UID 即信任**：引擎、插件、Agent 命令与壳层同沙箱，能执行命令的一方可以读写运行时目录并改写 `.installed`；完整性抽查不抵御同 UID 主动攻击。第三方插件没有权限沙箱。完整信任假设与接受风险见 [SECURITY.md](SECURITY.md)。
 
 ## 客户端插件与返回手势
 
 两个客户端插件，职责分开：
 
 - `@local/dsh-harmony-terminal`（`plugins/dsh-harmony-terminal`）：注册右侧栏终端 tab、上报 stage 矩形、`open/close/focus`，并从 `/api/session/list` 取当前会话的 `cwd` 下发，终端据此 `cd`。
-- `@deepseek-ai/dsh-harmony-compat`（`plugins/harmony-compat`）：鸿蒙平台适配——用 `MutationObserver` 采样左抽屉（`aria-modal`）、设置对话框（`role=dialog`）、菜单（`role=menu`）、右栏（`收起右侧边栏` 是否可见），变化时立即用 `DSH_TERM:{op:'ui'}` 推给壳层；同时把选区「引用文本」浮层按 `offsetParent` 移到选区下方。
+- `@deepseek-ai/dsh-harmony-compat`（`plugins/harmony-compat`）：鸿蒙平台适配——用 `MutationObserver` 采样左抽屉（`aria-modal`）、设置对话框（`role=dialog`）、菜单（`role=menu`）、右栏（`收起右侧边栏` 是否可见），变化时立即用 `DSH_TERM:<nonce>:{op:'ui'}` 推给壳层；同时把选区「引用文本」浮层按 `offsetParent` 移到选区下方。两个插件的桥消息都只从主框架发出，并带文档起点注入的 nonce。
 
 `Index.onBackPress()` 按浮层优先级消费返回：菜单 → 设置对话框 → 右侧栏/终端 → 左侧抽屉 → 系统。状态来自插件的 `ui` 推送，另有一个 500ms 轮询兜底，避免动画窗口期内误判。
 

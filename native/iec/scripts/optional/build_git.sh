@@ -39,6 +39,8 @@ source "$ENV_FILE"
 source "$IEC_ROOT/scripts/lib/common.sh"
 
 GIT_VER="${GIT_VER:-2.56.0}"
+# tag v2.56.0 的 commit（api.github.com/repos/git/git/commits/v2.56.0），按 commit 取源码。
+GIT_COMMIT="$(iec_sha_or IEC_GIT_COMMIT a018953688f1b10bddf91bff8747068f5f4746a4)"
 GIT_SRC="${GIT_SRC:-$IEC_ROOT/thirdparty/git}"
 BUILD="${BUILD:-$IEC_ROOT/build/git-so}"
 OUTDIR="${OUTDIR:-$IEC_ROOT/platform/ohos/har/libs/arm64-v8a}"
@@ -59,7 +61,15 @@ CURL_PREFIX="${CURL_PREFIX:-$IEC_CURL_DIR}"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT"
 TRIPLE_FLAGS="--target=$TARGET --sysroot=$SYSROOT"
 LD_MUSL="-Wl,--dynamic-linker=/lib/ld-musl-aarch64.so.1"
-NO_FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+# OHOS sysroot 的 musl + clang 支持 _FORTIFY_SOURCE=2，默认打开；只有确实不支持
+# 的精简 sysroot 才允许通过 IEC_NO_FORTIFY=1 显式降级（原因会写进构建日志）。
+if [ "${IEC_NO_FORTIFY:-0}" = "1" ]; then
+	NO_FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+	iec_log "warning: FORTIFY 按 IEC_NO_FORTIFY=1 显式关闭（仅在 sysroot 缺少 fortified 头时使用）"
+else
+	NO_FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fstack-protector-strong"
+fi
+HARDEN_LDFLAGS="-Wl,-z,relro,-z,now"
 
 log() { echo "=== $* ===" >&2; }
 err() { echo "ERROR: $*" >&2; exit 1; }
@@ -78,7 +88,7 @@ for f in \
 done
 
 [ -f "$GIT_SRC/Makefile" ] || \
-	iec_clone_if_missing "$GIT_SRC" "${IEC_GIT_REPO:-}" "v$GIT_VER"
+	iec_clone_if_missing "$GIT_SRC" "${IEC_GIT_REPO:-}" "v$GIT_VER" "$GIT_COMMIT"
 
 mkdir -p "$BUILD" "$OUTDIR"
 
@@ -173,7 +183,7 @@ $CC_TARGET -fuse-ld=lld -shared -o "$OUT" \
 	-L"$DEPS_LIB" -L"$OPENSSL/lib" -L"$CURL_PREFIX/lib" \
 	-lcurl -lssl -lcrypto -lz -lpcre2-8 -lpthread -ldl -lm \
 	-Wl,-soname,libgit.so "${WRAP_FLAGS[@]}" \
-	-Wl,-Bsymbolic-functions
+	-Wl,-Bsymbolic-functions $HARDEN_LDFLAGS
 
 "$NM" -D "$OUT" | grep ' iec_git_main$' >/dev/null \
 	|| err "iec_git_main is not exported"
@@ -198,7 +208,7 @@ $CC_TARGET -fuse-ld=lld -shared -o "$OUT_HELPER" \
 	-L"$DEPS_LIB" -L"$OPENSSL/lib" -L"$CURL_PREFIX/lib" \
 	-lcurl -lssl -lcrypto -lz -lpcre2-8 -lpthread -ldl -lm \
 	-Wl,-soname,libgit-remote-http.so "${WRAP_FLAGS[@]}" \
-	-Wl,-Bsymbolic-functions
+	-Wl,-Bsymbolic-functions $HARDEN_LDFLAGS
 
 "$NM" -D "$OUT_HELPER" | grep ' iec_git_remote_http_main$' >/dev/null \
 	|| err "iec_git_remote_http_main is not exported"

@@ -40,12 +40,17 @@ bool HasMagic(const std::string& path) {
     ssize_t n;
     int fd;
 
-    // Only a regular file can be one, and asking anything else has no defined answer
-    // here: opening a fifo would block the thread serving the request.
-    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
-
-    fd = open(path.c_str(), O_RDONLY);
+    // One open() with the checks in its flags instead of stat() then open(): a
+    // FIFO swapped in between the two used to block the single-threaded exec
+    // service. O_NOFOLLOW refuses a link, O_NONBLOCK makes a non-regular file
+    // fail instead of waiting on it, and fstat() is what actually proves the
+    // opened object is a regular file.
+    fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return false;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return false;
+    }
     n = read(fd, magic, sizeof magic);
     close(fd);
     return n == (ssize_t)sizeof magic && memcmp(magic, IEC_SO_MAGIC, sizeof magic) == 0;
@@ -76,12 +81,14 @@ bool ParseLauncher(const std::string& path, SoLauncher& out, std::string* err) {
     int fd;
     ssize_t n;
 
-    if (stat(path.c_str(), &st) != 0)
-        return fail(std::string("stat failed: ") + strerror(errno));
-    if (!S_ISREG(st.st_mode)) return fail("not a regular file");
-
-    fd = open(path.c_str(), O_RDONLY);
+    // Same TOCTOU fix as HasMagic: open once with the flags, then fstat the
+    // descriptor that will actually be read.
+    fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return fail(std::string("open failed: ") + strerror(errno));
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return fail("not a regular file");
+    }
     n = read(fd, buf, sizeof buf - 1);
     close(fd);
     if (n <= 0) return fail("the file is empty");

@@ -21,6 +21,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 SQLITE_VER="${SQLITE_VER:-3500400}"
 TAR="$IEC_THIRDPARTY/sqlite-autoconf-$SQLITE_VER.tar.gz"
+# sqlite.org 只发布 SHA3-256，不提供 SHA-256；未固定时 CI 失败，普通构建告警。
+SHA256="$(iec_sha_or IEC_SQLITE_SHA256 a3db587a1b92ee5ddac2f66b3edb41b26f9c867275782d46c3a088977d6a5b18)"
 SRC="$IEC_THIRDPARTY/sqlite-autoconf-$SQLITE_VER"
 WORK="$IEC_ROOT/build/sqlite3"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -28,12 +30,8 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$WORK" "$OUT_DIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR.part" \
-		"https://sqlite.org/2025/sqlite-autoconf-$SQLITE_VER.tar.gz" \
-		|| iec_err "sqlite download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://sqlite.org/2025/sqlite-autoconf-$SQLITE_VER.tar.gz" \
+	"$TAR" "$SHA256" "sqlite $SQLITE_VER"
 if [ ! -f "$SRC/sqlite3.c" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

@@ -2,11 +2,13 @@
 // 跨平台构建入口（Windows / macOS / Linux 通用），替代原来的 build.ps1。
 //
 //   node scripts/build.mjs [--deveco-home <path>] [--clean] [--force-ohpm]
-//                          [--strict-runtime-manifest]
+//                          [--strict-runtime-manifest] [--release]
 //
 // 每次构建前都会按实际随包的引擎/npm/原生库重算 runtime-manifest.version；
 // --strict-runtime-manifest（或 DSH_STRICT_RUNTIME_MANIFEST=1）只校验不写回，
 // 供 CI/发布门禁使用：清单与产物不一致时直接失败。
+// --release（或 DSH_BUILD_MODE=release）会强制打开严格的清单校验：
+// 发布构建不接受“先 sync 再打包”的自动修正，debug 构建行为保持不变。
 //
 // 只需要一个 Node 18+ 来跑这个脚本；hvigor、ohpm、SDK、JDK 都从 DevEco 安装目录里取，
 // 所以 DevEco 可以用命令行工具包或完整安装，不必打开 IDE。
@@ -117,7 +119,11 @@ if (!existsSync(join(root, 'entry', 'oh_modules', 'iec')) || flag('force-ohpm'))
 // 版本号必须由本次真正打进 HAP 的字节算出：手动改清单、替换了引擎或 .so 却
 // 忘了改 version 时，设备会命中旧 runtime 目录的 .installed，继续用旧运行时。
 const runtimeManifest = join(root, 'scripts', 'runtime-manifest.mjs');
-const strictRuntimeManifest = flag('strict-runtime-manifest') || process.env.DSH_STRICT_RUNTIME_MANIFEST === '1';
+const buildMode = (option('build-mode') ?? process.env.DSH_BUILD_MODE ?? '').toLowerCase();
+const releaseBuild = flag('release') || buildMode === 'release';
+const strictRuntimeManifest =
+  flag('strict-runtime-manifest') || releaseBuild || process.env.DSH_STRICT_RUNTIME_MANIFEST === '1';
+if (releaseBuild) console.log('build: release 构建，强制校验 runtime-manifest');
 run(
   process.execPath,
   [runtimeManifest, strictRuntimeManifest ? 'check' : 'sync'],

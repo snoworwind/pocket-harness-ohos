@@ -10,7 +10,7 @@
 | --- | --- |
 | 应用名 | Pocket Harness |
 | 包名 | `com.snoworwind.phoh` |
-| 版本 | `0.1.0.4`（versionCode 5） |
+| 版本 | `0.1.0.5`（versionCode 6） |
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
 | 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1、CPython 3.12.14（含 pip）、curl 8.22.0、jq 1.7.1、Dropbear SSH、less/Vim、SQLite 3.50.4、rsync 3.4.1、xz 5.8.1、zstd 1.5.7、gh、Git LFS |
@@ -147,11 +147,13 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 ## 测试与校验
 
 ```bash
-node scripts/test.cjs                  # 宿主侧 52 项（会话协议、SSE、路径沙箱、附件上传钩子、图片补丁与门禁规则）
-node scripts/test-fetch-polyfill.cjs   # fetch 补丁 15 项（JSON/SSE/重定向/FormData/abort…）
-bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合与 npm.tar.gz
+node scripts/test.cjs                  # 宿主侧 52 项（会话协议、SSE、路径沙箱、附件钩子、桥脚本顺序与门禁规则）
+node scripts/test-fetch-polyfill.cjs   # fetch 补丁 16 项（JSON/SSE/重定向/FormData/abort/undici 覆盖…）
+node tests/fetch-redirect.cjs          # 重定向安全 12 项（跨源剥离认证头、HTTPS→HTTP 降级、非 http(s) 目标）
+bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合、npm.tar.gz 与 ELF 加固标志
 bash scripts/check-engine-web.sh       # web profile 291 个插件，stderr 为空
 node .githooks/secret-scan.mjs --all   # 敏感文件门禁（签名材料、凭据、私钥、常见 token）
+node .githooks/secret-scan.mjs --history  # 历史提交与提交信息（默认最近 200 个，可用环境变量调整）
 ```
 
 首次克隆后执行一次 `node scripts/install-hooks.mjs`，即可启用 `pre-commit` / `pre-push`
@@ -178,7 +180,12 @@ filesDir/
   成功后删除旧的 `runtime-*` 目录（约 500 MB/个）；
 - 只改 ArkTS/UI 的覆盖升级不会换运行时；manifest 版本不变时复用旧目录，启动行为与普通
   冷启动完全一致，这是刻意设计，不是漏解包；
-- `.installed` 的内容必须等于当前 `manifest.version`，否则整棵重解；
+- `.installed` 是 JSON：版本号必须等于当前 `manifest.version`，并记录关键文件
+  （`bin/node`、`bin/bash`、引擎 `bin.js`、npm CLI、Python stdlib 入口）的 SHA-256；
+  启动时重算比对，不一致就整棵重解（旧版只有版本号的标记同样按未安装处理）；
+- 实验性 `auto` 预设（`danger-full-access` + LLM 自动批准）**默认不注册**；确需恢复
+  记了该预设的旧会话时，在 `harness-home/harmony-native.json` 写 `{"autoReview": true}`
+  后重启应用；
 - `harness-home` 永不被应用删除：覆盖安装保留会话与设置，卸载才清空；
 - 目录被改坏时：三项存在性探测失败会整棵重解；引擎启动报缺文件症状会自动重解一次；
   仍失败则界面提供「重新解包运行时」。
@@ -261,10 +268,22 @@ TLS 信任由运行时 CA bundle 决定：启动时把 Mozilla 根证书与可�
 
 Python 标准库、pip/setuptools/wheel 与 Vim 运行时分别打包为 `python-stdlib.tar`、`vim-runtime.tar.gz`，首次启动时解到运行时目录；`PYTHONHOME`、`VIMRUNTIME` 由 `NativeRuntime` 设置。
 
+## 安全与信任模型
+
+- Web 服务只监听 `127.0.0.1`；WebView 只加载本地 origin，主框架导航收口到当前端口，
+  `fileAccess`/`databaseAccess` 已关闭；release 构建关闭 WebView 调试；
+- 页面 → 壳层的终端/下载桥要求**本次启动的 nonce**，`javaScriptProxy.permission` 与
+  文档起点脚本都只覆盖本地 origin；下载分片有单分片/总字节/任务数/超时配额；
+- 运行时 `.installed` 记录关键文件 SHA-256 并在启动时抽查；壳层与原生日志写盘前
+  脱敏、按大小轮转；
+- **同 UID 即信任**：引擎、随包插件、用户插件、Agent 命令与壳层同沙箱；安装第三方
+  插件等于完全信任。详情与接受风险见 [docs/SECURITY.md](docs/SECURITY.md)。
+
 ## 已知边界
 
 - 首次启动要解包 46 MB 引擎、24 MB Python 标准库与 10 MB Vim 运行时（约 2.7 万个文件），真机上一到两分钟；
-- 后台保活用「定位」连续任务：需要授权模糊定位，拒绝时只影响后台存活；
+- 后台保活用「定位」连续任务：需要授权模糊定位，拒绝时只影响后台存活；这是明确保留的
+  隐私取舍，见 [docs/SECURITY.md](docs/SECURITY.md)；
 - `dsh web` 只绑 `127.0.0.1`，界面只在本机 Web 组件里可达，不要改成对外监听；
 - 引擎自带的进程级沙箱（bwrap / Landlock）在鸿蒙上大概率不可用，能力边界靠 permission
   preset 与工具开关；

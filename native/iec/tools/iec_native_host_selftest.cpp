@@ -13,6 +13,7 @@
 //
 // 构建与运行见 scripts/test_iec_native_host.sh；失败行以 FAIL 开头，退出码非 0。
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -27,12 +28,20 @@
 #include <thread>
 #include <vector>
 
+#include "common/constant.h"
+extern "C" {
+#include "common/rpc.h"
+}
+#include "common/safe_path.h"
+#include "common/sock_operation.h"
 #include "exec/caps.h"
 #include "exec/elf.h"
 #include "exec/exec_ncp_refusal.h"
 #include "exec/exec_route.h"
 #include "exec/exec_session.h"
 #include "exec/exec_so.h"
+#include "exec/py_runner.h"
+#include "logger/logger.h"
 
 namespace {
 
@@ -390,6 +399,151 @@ void TestCwdValidation() {
         std::printf("note: 临时目录未删净: %s\n", base.c_str());
 }
 
+/* ------------------------------------------------------------------ */
+/* 4. 归档路径 / 链接目标判据（纯函数）                                 */
+/* ------------------------------------------------------------------ */
+
+void TestSafeArchivePaths() {
+    std::string out;
+
+    Check(iec::SafeJoinUnder("/dest", "a/b.txt", &out) && out == "/dest/a/b.txt",
+          "普通归档成员拼到目标目录下");
+    Check(!iec::SafeJoinUnder("/dest", "../etc/passwd", &out),
+          "含 .. 的归档成员被拒绝");
+    Check(!iec::SafeJoinUnder("/dest", "a/../../etc/passwd", &out),
+          "中间 .. 越界的归档成员被拒绝");
+    Check(iec::SafeJoinUnder("/dest", "/etc/passwd", &out) &&
+              out == "/dest/etc/passwd",
+          "绝对成员被重定位到目标目录（不越界）");
+
+    // Python stdlib 里真实存在的相对链接必须仍然允许。
+    Check(iec::SafeSymlinkTarget("lib/python3.12", "../python/lib/python3.12"),
+          "链接目标在根内（lib/../python/...）被接受");
+    Check(!iec::SafeSymlinkTarget("a/b", "../../etc/passwd"),
+          "链接目标向上越界被拒绝");
+    Check(!iec::SafeSymlinkTarget("a/b", "/etc/passwd"),
+          "绝对链接目标被拒绝");
+    Check(iec::SafeSymlinkTarget("a/b", "c/d"),
+          "普通相对链接目标被接受");
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. 日志脱敏（纯函数）                                                */
+/* ------------------------------------------------------------------ */
+
+void TestRedaction() {
+    Check(Logger::Redact("OPENAI_API_KEY=sk-123") == "OPENAI_API_KEY=***",
+          "脱敏 *_KEY=value");
+    Check(Logger::Redact("?token=abc&x=1") == "?token=***&x=1",
+          "脱敏 token= 只到下一个分隔符");
+    Check(Logger::Redact("Authorization: Bearer abc") == "Authorization: ***",
+          "脱敏 Authorization 头");
+    Check(Logger::Redact("password=hunter2") == "password=***",
+          "脱敏 password=");
+    Check(Logger::Redact("GITHUB_TOKEN=ghp_x") == "GITHUB_TOKEN=***",
+          "脱敏 *_TOKEN=");
+    Check(Logger::Redact("PATH=/usr/bin:/bin") == "PATH=/usr/bin:/bin",
+          "普通环境变量不被改动");
+    Check(Logger::Redact("Bearer abc def") == "Bearer *** def",
+          "脱敏裸 Bearer 值");
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. 进程身份（/proc starttime）                                       */
+/* ------------------------------------------------------------------ */
+
+void TestProcessIdentity() {
+    const unsigned long long self = iec::ProcStartTime(getpid());
+    Check(self > 0, "能读到 /proc/self/stat 的 starttime");
+    Check(iec::ProcStartTime(getpid()) == self, "同一进程的 starttime 稳定");
+    Check(iec::ProcStartTimeMatches(getpid(), self), "自己的 starttime 匹配");
+    Check(!iec::ProcStartTimeMatches(getpid(), self + 1),
+          "不同的 starttime 不匹配");
+    Check(!iec::ProcStartTimeMatches(-1, self), "非法 pid 不匹配");
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. 启动器只按普通文件读取（TOCTOU）                                  */
+/* ------------------------------------------------------------------ */
+
+void TestLauncherFileType(const std::string& dir) {
+    const std::string fifo = dir + "/launcher-fifo";
+    unlink(fifo.c_str());
+    Check(mkfifo(fifo.c_str(), 0600) == 0, "构造 FIFO 启动器路径");
+    // O_NONBLOCK 让这次 open 立即返回；旧实现会在这里阻塞整个服务线程。
+    Check(!IsSoLauncher(fifo), "FIFO 不会被当成启动器，也不阻塞");
+
+    const std::string target = dir + "/launcher";
+    const std::string link = dir + "/launcher-link";
+    unlink(link.c_str());
+    Check(symlink(target.c_str(), link.c_str()) == 0, "构造启动器符号链接");
+    Check(!IsSoLauncher(link), "O_NOFOLLOW 下符号链接本身不算启动器");
+    Check(IsSoLauncher(target), "符号链接的目标仍是启动器");
+}
+
+/* ------------------------------------------------------------------ */
+/* 8. TTY 归属校验（真实 tty 服务）                                     */
+/* ------------------------------------------------------------------ */
+
+void TestTtyOwnership() {
+    uint32_t pts = 0;
+    const int master = iec_rpc_take_fd(TTY_SOCK_PATH, OP_OPENPTMX, nullptr, 0, &pts);
+    Check(master >= 0, "TTY：归属者可以分配 pts");
+    if (master < 0) return;
+
+    uint8_t req[4];
+    iec_put32(req, pts);
+    const int slave = iec_rpc_take_fd(TTY_SOCK_PATH, OP_OPENPTS, req, sizeof req, nullptr);
+    Check(slave >= 0, "TTY：归属者可以取走 slave");
+
+    struct winsize ws {};
+    ws.ws_row = 40;
+    ws.ws_col = 100;
+    uint8_t body[4 + sizeof ws];
+    iec_put32(body, pts);
+    memcpy(body + 4, &ws, sizeof ws);
+    Check(iec_rpc_call(TTY_SOCK_PATH, OP_SETWINSZ, body, sizeof body, nullptr, 0,
+                       nullptr) == 0,
+          "TTY：归属者可以修改窗口大小");
+
+    const pid_t child = fork();
+    if (child == 0) {
+        // The child inherited the descriptors through fork(); close them so it
+        // is genuinely not a holder of this pty.
+        close(master);
+        if (slave >= 0) close(slave);
+        const int rc = iec_rpc_call(TTY_SOCK_PATH, OP_SETWINSZ, body, sizeof body,
+                                    nullptr, 0, nullptr);
+        _exit(rc == 0 ? 0 : 1);
+    }
+    if (child > 0) {
+        int status = 0;
+        waitpid(child, &status, 0);
+        Check(WIFEXITED(status) && WEXITSTATUS(status) == 1,
+              "TTY：非归属者的属性修改被拒绝");
+    } else {
+        Check(false, "TTY：无法 fork 非归属者用例");
+    }
+
+    close(master);
+    if (slave >= 0) close(slave);
+}
+
+/* ------------------------------------------------------------------ */
+/* 9. py_runner 协议上限（纯函数）                                      */
+/* ------------------------------------------------------------------ */
+
+void TestPyRunnerLimits() {
+    Check(IecPyRequestLimitsOk(1, 0, 0), "py_runner 最小合法请求");
+    Check(!IecPyRequestLimitsOk(0, 0, 0), "py_runner argc=0 被拒绝");
+    Check(!IecPyRequestLimitsOk(257, 0, 0), "py_runner argc 超限被拒绝");
+    Check(!IecPyRequestLimitsOk(1, 257, 0), "py_runner envc 超限被拒绝");
+    Check(!IecPyRequestLimitsOk(1, 0, 16u * 1024u * 1024u + 1),
+          "py_runner 内联 stdin 超限被拒绝");
+    Check(IecPyRequestLimitsOk(1, 0, 0xffffffffu),
+          "py_runner 文件 stdin 形态仍被接受");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -407,6 +561,11 @@ int main(int argc, char** argv) {
     TestSidecarLauncher(dir);
     TestSymlinkLauncher(dir);
     TestNcpRefusal();
+    TestSafeArchivePaths();
+    TestRedaction();
+    TestProcessIdentity();
+    TestLauncherFileType(dir);
+    TestPyRunnerLimits();
 
     // cwd 校验必须经过真实服务：请求解析和拒绝都在 onExecute() 里。
     unlink(sock);
@@ -430,6 +589,10 @@ int main(int argc, char** argv) {
     }
 
     TestCwdValidation();
+
+    // The tty ownership check needs the real service too, and it runs after the
+    // cwd cases so a failure there cannot leave pty descriptors behind.
+    TestTtyOwnership();
 
     // 服务端故意屏蔽 SIGTERM/SIGINT，收尾只能 SIGKILL；这里两边都属于本测试。
     kill(server, SIGKILL);

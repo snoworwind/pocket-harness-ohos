@@ -17,6 +17,10 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 SRC="$IEC_THIRDPARTY/pcre2"
 BUILD="$IEC_ROOT/build/pcre2"
 LIB="$IEC_DEPS_LIB/libpcre2-8.a"
+# 固定到 release tag pcre2-10.49 对应的 commit
+# （api.github.com/repos/PCRE2Project/pcre2/commits/pcre2-10.49）。
+PCRE2_REF="${IEC_PCRE2_REF:-pcre2-10.49}"
+PCRE2_COMMIT="$(iec_sha_or IEC_PCRE2_COMMIT 6f9d7c1373262c541324a16a358785b33ef116cf)"
 
 if [ -f "$LIB" ]; then
 	iec_log "pcre2 already built: $LIB"
@@ -24,7 +28,7 @@ if [ -f "$LIB" ]; then
 fi
 
 [ -f "$SRC/CMakeLists.txt" ] || \
-	iec_clone_if_missing "$SRC" "${IEC_PCRE2_REPO:-}"
+	iec_clone_if_missing "$SRC" "${IEC_PCRE2_REPO:-}" "$PCRE2_REF" "$PCRE2_COMMIT"
 
 case "$NATIVE_ARCH" in
 	arm64-v8a) OHOS_ARCH_NAME="arm64-v8a" ;;

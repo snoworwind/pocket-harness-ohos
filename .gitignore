@@ -51,11 +51,16 @@ native/iec/build/
 native/iec/thirdparty/*.tar.gz
 native/iec/thirdparty/*.tar.xz
 native/iec/platform/ohos/har/build/
+# npm.tar.gz 是 build_node.sh 的构建产物，不再进入版本库；
+# 发布流程需要 `git rm --cached` 移除旧的跟踪项（见 docs/SOURCES.md）。
+native/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz
+native/iec/platform/ohos/har/src/main/resources/rawfile/tools/*.tar.gz
 entry/libs/
 entry/src/main/resources/rawfile/tools/*.tar
 entry/src/main/resources/rawfile/tools/*.tar.gz
 entry/src/main/resources/rawfile/tools/*.tar.xz
 entry/src/main/resources/rawfile/tools/*.zip
+entry/src/main/resources/rawfile/tools/*.sha256
 
 # ---- IDE / 编辑器 ----
 .idea/

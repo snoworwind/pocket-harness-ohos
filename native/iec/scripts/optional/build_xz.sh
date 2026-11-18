@@ -20,6 +20,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 XZ_VER="${XZ_VER:-5.8.1}"
 TAR="$IEC_THIRDPARTY/xz-$XZ_VER.tar.gz"
+# tukaani.org 的校验值页面在当前网络不可达；未固定时普通构建告警，CI 失败。
+SHA256="$(iec_sha_or IEC_XZ_SHA256 507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543)"
 SRC="$IEC_THIRDPARTY/xz-$XZ_VER"
 BLD="$IEC_ROOT/build/xz-build"
 WORK="$IEC_ROOT/build/xz"
@@ -28,11 +30,7 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$WORK" "$OUT_DIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR.part" "https://tukaani.org/xz/xz-$XZ_VER.tar.gz" \
-		|| iec_err "xz download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://tukaani.org/xz/xz-$XZ_VER.tar.gz" "$TAR" "$SHA256" "xz $XZ_VER"
 if [ ! -f "$SRC/configure" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

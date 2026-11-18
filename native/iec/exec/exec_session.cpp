@@ -52,6 +52,7 @@ extern char** environ;
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -78,6 +79,38 @@ constexpr int    kWatchdogHardWaitMs = 10 * 1000;
 int64_t NowMs() {
     const auto now = Clock::now().time_since_epoch();
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+// Field 22 of /proc/<pid>/stat: the task's start time in clock ticks. The
+// comm field may contain spaces and parentheses, so parsing starts after the
+// last ')'. 0 means "could not tell", which callers treat conservatively.
+unsigned long long ReadProcStartTime(pid_t pid) {
+    if (pid <= 0) return 0;
+
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/%d/stat", static_cast<int>(pid));
+    FILE* f = std::fopen(path, "r");
+    if (f == nullptr) return 0;
+
+    char line[2048];
+    char* ok = std::fgets(line, sizeof line, f);
+    std::fclose(f);
+    if (ok == nullptr) return 0;
+
+    char* p = std::strrchr(line, ')');
+    if (p == nullptr) return 0;
+    p++;
+    // Fields 3..22, each separated by whitespace; field 22 is the answer.
+    for (int field = 3; field <= 22; field++) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (field == 22) {
+            char* end = nullptr;
+            const unsigned long long value = std::strtoull(p, &end, 10);
+            return end == p ? 0 : value;
+        }
+        while (*p != '\0' && *p != ' ' && *p != '\t') p++;
+    }
+    return 0;
 }
 
 // A write into a pipe whose reader is gone raises SIGPIPE, whose default action
@@ -116,6 +149,9 @@ struct Session {
     int         id = -1;
     int         pid = -1;
     std::string job;
+    // /proc/<pid>/stat starttime captured when the session was created; before
+    // a delayed SIGKILL it is compared again so a recycled pid is not killed.
+    unsigned long long start_time = 0;
     size_t      cap = kDefaultOutputCap;
 
     int in_w = -1;       // parent end of the child's stdin
@@ -484,7 +520,27 @@ std::string Strerror(int err) {
     return std::string(strerror(err));
 }
 
+// Kills only a pid that still names the task this session started. Both the
+// identity check and the kills happen here, so a caller cannot forget one.
+void KillSameProcess(pid_t pid, unsigned long long start_time) {
+    if (!ProcStartTimeMatches(pid, start_time)) {
+        Logger::GetInstance()->LogW(
+            "[exec] pid %d is no longer the session's process; not killing it",
+            (int)pid);
+        return;
+    }
+    if (getpgid(pid) == pid) kill(-pid, SIGKILL);
+    kill(pid, SIGKILL);
+}
+
 }  // namespace
+
+unsigned long long ProcStartTime(pid_t pid) { return ReadProcStartTime(pid); }
+
+bool ProcStartTimeMatches(pid_t pid, unsigned long long expected) {
+    if (pid <= 0 || expected == 0) return false;
+    return ReadProcStartTime(pid) == expected;
+}
 
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
@@ -683,6 +739,7 @@ int Start(const ExecOptions& options, ExecState* state, std::string* error) {
     auto session = std::make_shared<Session>();
     session->pid = pid;
     session->job = job;
+    session->start_time = ReadProcStartTime(pid);
     session->in_w = in_pipe[1];
     session->pty_number = pty_number;
     session->err_eof = options.pty;
@@ -844,10 +901,12 @@ bool Terminate(int id, int grace_ms) {
 
     int pid = -1;
     std::string job;
+    unsigned long long start_time = 0;
     {
         std::lock_guard<std::mutex> lock(session->mu);
         pid = session->pid;
         job = session->job;
+        start_time = session->start_time;
     }
 
     // The service is the authority: it knows every process of the job, including
@@ -858,16 +917,25 @@ bool Terminate(int id, int grace_ms) {
     if (!job.empty() && RpcTerminateJob(job, grace_ms)) return true;
 
     if (pid <= 0) return false;
+    // The service already refused the job request; this is the direct fallback.
+    // A pid stored earlier may have been recycled by now, so the first signal
+    // is identity-checked too.
+    if (!ProcStartTimeMatches(pid, start_time)) {
+        Logger::GetInstance()->LogW(
+            "[exec] terminate: pid %d is not the session's process (starttime lost)",
+            pid);
+        return false;
+    }
     if (getpgid(pid) == pid) kill(-pid, SIGTERM);
     kill(pid, SIGTERM);
     if (grace_ms <= 0) {
-        if (getpgid(pid) == pid) kill(-pid, SIGKILL);
-        kill(pid, SIGKILL);
+        KillSameProcess(pid, start_time);
     } else {
-        std::thread([pid, grace_ms] {
+        std::thread([pid, grace_ms, start_time] {
             usleep(static_cast<useconds_t>(grace_ms) * 1000);
-            if (getpgid(pid) == pid) kill(-pid, SIGKILL);
-            kill(pid, SIGKILL);
+            // Delayed path: the pid may name a stranger by now. Re-read
+            // /proc/<pid>/stat and drop the kill on any mismatch.
+            KillSameProcess(pid, start_time);
         }).detach();
     }
     return true;

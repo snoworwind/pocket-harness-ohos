@@ -14,6 +14,12 @@ source "$ENV_FILE"
 source "$IEC_ROOT/scripts/lib/common.sh"
 
 VER="$IEC_OPENSSL_VER"
+# 官方 release tag 对应的 commit（api.github.com/repos/openssl/openssl/git/ref/tags/openssl-3.0.22）。
+# 默认按 commit 取归档，避免 tag 被移动；SHA-256 固定为该 commit 归档的摘要
+# （由官方 codeload 地址下载后计算）。
+COMMIT="$(iec_sha_or IEC_OPENSSL_COMMIT a279090b9cd6b682a5a178410765a63e619fa2d9)"
+URL="${IEC_OPENSSL_URL:-https://codeload.github.com/openssl/openssl/tar.gz/$COMMIT}"
+SHA256="$(iec_sha_or IEC_OPENSSL_SHA256 c0c35e149509a7aa9ea5671227da699d0d1636f088e00cb2ff31aea6feda391f)"
 TAR="$IEC_THIRDPARTY/openssl-$VER.tar.gz"
 SRC="$IEC_THIRDPARTY/openssl-$VER"
 OUT="$IEC_OPENSSL_DIR"
@@ -39,12 +45,7 @@ fi
 command -v perl >/dev/null 2>&1 || iec_err "perl is required by OpenSSL's Configure"
 
 if [ ! -f "$SRC/Configure" ]; then
-	if [ ! -s "$TAR" ]; then
-		iec_log "download $IEC_OPENSSL_URL"
-		curl -L --retry 3 -m 600 -o "$TAR.part" "$IEC_OPENSSL_URL" \
-			|| iec_err "openssl download failed"
-		mv "$TAR.part" "$TAR"
-	fi
+	iec_fetch_verified "$URL" "$TAR" "$SHA256" "openssl $VER"
 	tmp="$IEC_ROOT/build/openssl-x"
 	rm -rf "$tmp"
 	mkdir -p "$tmp"

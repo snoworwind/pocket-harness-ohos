@@ -113,8 +113,11 @@ hdc shell hilog -x | grep -E "IEC_LOGGER|THREAD_BLOCK|APP_FREEZE"
 改完代码至少跑：
 
 ```bash
-node scripts/test.cjs                 # 宿主测试：会话协议/SSE/路径沙箱/附件钩子/门禁
+node scripts/test.cjs                 # 宿主测试：会话协议/SSE/路径沙箱/附件钩子/桥脚本顺序/门禁
+node scripts/test-fetch-polyfill.cjs  # fetch 补丁语义（16 项）
+node tests/fetch-redirect.cjs         # 重定向安全：跨源剥离认证头、HTTPS→HTTP 降级（12 项）
 npm run secrets:scan                  # 全仓库敏感信息
+node .githooks/secret-scan.mjs --history  # 发版前：历史提交与提交信息
 node scripts/runtime-manifest.mjs check
 ```
 
@@ -183,6 +186,7 @@ gh release create vX.Y.Z.Z --title "Pocket Harness X.Y.Z.Z" \
 - Python `_uuid`、`_tkinter` 未编入；`uuid` 有纯 Python 回退，无 Tk。
 - `gh` 少数非 git 的直接 `exec.Command` 路径（`gh cs ssh`、内置 pager、扩展安装等）尚未接入执行桥；git 子命令已验证可用。
 - 应用市场分发暂不计划；release 签名 HAP 不能 `hdc install`。
+- 后台保活仍用 LOCATION 连续任务（隐私取舍有意保留，见 `docs/SECURITY.md`）；`auto` 预设默认不注册，需 `harmony-native.json` 显式开启 autoReview。
 
 ---
 
@@ -192,5 +196,6 @@ gh release create vX.Y.Z.Z --title "Pocket Harness X.Y.Z.Z" \
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：运行架构、exec/tty 模型、平台约束。
 - [docs/VALIDATION.md](docs/VALIDATION.md)：逐轮修复与验证记录（含未验收项）。
 - [docs/SOURCES.md](docs/SOURCES.md)：二进制来源规则与组件清单。
+- [docs/SECURITY.md](docs/SECURITY.md)：安全边界、同 UID/插件信任模型与接受风险。
 - [docs/X86_64-BUILD.md](docs/X86_64-BUILD.md)：模拟器运行时自行构建。
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：许可证与第三方声明。

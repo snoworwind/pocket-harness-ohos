@@ -18,6 +18,10 @@ TAR="$IEC_THIRDPARTY/zlib-$VER.tar.gz"
 SRC="$IEC_THIRDPARTY/zlib-$VER"
 BUILD="$IEC_ROOT/build/zlib"
 LIB="$IEC_DEPS_LIB/libz.a"
+# zlib.net 只为“当前版本”公布 SHA-256，1.3.1 的历史校验值未在官方页面保留。
+# 这里固定脚本实际使用的官方地址（GitHub release asset）下载所得的 SHA-256，
+# 作为可复现基线；值变更时必须同步复核上游发布物。
+SHA256="$(iec_sha_or IEC_ZLIB_SHA256 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23)"
 
 if [ -f "$LIB" ]; then
 	iec_log "zlib already built: $LIB"
@@ -25,12 +29,7 @@ if [ -f "$LIB" ]; then
 fi
 
 if [ ! -f "$SRC/configure" ]; then
-	if [ ! -s "$TAR" ]; then
-		iec_log "download $IEC_ZLIB_URL"
-		curl -L --retry 3 -m 300 -o "$TAR.part" "$IEC_ZLIB_URL" \
-			|| iec_err "zlib download failed"
-		mv "$TAR.part" "$TAR"
-	fi
+	iec_fetch_verified "$IEC_ZLIB_URL" "$TAR" "$SHA256" "zlib $VER"
 	mkdir -p "$IEC_THIRDPARTY"
 	tar xzf "$TAR" -C "$IEC_THIRDPARTY"
 fi

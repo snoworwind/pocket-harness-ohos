@@ -186,7 +186,17 @@ export struct TerminalView {
     const cwd = this.workspaceCwd;
     if (cwd === '' || cwd === this.appliedCwd || !this.session) { return; }
     this.appliedCwd = cwd;
-    this.session.write("cd '" + cwd.replace(/'/g, "'\\''") + "'\n");
+    this.writeCd(cwd);
+  }
+
+  // cwd 里的换行/回车/NUL 会把后续内容拼成下一条 shell 命令，直接不发送 cd；
+  // 单引号仍按原逻辑转义。exec 的 cwd 不经过 shell 解析，终端仍落在该目录。
+  private writeCd(cwd: string): void {
+    if (cwd === '' || /[\n\r\u0000]/.test(cwd)) {
+      hilog.warn(0, 'DSH_TERM', 'skip cd: cwd contains control characters');
+      return;
+    }
+    this.session?.write("cd '" + cwd.replace(/'/g, "'\\''") + "'\n");
   }
 
   private async start(): Promise<void> {
@@ -225,7 +235,7 @@ export struct TerminalView {
           this.dirty = true;
         },
         (code: number) => { this.status = 'bash 已退出（' + code.toString() + '）'; });
-      this.session.write("cd '" + workspace.replace(/'/g, "'\\''") + "'\n");
+      this.writeCd(workspace);
       this.status = '';
       this.ready = true;
       hilog.info(0, 'DSH_TERM', 'bash started');

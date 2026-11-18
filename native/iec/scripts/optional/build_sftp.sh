@@ -30,6 +30,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 VER="9.9p2"
 TAR="$IEC_THIRDPARTY/openssh-$VER.tar.gz"
+# OpenBSD 目录提供 .asc 但没有 SHA-256 文件；未固定时 CI 失败，普通构建告警。
+SHA256="$(iec_sha_or IEC_OPENSSH_SHA256 91aadb603e08cc285eddf965e1199d02585fa94d994d6cae5b41e1721e215673)"
 SRC="$IEC_THIRDPARTY/openssh-$VER"
 WORK="$IEC_ROOT/build/sftp"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -37,11 +39,8 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$WORK" "$OUT_DIR"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR" \
-		"https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$VER.tar.gz" \
-		|| iec_err "openssh download failed"
-fi
+iec_fetch_verified "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$VER.tar.gz" \
+	"$TAR" "$SHA256" "openssh $VER"
 [ -d "$SRC" ] || tar xzf "$TAR" -C "$IEC_THIRDPARTY"
 
 [ -f "$IEC_OPENSSL_DIR/lib/libssl.a" ] || iec_err "openssl is missing (run build_openssl.sh first)"

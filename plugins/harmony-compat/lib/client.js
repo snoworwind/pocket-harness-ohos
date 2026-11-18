@@ -8,7 +8,10 @@ window.__ModuleLoader__.load({
 		(function installHarmonyUiCompat() {
 			const bridge = function (op, payload) {
 				try {
-					console.log('DSH_TERM:' + JSON.stringify(Object.assign({ op: op }, payload)));
+					if (window.top !== window) return;
+					const nonce = window.__dshNonce;
+					if (typeof nonce !== 'string' || nonce === '') return;
+					console.log('DSH_TERM:' + nonce + ':' + JSON.stringify(Object.assign({ op: op }, payload)));
 				} catch (error) { /* 控制台不可用 */ }
 			};
 

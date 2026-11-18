@@ -574,19 +574,29 @@ def t06_missing_socket(ctx):
 
 @test
 def t07_argc_zero(ctx):
-    """协议层 argc=0：runner 应直接拒绝并关连接，不崩溃，之后仍能服务。"""
+    """协议层 argc=0：runner 回可区分的 127 拒绝，不崩溃，之后仍能服务。"""
     s = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
     s.settimeout(5)
     try:
         s.connect(ctx.sock)
         s.sendall(struct.pack("<III", 0, 0, 0))
         try:
-            data = s.recv(1)
+            data = s.recv(4096)
         except ConnectionResetError:
             data = b""
     finally:
         s.close()
-    check(data == b"", "argc=0 时 runner 不应回正常响应，却收到 %r" % data)
+    # 新协议错误形状：[127][out_len=0][err_len][err...]，与普通响应同形，
+    # 客户端能拿到明确原因而不是只看到连接被关。
+    check(len(data) >= 12, "argc=0 时 runner 应回拒绝响应，实际 %r" % data)
+    if len(data) >= 12:
+        code, out_len = struct.unpack("<II", data[:8])
+        err_len = struct.unpack("<I", data[8:12])[0]
+        err = data[12:12 + err_len]
+        check(code == 127 and out_len == 0,
+              "argc=0 拒绝码/out_len 不对：code=%r out_len=%r" % (code, out_len))
+        check(err.startswith(b"python3:"),
+              "argc=0 拒绝缺少可读原因：%r" % err)
     check(ctx.proc.poll() is None, "argc=0 不应影响 runner 进程")
 
     # 客户端侧同样走一遍：协议错误只能以 127 + stderr 提示收场，不能被 SIGPIPE 打死。
@@ -901,6 +911,17 @@ def t18_fd_stable_under_200_requests(ctx):
           "runner fd 数从 %d 涨到 %d（>2）" % (runner_fd0, runner_fd1))
     check(abs(harness_fd1 - harness_fd0) <= 2,
           "harness fd 数从 %d 涨到 %d（>2）" % (harness_fd0, harness_fd1))
+
+
+@test
+def t19_output_limit(ctx):
+    """单客户端输出超过 64 MiB：runner 终止解释器并回可区分的 127 拒绝。"""
+    # 65 MiB，刚好越过 64 MiB 上限；script 走内联 stdin，不产生额外文件。
+    script = "import sys\nsys.stdout.write('x' * (%d))" % (65 * 1024 * 1024)
+    rc, out, err = run_client(ctx, pycode(script), timeout=60)
+    check(rc == 127, "输出超限时客户端退出码应为 127，实际 %r" % rc)
+    check(out == b"", "输出超限时应丢弃部分输出，实际收到 %d 字节" % len(out))
+    check(b"output limit" in err, "输出超限时 stderr 缺少明确原因：%r" % err[:200])
 
 
 # ── 入口 ─────────────────────────────────────────────────────────────────────

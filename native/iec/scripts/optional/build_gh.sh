@@ -20,6 +20,8 @@ SRC="${GH_SRC:-$IEC_ROOT/thirdparty/gh}"
 # gh 的 go.mod 会随上游升到新 Go；OpenHarmony 工具链基于 go1.26.5，所以固定到
 # 最后一个要求 go <= 1.26 的 tag。换 tag 前先确认 `git show <tag>:go.mod`。
 GH_REF="${GH_REF:-v2.100.0}"
+# tag v2.100.0 的 commit（api.github.com/repos/cli/cli/commits/v2.100.0）。
+GH_COMMIT="$(iec_sha_or IEC_GH_COMMIT 45437bc7eeeb3359bbfddd1742f79de7652fd3e2)"
 # `gh --version` reads internal/build.Version, which defaults to "DEV" and cannot be
 # recovered from build info in a c-shared build. Stamp the tag we actually built.
 GH_VERSION="${GH_VERSION:-$GH_REF}"
@@ -40,7 +42,7 @@ GO_OS="${GO_OS:-openharmony}"
 command -v "$GO_TOOLCHAIN" >/dev/null 2>&1 || iec_err "Go toolchain not found: $GO_TOOLCHAIN"
 "$GO_TOOLCHAIN" tool dist list 2>/dev/null | grep -qx "$GO_OS/arm64" \
 	|| iec_err "Go toolchain $("$GO_TOOLCHAIN" version) has no $GO_OS/arm64 target. Run scripts/optional/fetch_go_ohos.sh and set GO_TOOLCHAIN=<repo>/build/go-ohos/bin/go"
-iec_clone_if_missing "$SRC" "https://github.com/cli/cli.git" "$GH_REF"
+iec_clone_if_missing "$SRC" "https://github.com/cli/cli.git" "$GH_REF" "$GH_COMMIT"
 
 # ── HarmonyOS: start IEC command objects without execve ────────────────────
 # The sandbox denies execve() of ELF files in every path the app can see, and

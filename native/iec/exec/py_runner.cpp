@@ -29,10 +29,12 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -167,9 +169,26 @@ bool PatchPythonExit() {
 
 bool g_started = false;
 
+// A client that connects and then stops sending must not pin a handler for
+// ever. This is an idle timeout, reset after every successful read: a slow but
+// progressing 16 MiB upload is still accepted, while a stalled one is dropped.
+constexpr int kReadIdleTimeoutMs = 30 * 1000;
+constexpr int kWriteTimeoutSec = 60;
+
+bool WaitReadable(int fd, int timeout_ms) {
+    struct pollfd pfd {fd, POLLIN, 0};
+    for (;;) {
+        const int rc = poll(&pfd, 1, timeout_ms);
+        if (rc > 0) return true;
+        if (rc == 0) return false;
+        if (errno != EINTR) return false;
+    }
+}
+
 bool ReadFull(int fd, void* buf, size_t len) {
     char* p = static_cast<char*>(buf);
     while (len > 0) {
+        if (!WaitReadable(fd, kReadIdleTimeoutMs)) return false;
         const ssize_t n = read(fd, p, len);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
@@ -178,6 +197,8 @@ bool ReadFull(int fd, void* buf, size_t len) {
     }
     return true;
 }
+
+
 
 bool WriteFull(int fd, const void* buf, size_t len) {
     const char* p = static_cast<const char*>(buf);
@@ -189,6 +210,20 @@ bool WriteFull(int fd, const void* buf, size_t len) {
         len -= static_cast<size_t>(n);
     }
     return true;
+}
+
+// The response shape every refusal uses: [127][0][err_len][err]. The client
+// already understands this as "the runner could not carry out the request".
+void SendRefusal(int fd, const char* msg) {
+    static const uint32_t ucode = 127;
+    static const uint32_t zero = 0;
+    const uint32_t err_len = static_cast<uint32_t>(std::strlen(msg));
+    char head[12];
+    std::memcpy(head, &ucode, 4);
+    std::memcpy(head + 4, &zero, 4);
+    std::memcpy(head + 8, &err_len, 4);
+    WriteFull(fd, head, sizeof head);
+    WriteFull(fd, msg, err_len);
 }
 
 uint32_t Get32(const char* p) {
@@ -204,7 +239,7 @@ bool ReadString(int fd, std::string* out) {
         if (!ReadFull(fd, &c, 1)) return false;
         if (c == '\0') return true;
         out->push_back(c);
-        if (out->size() > 64 * 1024) return false;
+        if (out->size() > IEC_PY_MAX_STRING) return false;
     }
 }
 
@@ -222,11 +257,12 @@ void HandleClient(int fd) {
     const uint32_t envc = Get32(head + 4);
     const uint32_t stdin_len = Get32(head + 8);
     // 0xffffffff 表示 stdin 走文件路径，runner 边读文件边喂管道：客户端不必
-    // 把大文件读进内存，也就不存在 16MB 截断。内联缓冲保留 64MB 上限，超过
-    // 直接拒绝而不是悄悄截断（客户端也会先在本地报错）。
+    // 把大文件读进内存，也就不存在截断问题。内联缓冲改为 16MB 上限；文件
+    // 形态仍流式读取，但下面会检查文件大小上限。超限直接回一条可区分的
+    // 错误，而不是悄悄关连接。
     const bool stdin_by_path = stdin_len == 0xffffffffu;
-    if (argc == 0 || argc > 256 || envc > 4096 ||
-        (!stdin_by_path && stdin_len > 64u * 1024 * 1024)) {
+    if (!IecPyRequestLimitsOk(argc, envc, stdin_len)) {
+        SendRefusal(fd, "python3: request exceeds the runner limits\n");
         close(fd);
         return;
     }
@@ -236,39 +272,57 @@ void HandleClient(int fd) {
     std::string cwd;
     for (uint32_t i = 0; i < argc; i++) {
         std::string s;
-        if (!ReadString(fd, &s)) { close(fd); return; }
+        if (!ReadString(fd, &s)) {
+            SendRefusal(fd, "python3: malformed request\n");
+            close(fd);
+            return;
+        }
         args.push_back(std::move(s));
     }
     for (uint32_t i = 0; i < envc; i++) {
         std::string s;
-        if (!ReadString(fd, &s)) { close(fd); return; }
+        if (!ReadString(fd, &s)) {
+            SendRefusal(fd, "python3: malformed request\n");
+            close(fd);
+            return;
+        }
         envs.push_back(std::move(s));
     }
-    if (!ReadString(fd, &cwd)) { close(fd); return; }
+    if (!ReadString(fd, &cwd)) {
+        SendRefusal(fd, "python3: malformed request\n");
+        close(fd);
+        return;
+    }
     std::string stdin_data;
     std::string stdin_path;
     int in_file = -1;
     if (stdin_by_path) {
-        if (!ReadString(fd, &stdin_path) || stdin_path.empty()) { close(fd); return; }
+        if (!ReadString(fd, &stdin_path) || stdin_path.empty()) {
+            SendRefusal(fd, "python3: malformed stdin path\n");
+            close(fd);
+            return;
+        }
         in_file = open(stdin_path.c_str(), O_RDONLY | O_CLOEXEC);
         if (in_file < 0) {
-            static const char kOpenFailed[] = "python3: cannot open the stdin file\n";
-            char resp[8];
-            const uint32_t ucode = 127;
-            const uint32_t zero = 0;
-            std::memcpy(resp, &ucode, 4);
-            std::memcpy(resp + 4, &zero, 4);
-            WriteFull(fd, resp, sizeof resp);
-            const uint32_t err_len = static_cast<uint32_t>(sizeof kOpenFailed - 1);
-            std::memcpy(resp, &err_len, 4);
-            WriteFull(fd, resp, 4);
-            WriteFull(fd, kOpenFailed, sizeof kOpenFailed - 1);
+            SendRefusal(fd, "python3: cannot open the stdin file\n");
+            close(fd);
+            return;
+        }
+        struct stat st {};
+        if (fstat(in_file, &st) != 0 || !S_ISREG(st.st_mode) ||
+            st.st_size < 0 || static_cast<uint64_t>(st.st_size) > IEC_PY_MAX_STDIN_FILE) {
+            SendRefusal(fd, "python3: stdin file is not a regular file or is too large\n");
+            close(in_file);
             close(fd);
             return;
         }
     } else if (stdin_len > 0) {
         stdin_data.resize(stdin_len);
-        if (!ReadFull(fd, stdin_data.data(), stdin_len)) { close(fd); return; }
+        if (!ReadFull(fd, stdin_data.data(), stdin_len)) {
+            SendRefusal(fd, "python3: malformed stdin\n");
+            close(fd);
+            return;
+        }
     }
 
     int in_pipe[2] = {-1, -1};
@@ -392,6 +446,7 @@ void HandleClient(int fd) {
     // 不在这里收掉就会留下一个没人等、也没人能停的解释器一直跑。
     int client_watch = fd;
     bool client_gone = false;
+    bool output_limit_hit = false;
     auto kill_descendant = [&]() {
         if (pid <= 0) return;
         // 组在的时候先收全组（解释器自己起的子进程也在组里），再补一发单 pid：
@@ -472,7 +527,20 @@ void HandleClient(int fd) {
             if (pfd[i].fd < 0 || (pfd[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
             const ssize_t n = read(pfd[i].fd, buf, sizeof buf);
             if (n > 0) {
-                (i == 0 ? out : err).append(buf, static_cast<size_t>(n));
+                // The cap is on everything this one client may collect, stdout
+                // and stderr together. Once it is reached the interpreter is
+                // stopped and the reply is a clear refusal instead of an
+                // indefinitely growing buffer.
+                const size_t already = out.size() + err.size();
+                const size_t room = already < IEC_PY_MAX_CLIENT_OUTPUT
+                                        ? IEC_PY_MAX_CLIENT_OUTPUT - already : 0;
+                const size_t take = std::min(room, static_cast<size_t>(n));
+                if (take > 0) (i == 0 ? out : err).append(buf, take);
+                if (take < static_cast<size_t>(n)) {
+                    output_limit_hit = true;
+                    kill_descendant();
+                    break;
+                }
             } else if (n < 0 && errno == EINTR) {
                 continue;
             } else {
@@ -485,6 +553,10 @@ void HandleClient(int fd) {
                 open_fds--;
             }
         }
+        // The descendant is gone (kill_descendant above) and the buffer is at
+        // its cap; waiting for a grandchild that still holds the pipe open
+        // would only delay the refusal.
+        if (output_limit_hit) break;
     }
     if (in_pipe[1] >= 0) close(in_pipe[1]);
     if (in_file >= 0) close(in_file);
@@ -509,6 +581,15 @@ void HandleClient(int fd) {
         err += "python3: waitpid: ";
         err += std::strerror(errno);
         err += "\n";
+    }
+    if (output_limit_hit) {
+        // A refusal, not a successful run with truncated output: discard the
+        // partial bytes and say exactly what happened, with a nonzero code.
+        out.clear();
+        err = "python3: output limit (" +
+              std::to_string(IEC_PY_MAX_CLIENT_OUTPUT) +
+              " bytes) exceeded; interpreter stopped\n";
+        code = 127;
     }
 
     // 客户端已经没了就不写：反正只会拿到 EPIPE，而这段响应也没有人再看。
@@ -582,22 +663,43 @@ bool StartPyRunner() {
     // 自己 waitpid 回收 handler 进程，所以无条件恢复默认。
     signal(SIGCHLD, SIG_DFL);
 
+    // Handlers are children of the runner, so this count is exactly the number
+    // of requests in flight. It is decremented by the WNOHANG reaping below.
+    unsigned active_clients = 0;
     for (;;) {
         // 父进程（应用）死了就退出，避免留下孤儿 runner。
         if (getppid() == 1) _exit(0);
+        while (waitpid(-1, nullptr, WNOHANG) > 0) {
+            if (active_clients > 0) active_clients--;
+        }
         struct pollfd pfd { listen_fd, POLLIN, 0 };
         const int rc = poll(&pfd, 1, 5000);
         if (rc < 0) continue;
         if (rc == 0) continue;
         const int fd = accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
         if (fd < 0) continue;
+        // A client that stops reading a large reply must not keep a handler
+        // blocked in write() for ever.
+        struct timeval snd_timeout {kWriteTimeoutSec, 0};
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd_timeout, sizeof snd_timeout);
+        if (active_clients >= IEC_PY_MAX_CLIENTS) {
+            SendRefusal(fd, "python3: too many concurrent requests\n");
+            close(fd);
+            continue;
+        }
         const pid_t handler = fork();
         if (handler == 0) {
             close(listen_fd);
             HandleClient(fd);
             _exit(0);
         }
-        close(fd);
-        while (waitpid(-1, nullptr, WNOHANG) > 0) {}
+        if (handler > 0) {
+            close(fd);
+            active_clients++;
+        } else {
+            // fork() failed; the client would otherwise see a bare close.
+            SendRefusal(fd, "python3: cannot fork a request handler\n");
+            close(fd);
+        }
     }
 }

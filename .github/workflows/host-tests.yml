@@ -1,0 +1,39 @@
+name: host-tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      # 来源：https://api.github.com/repos/actions/checkout/git/ref/tags/v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # 来源：https://api.github.com/repos/actions/setup-node/git/ref/tags/v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Install test dependency (TypeScript)
+        run: npm install --no-audit --no-fund
+      - name: Core host tests
+        run: node scripts/test.cjs
+      - name: fetch-polyfill tests
+        run: node scripts/test-fetch-polyfill.cjs
+      - name: fetch redirect security tests
+        run: node tests/fetch-redirect.cjs
+      - name: secret-scan unit tests
+        run: node --test tests/secret-scan.cjs
+
+  native-host:
+    # 原生宿主测试需要 cmake/make/OHOS 工具链；clean runner 缺少时只记录，不阻塞
+    # 其余门禁（在构建机上仍应完整执行）。
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Native IEC host test (best effort)
+        run: bash native/iec/scripts/test_iec_native_host.sh

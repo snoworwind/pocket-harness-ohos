@@ -51,6 +51,10 @@ PY_VER="${PY_VER:-3.12.14}"
 PY_SERIES="${PY_VER%.*}"
 RL_VER="${RL_VER:-8.2}"
 PY_URL="https://www.python.org/ftp/python/$PY_VER/Python-$PY_VER.tar.xz"
+# 官方 SHA-256：https://www.python.org/downloads/release/python-31214/
+PY_SHA256="$(iec_sha_or IEC_PYTHON_SHA256 5c8462af5790baf43a321a1559dbe0db06d1be4300fb85fb53c40060668e548a)"
+# GNU ftp 只提供 .sig；这里固定脚本实际使用的官方 tarball 的 SHA-256。
+RL_SHA256="$(iec_sha_or IEC_READLINE_SHA256 3feb7171f16a84ee82ca18a36d7b9be109a52c04f492a053331d7d1095007c35)"
 RL_URLS=(
 	"https://ftp.gnu.org/gnu/readline/readline-$RL_VER.tar.gz"
 	"https://mirrors.tuna.tsinghua.edu.cn/gnu/readline/readline-$RL_VER.tar.gz"
@@ -91,7 +95,9 @@ if [ -z "$NC_SRC" ]; then
 	if [ -f "$PARENT/thirdparty/ncurses/configure" ]; then
 		NC_SRC="$PARENT/thirdparty/ncurses"
 	else
-		iec_clone_if_missing "$IEC_THIRDPARTY/ncurses" "https://github.com/mirror/ncurses.git"
+		# 固定到审查基线时的 mirror/ncurses master commit。
+		iec_clone_if_missing "$IEC_THIRDPARTY/ncurses" "https://github.com/mirror/ncurses.git" "" \
+			"$(iec_sha_or IEC_NCURSES_COMMIT 87c2c84cbd2332d6d94b12a1dcaf12ad1a51a938)"
 		NC_SRC="$IEC_THIRDPARTY/ncurses"
 	fi
 fi
@@ -157,7 +163,9 @@ ensure_libffi() {
 	local src="${IEC_LIBFFI_SRC:-$PARENT/thirdparty/libffi}"
 	[ -f "$src/configure" ] || src="$IEC_THIRDPARTY/libffi"
 	if [ ! -f "$src/configure" ]; then
-		iec_clone_if_missing "$IEC_THIRDPARTY/libffi" "https://github.com/libffi/libffi.git"
+		# 固定到审查基线时的 libffi master commit。
+		iec_clone_if_missing "$IEC_THIRDPARTY/libffi" "https://github.com/libffi/libffi.git" "" \
+			"$(iec_sha_or IEC_LIBFFI_COMMIT de7afe7aa9e8ab7ac36429428a7222caae1e7988)"
 		src="$IEC_THIRDPARTY/libffi"
 		( cd "$src" && ./autogen.sh >/dev/null 2>&1 ) \
 			|| iec_err "libffi autogen.sh failed"
@@ -218,7 +226,11 @@ fi
 
 if [ ! -f "$PY_DEPS/lib/libreadline.a" ]; then
 	iec_log "build readline $RL_VER -> $PY_DEPS"
+	iec_unpinned "readline $RL_VER" "docs/SOURCES.md"
 	fetch "$BUILD/readline-$RL_VER.tar.gz" "${RL_URLS[@]}"
+	if [ "$RL_SHA256" != "UNPINNED" ]; then
+		iec_verify_sha256 "$BUILD/readline-$RL_VER.tar.gz" "$RL_SHA256" "readline $RL_VER"
+	fi
 	rm -rf "$RL_SRC" "$RL_BUILD"
 	mkdir -p "$RL_SRC" "$RL_BUILD"
 	tar -xzf "$BUILD/readline-$RL_VER.tar.gz" -C "$RL_SRC" --strip-components=1
@@ -240,7 +252,7 @@ fi
 # ── 3. CPython source, configure, build ───────────────────────────────────
 if [ ! -f "$PY_SRC/configure" ]; then
 	iec_log "extract CPython $PY_VER"
-	fetch "$PY_TARBALL" "$PY_URL"
+	iec_fetch_verified "$PY_URL" "$PY_TARBALL" "$PY_SHA256" "CPython $PY_VER"
 	mkdir -p "$SOURCE_CACHE"
 	tar -xJf "$PY_TARBALL" -C "$SOURCE_CACHE"
 fi

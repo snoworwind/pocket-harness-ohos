@@ -18,6 +18,7 @@
 #include <mutex>
 #include <string>
 
+#include "common/safe_path.h"
 #include "logger/logger.h"
 
 namespace {
@@ -30,7 +31,12 @@ constexpr int kArchiveEof = 1;
 constexpr int kArchiveWarn = -20;
 constexpr int kExtractPerm = 0x0002;
 constexpr int kExtractTime = 0x0004;
+// Values from libarchive's archive.h. Older releases ignore option bits they do
+// not know (archive_write_disk_set_options just stores the mask), so enabling
+// these does not turn into a load failure on an older device library.
+constexpr int kExtractSecureSymlinks = 0x0100;
 constexpr int kExtractSecureNoDotDot = 0x0200;
+constexpr int kExtractSecureNoAbsolutePaths = 0x0400;
 
 struct ArchiveApi {
     void* handle = nullptr;
@@ -55,6 +61,7 @@ struct ArchiveApi {
     void (*entry_set_pathname)(ArchiveEntry*, const char*) = nullptr;
     const char* (*entry_hardlink)(ArchiveEntry*) = nullptr;
     void (*entry_set_hardlink)(ArchiveEntry*, const char*) = nullptr;
+    const char* (*entry_symlink)(ArchiveEntry*) = nullptr;
     int64_t (*entry_size)(ArchiveEntry*) = nullptr;
 };
 
@@ -119,6 +126,7 @@ const ArchiveApi& GetArchiveApi()
                       &api.entry_hardlink);
         ok &= LoadSym(api.handle, "archive_entry_set_hardlink",
                       &api.entry_set_hardlink);
+        ok &= LoadSym(api.handle, "archive_entry_symlink", &api.entry_symlink);
         ok &= LoadSym(api.handle, "archive_entry_size", &api.entry_size);
 
         if (!ok) {
@@ -130,25 +138,6 @@ const ArchiveApi& GetArchiveApi()
     });
 
     return api;
-}
-
-// A member name may not escape the destination directory.
-bool SafeJoin(const std::string& dest, const char* name, std::string* out) {
-    if (!name || !*name) return false;
-
-    std::string rel(name);
-    while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
-    if (rel.empty()) return false;
-
-    for (size_t pos = 0; (pos = rel.find("..", pos)) != std::string::npos;) {
-        const bool left = pos == 0 || rel[pos - 1] == '/';
-        const bool right = pos + 2 == rel.size() || rel[pos + 2] == '/';
-        if (left && right) return false;
-        pos += 2;
-    }
-
-    *out = dest + "/" + rel;
-    return true;
 }
 
 // Extracts an archive through libarchive's write-disk path.
@@ -168,7 +157,8 @@ bool ExtractTar(const unsigned char* data, size_t size,
     api.read_support_filter_all(a);
     api.read_support_format_all(a);
     api.write_disk_set_options(
-        ext, kExtractTime | kExtractPerm | kExtractSecureNoDotDot);
+        ext, kExtractTime | kExtractPerm | kExtractSecureSymlinks |
+                 kExtractSecureNoDotDot | kExtractSecureNoAbsolutePaths);
 
     if (api.read_open_memory(a, data, size) != kArchiveOk) {
         const char* err = api.error_string(a);
@@ -193,8 +183,11 @@ bool ExtractTar(const unsigned char* data, size_t size,
         }
 
         const char* name = api.entry_pathname(entry);
+        // set_pathname() frees the string `name` points at, so the original
+        // member name has to be copied before the rewrite.
+        const std::string member = name ? name : "";
         std::string path;
-        if (!SafeJoin(dest, name, &path)) {
+        if (!iec::SafeJoinUnder(dest, name, &path)) {
             Logger::GetInstance()->LogE("[iec] archive: unsafe path %s",
                                         name ? name : "(null)");
             ok = false;
@@ -202,11 +195,30 @@ bool ExtractTar(const unsigned char* data, size_t size,
         }
         api.entry_set_pathname(entry, path.c_str());
 
+        // A hard link to an unsafe target is refused outright, not kept with
+        // its original (escaping) value.
         const char* hardlink = api.entry_hardlink(entry);
         if (hardlink) {
             std::string target;
-            if (SafeJoin(dest, hardlink, &target))
-                api.entry_set_hardlink(entry, target.c_str());
+            if (!iec::SafeJoinUnder(dest, hardlink, &target)) {
+                Logger::GetInstance()->LogE("[iec] archive: unsafe hardlink %s -> %s",
+                                            member.c_str(), hardlink);
+                ok = false;
+                break;
+            }
+            api.entry_set_hardlink(entry, target.c_str());
+        }
+
+        // Symlinks are created through fs/shim.c as a marker. libarchive's
+        // SECURE_SYMLINKS stops it from following a pre-existing link outside
+        // the destination; this check additionally refuses an absolute or
+        // escaping target written by the archive itself.
+        const char* symlink = api.entry_symlink(entry);
+        if (symlink && !iec::SafeSymlinkTarget(member.c_str(), symlink)) {
+            Logger::GetInstance()->LogE("[iec] archive: unsafe symlink %s -> %s",
+                                        member.c_str(), symlink);
+            ok = false;
+            break;
         }
 
         // libarchive's write-disk path calls symlink(); the shared object is

@@ -54,6 +54,9 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 VER="${IEC_LIBARCHIVE_VER:-3.7.7}"
 URL="${IEC_LIBARCHIVE_URL:-https://libarchive.org/downloads/libarchive-$VER.tar.xz}"
+# 官方校验值：https://libarchive.org/downloads/libarchive-3.7.7.tar.xz.sums.txt
+# （SHA2-256 行）。可用 IEC_LIBARCHIVE_SHA256 覆盖，默认必须校验。
+SHA256="$(iec_sha_or IEC_LIBARCHIVE_SHA256 879acd83c3399c7caaee73fe5f7418e06087ab2aaf40af3e99b9e29beb29faee)"
 
 SOURCE_CACHE="${IEC_SOURCE_CACHE:-$IEC_ROOT/thirdparty}"
 [ -d "$SOURCE_CACHE" ] || SOURCE_CACHE="$IEC_THIRDPARTY"
@@ -85,13 +88,8 @@ CODEC_LIBS=("$IEC_DEPS_LIB/libz.a" "$IEC_DEPS_LIB/libbz2.a"
             "$IEC_DEPS_LIB/liblzma.a" "$IEC_DEPS_LIB/libzstd.a")
 
 if [ ! -f "$SRC/configure" ]; then
-	if [ ! -s "$TARBALL" ]; then
-		mkdir -p "$SOURCE_CACHE"
-		iec_log "download $URL"
-		curl -L --retry 3 -m 600 -o "$TARBALL.part" "$URL" \
-			|| iec_err "libarchive download failed: $URL"
-		mv "$TARBALL.part" "$TARBALL"
-	fi
+	mkdir -p "$SOURCE_CACHE"
+	iec_fetch_verified "$URL" "$TARBALL" "$SHA256" "libarchive $VER"
 	iec_log "extract libarchive $VER -> $SOURCE_CACHE"
 	mkdir -p "$SOURCE_CACHE"
 	tar -xJf "$TARBALL" -C "$SOURCE_CACHE"

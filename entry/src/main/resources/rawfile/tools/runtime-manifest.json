@@ -1,264 +1,58 @@
 {
-  "version": "0.2.2-rc.1-4efcf73f4e8a",
+  "version": "0.2.2-rc.1-26cc87b18562",
   "engineVersion": "0.2.2-rc.1",
   "nodeVersion": "24.22.1",
   "commands": [
-    {
-      "name": "bash",
-      "library": "libbash.so",
-      "entry": "iec_bash_main",
-      "arity": 3
-    },
-    {
-      "name": "sh",
-      "library": "libbash.so",
-      "entry": "iec_bash_main",
-      "arity": 3
-    },
-    {
-      "name": "toybox",
-      "library": "libtoybox.so",
-      "entry": "bsh_toybox_main"
-    },
-    {
-      "name": "node",
-      "library": "libnode.so",
-      "entry": "iec_node_main"
-    },
-    {
-      "name": "npm",
-      "library": "libnode.so",
-      "entry": "iec_npm_main"
-    },
-    {
-      "name": "npx",
-      "library": "libnode.so",
-      "entry": "iec_npx_main"
-    },
-    {
-      "name": "pnpm",
-      "library": "libnode.so",
-      "entry": "iec_pnpm_main"
-    },
-    {
-      "name": "python",
-      "library": "libpython.so",
-      "entry": "Py_BytesMain"
-    },
-    {
-      "name": "python3",
-      "library": "libpython.so",
-      "entry": "Py_BytesMain"
-    },
-    {
-      "name": "pip",
-      "library": "libpython.so",
-      "entry": "iec_pip_main"
-    },
-    {
-      "name": "tar",
-      "library": "libbsdtar.so",
-      "entry": "iec_bsdtar_main"
-    },
-    {
-      "name": "cpio",
-      "library": "libbsdcpio.so",
-      "entry": "iec_bsdcpio_main"
-    },
-    {
-      "name": "unzip",
-      "library": "libbsdunzip.so",
-      "entry": "iec_bsdunzip_main"
-    },
-    {
-      "name": "zip",
-      "library": "libzipcmd.so",
-      "entry": "iec_zip_main"
-    },
-    {
-      "name": "rg",
-      "library": "librg.so",
-      "entry": "iec_rg_main"
-    },
-    {
-      "name": "git",
-      "library": "libgit.so",
-      "entry": "iec_git_main"
-    },
-    {
-      "name": "git-remote-http",
-      "library": "libgit-remote-http.so",
-      "entry": "iec_git_remote_http_main"
-    },
-    {
-      "name": "git-remote-https",
-      "library": "libgit-remote-http.so",
-      "entry": "iec_git_remote_http_main"
-    },
-    {
-      "name": "git-lfs",
-      "library": "libgitlfscmd.so",
-      "entry": "iec_gitlfs_main"
-    },
-    {
-      "name": "curl",
-      "library": "libcurlcmd.so",
-      "entry": "iec_curl_main"
-    },
-    {
-      "name": "jq",
-      "library": "libjqcmd.so",
-      "entry": "iec_jq_main"
-    },
-    {
-      "name": "bc",
-      "library": "libbccmd.so",
-      "entry": "iec_bc_main"
-    },
-    {
-      "name": "nc",
-      "library": "libnc.so",
-      "entry": "iec_nc_main"
-    },
-    {
-      "name": "hexdump",
-      "library": "libhexdump.so",
-      "entry": "iec_hexdump_main"
-    },
-    {
-      "name": "diff",
-      "library": "libdiff.so",
-      "entry": "iec_diff_main"
-    },
-    {
-      "name": "ssh",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "scp",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "ssh-keygen",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "dbclient",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "dropbear",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "dropbearkey",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "dropbearconvert",
-      "library": "libdropbear.so",
-      "entry": "iec_dropbear_main"
-    },
-    {
-      "name": "sftp",
-      "library": "libsftpcmd.so",
-      "entry": "iec_sftp_main"
-    },
-    {
-      "name": "less",
-      "library": "liblesscmd.so",
-      "entry": "iec_less_main"
-    },
-    {
-      "name": "more",
-      "library": "liblesscmd.so",
-      "entry": "iec_less_main"
-    },
-    {
-      "name": "vi",
-      "library": "libvimcmd.so",
-      "entry": "iec_vim_main"
-    },
-    {
-      "name": "vim",
-      "library": "libvimcmd.so",
-      "entry": "iec_vim_main"
-    },
-    {
-      "name": "gh",
-      "library": "libghcmd.so",
-      "entry": "iec_gh_main"
-    },
-    {
-      "name": "openssl",
-      "library": "libopensslcmd.so",
-      "entry": "iec_openssl_main"
-    },
-    {
-      "name": "tree",
-      "library": "libtreecmd.so",
-      "entry": "iec_tree_main"
-    },
-    {
-      "name": "sqlite3",
-      "library": "libsqlite3cmd.so",
-      "entry": "iec_sqlite3_main"
-    },
-    {
-      "name": "rsync",
-      "library": "librsynccmd.so",
-      "entry": "iec_rsync_main"
-    },
-    {
-      "name": "xz",
-      "library": "libxzcmd.so",
-      "entry": "iec_xz_main"
-    },
-    {
-      "name": "unxz",
-      "library": "libxzcmd.so",
-      "entry": "iec_xz_main"
-    },
-    {
-      "name": "xzcat",
-      "library": "libxzcmd.so",
-      "entry": "iec_xz_main"
-    },
-    {
-      "name": "lzma",
-      "library": "libxzcmd.so",
-      "entry": "iec_xz_main"
-    },
-    {
-      "name": "unlzma",
-      "library": "libxzcmd.so",
-      "entry": "iec_xz_main"
-    },
-    {
-      "name": "lzcat",
-      "library": "libxzcmd.so",
-      "entry": "iec_xz_main"
-    },
-    {
-      "name": "zstd",
-      "library": "libzstdcmd.so",
-      "entry": "iec_zstd_main"
-    },
-    {
-      "name": "unzstd",
-      "library": "libzstdcmd.so",
-      "entry": "iec_zstd_main"
-    },
-    {
-      "name": "zstdcat",
-      "library": "libzstdcmd.so",
-      "entry": "iec_zstd_main"
-    }
+    { "name": "bash", "library": "libbash.so", "entry": "iec_bash_main", "arity": 3 },
+    { "name": "sh", "library": "libbash.so", "entry": "iec_bash_main", "arity": 3 },
+    { "name": "toybox", "library": "libtoybox.so", "entry": "bsh_toybox_main" },
+    { "name": "node", "library": "libnode.so", "entry": "iec_node_main" },
+    { "name": "npm", "library": "libnode.so", "entry": "iec_npm_main" },
+    { "name": "npx", "library": "libnode.so", "entry": "iec_npx_main" },
+    { "name": "pnpm", "library": "libnode.so", "entry": "iec_pnpm_main" },
+    { "name": "python", "library": "libpython.so", "entry": "Py_BytesMain" },
+    { "name": "python3", "library": "libpython.so", "entry": "Py_BytesMain" },
+    { "name": "pip", "library": "libpython.so", "entry": "iec_pip_main" },
+    { "name": "tar", "library": "libbsdtar.so", "entry": "iec_bsdtar_main" },
+    { "name": "cpio", "library": "libbsdcpio.so", "entry": "iec_bsdcpio_main" },
+    { "name": "unzip", "library": "libbsdunzip.so", "entry": "iec_bsdunzip_main" },
+    { "name": "zip", "library": "libzipcmd.so", "entry": "iec_zip_main" },
+    { "name": "rg", "library": "librg.so", "entry": "iec_rg_main" },
+    { "name": "git", "library": "libgit.so", "entry": "iec_git_main" },
+    { "name": "git-remote-http", "library": "libgit-remote-http.so", "entry": "iec_git_remote_http_main" },
+    { "name": "git-remote-https", "library": "libgit-remote-http.so", "entry": "iec_git_remote_http_main" },
+    { "name": "git-lfs", "library": "libgitlfscmd.so", "entry": "iec_gitlfs_main" },
+    { "name": "curl", "library": "libcurlcmd.so", "entry": "iec_curl_main" },
+    { "name": "jq", "library": "libjqcmd.so", "entry": "iec_jq_main" },
+    { "name": "bc", "library": "libbccmd.so", "entry": "iec_bc_main" },
+    { "name": "nc", "library": "libnc.so", "entry": "iec_nc_main" },
+    { "name": "hexdump", "library": "libhexdump.so", "entry": "iec_hexdump_main" },
+    { "name": "diff", "library": "libdiff.so", "entry": "iec_diff_main" },
+    { "name": "ssh", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "scp", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "ssh-keygen", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "dbclient", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "dropbear", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "dropbearkey", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "dropbearconvert", "library": "libdropbear.so", "entry": "iec_dropbear_main" },
+    { "name": "sftp", "library": "libsftpcmd.so", "entry": "iec_sftp_main" },
+    { "name": "less", "library": "liblesscmd.so", "entry": "iec_less_main" },
+    { "name": "more", "library": "liblesscmd.so", "entry": "iec_less_main" },
+    { "name": "vi", "library": "libvimcmd.so", "entry": "iec_vim_main" },
+    { "name": "vim", "library": "libvimcmd.so", "entry": "iec_vim_main" },
+    { "name": "gh", "library": "libghcmd.so", "entry": "iec_gh_main" },
+    { "name": "openssl", "library": "libopensslcmd.so", "entry": "iec_openssl_main" },
+    { "name": "tree", "library": "libtreecmd.so", "entry": "iec_tree_main" },
+    { "name": "sqlite3", "library": "libsqlite3cmd.so", "entry": "iec_sqlite3_main" },
+    { "name": "rsync", "library": "librsynccmd.so", "entry": "iec_rsync_main" },
+    { "name": "xz", "library": "libxzcmd.so", "entry": "iec_xz_main" },
+    { "name": "unxz", "library": "libxzcmd.so", "entry": "iec_xz_main" },
+    { "name": "xzcat", "library": "libxzcmd.so", "entry": "iec_xz_main" },
+    { "name": "lzma", "library": "libxzcmd.so", "entry": "iec_xz_main" },
+    { "name": "unlzma", "library": "libxzcmd.so", "entry": "iec_xz_main" },
+    { "name": "lzcat", "library": "libxzcmd.so", "entry": "iec_xz_main" },
+    { "name": "zstd", "library": "libzstdcmd.so", "entry": "iec_zstd_main" },
+    { "name": "unzstd", "library": "libzstdcmd.so", "entry": "iec_zstd_main" },
+    { "name": "zstdcat", "library": "libzstdcmd.so", "entry": "iec_zstd_main" }
   ]
 }

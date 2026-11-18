@@ -24,6 +24,8 @@
 // into a closed descriptor (SIGPIPE) with nobody to collect its status.
 #pragma once
 
+#include <sys/types.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -151,5 +153,11 @@ std::string List();
 
 // Number of live sessions this process knows about (running or not released).
 size_t Count();
+
+// Field 22 (starttime) of /proc/<pid>/stat, or 0 when it cannot be read. Two
+// readings for the same pid are equal only while that pid names the same task;
+// this is what makes a delayed SIGKILL unable to hit a recycled pid.
+unsigned long long ProcStartTime(pid_t pid);
+bool ProcStartTimeMatches(pid_t pid, unsigned long long expected);
 
 }  // namespace iec

@@ -18,6 +18,8 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 
 ZSTD_VER="${ZSTD_VER:-1.5.7}"
 TAR="$IEC_THIRDPARTY/zstd-$ZSTD_VER.tar.gz"
+# 上游发布附件附带 zstd-1.5.7.tar.gz.sha256，但当前网络无法取回；未固定时 CI 失败。
+SHA256="$(iec_sha_or IEC_ZSTD_SHA256 eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3)"
 SRC="$IEC_THIRDPARTY/zstd-$ZSTD_VER"
 WORK="$IEC_ROOT/build/zstd"
 OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
@@ -25,12 +27,8 @@ SHIM_B="$IEC_ROOT/build/extra-cmds"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 mkdir -p "$WORK" "$OUT_DIR" "$IEC_THIRDPARTY"
-if [ ! -s "$TAR" ]; then
-	curl -L --retry 3 -m 600 -o "$TAR.part" \
-		"https://github.com/facebook/zstd/releases/download/v$ZSTD_VER/zstd-$ZSTD_VER.tar.gz" \
-		|| iec_err "zstd download failed"
-	mv "$TAR.part" "$TAR"
-fi
+iec_fetch_verified "https://github.com/facebook/zstd/releases/download/v$ZSTD_VER/zstd-$ZSTD_VER.tar.gz" \
+	"$TAR" "$SHA256" "zstd $ZSTD_VER"
 if [ ! -f "$SRC/lib/Makefile" ]; then
 	rm -rf "$SRC"
 	mkdir -p "$SRC"

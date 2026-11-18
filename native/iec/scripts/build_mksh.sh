@@ -30,11 +30,15 @@ source "$ENV_FILE"
 source "$ROOT/scripts/lib/common.sh"
 
 SRC="${MKSH_SRC:-$ROOT/thirdparty/mksh}"
+# OpenHarmony 的 gitcode 镜像没有发布 checksum；这里固定审查时的 master commit
+# （`git ls-remote` 解析，2026-11 基线），避免随镜像 HEAD 漂移。
+MKSH_COMMIT="$(iec_sha_or IEC_MKSH_COMMIT 8947a4decf46c535f439d866bcf7d2f74d71f519)"
 BUILD="$ROOT/build/mksh-iec"
 OUTDIR="$ROOT/platform/ohos/har/libs/arm64-v8a"
 OUT="$OUTDIR/libmksh.so"
 
-[ -f "$SRC/main.c" ] || iec_clone_if_missing "$SRC" "${IEC_MKSH_REPO:-}"
+[ -f "$SRC/main.c" ] || \
+	iec_clone_if_missing "$SRC" "${IEC_MKSH_REPO:-}" "" "$MKSH_COMMIT"
 
 if [ -n "${MKSH_CC:-}" ]; then
 	CC="$MKSH_CC"

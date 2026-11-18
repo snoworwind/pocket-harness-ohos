@@ -23,6 +23,7 @@
 #include <atomic>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "caps.h"
 #include "constant.h"
@@ -65,6 +66,9 @@ struct ProcessInfo {
     // signal death. Kept beside the raw word rather than instead of it because the
     // raw word alone cannot be read at a glance in a log; nothing branches on it.
     int         exit_code = -1;
+    // When the exit was recorded. Finished entries stay long enough for the
+    // client's OP_WAIT to read the status, then leave the table.
+    int64_t     ended_ms = 0;
 };
 
 // Every child this server started, keyed by pid. The spawn path writes it, and the
@@ -73,6 +77,40 @@ struct ProcessInfo {
 // to race with and this deliberately has no lock; anything added here has to stay
 // on that thread, or the first thing it needs is a mutex.
 static std::unordered_map<pid_t, ProcessInfo> procmap;
+
+// A finished entry is needed until the client has collected its status, then it
+// is only a leak. Expire it after a few minutes, and cap the table so a session
+// that starts thousands of commands cannot grow it without bound either.
+constexpr size_t kMaxProcEntries = 1024;
+constexpr int64_t kDeadProcTtlMs = 5 * 60 * 1000;
+
+static int64_t NowMillis();
+
+static void PruneProcMap() {
+    const int64_t now = NowMillis();
+    for (auto it = procmap.begin(); it != procmap.end();) {
+        if (!it->second.alive && it->second.ended_ms > 0 &&
+            now - it->second.ended_ms > kDeadProcTtlMs) {
+            it = procmap.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // Capacity fallback: drop the oldest finished entries first.
+    while (procmap.size() > kMaxProcEntries) {
+        auto oldest = procmap.end();
+        for (auto it = procmap.begin(); it != procmap.end(); ++it) {
+            if (it->second.alive) continue;
+            if (oldest == procmap.end() ||
+                it->second.ended_ms < oldest->second.ended_ms) {
+                oldest = it;
+            }
+        }
+        if (oldest == procmap.end()) break;
+        procmap.erase(oldest);
+    }
+}
 
 // The caller runs in a child forked from this server, so /proc/self/exe in it
 // names the server rather than the program the caller really is. 
@@ -333,12 +371,37 @@ void ResetSignalDispositions() {
     }
 }
 
-void ApplyRequestEnvironment(const SpawnRequest& req) {
+extern char** environ;
+
+// Builds the environment for a route that does not exec (kSo/kLoader/kQemu/
+// kShebang). It used to be installed with setenv() in the forked child, where
+// that call is not async-signal-safe and can deadlock on a lock held by another
+// thread at fork time. The vector is built here, in the parent; the child only
+// assigns the pre-built pointer array to environ.
+void BuildInheritedEnvironment(const SpawnRequest& req,
+                               std::vector<std::string>* storage,
+                               std::vector<char*>* ptrs) {
+    for (char** e = environ; e != nullptr && *e != nullptr; ++e)
+        storage->push_back(*e);
+
     for (const std::string& entry : req.env) {
         const size_t eq = entry.find('=');
         if (eq == std::string::npos || eq == 0) continue;
-        setenv(entry.substr(0, eq).c_str(), entry.substr(eq + 1).c_str(), 1);
+        const std::string prefix = entry.substr(0, eq + 1);
+        bool replaced = false;
+        for (std::string& existing : *storage) {
+            if (existing.compare(0, prefix.size(), prefix) == 0) {
+                existing = entry;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) storage->push_back(entry);
     }
+
+    ptrs->reserve(storage->size() + 1);
+    for (std::string& entry : *storage) ptrs->push_back(entry.data());
+    ptrs->push_back(nullptr);
 }
 
 [[noreturn]] void StartByKind(LaunchKind kind, const SpawnRequest& req) {
@@ -530,6 +593,16 @@ static pid_t StartChild(SpawnRequest* req, LaunchKind kind, std::string* why) {
         (requested == PrimaryLaunchKind::kAuto && Caps().fork == 1)) {
         req->prikind = PrimaryLaunchKind::kFork;
 
+        // Everything the child needs is prepared in the parent: only the
+        // routes that do not exec need the merged environment, and building it
+        // here keeps malloc()/getenv() out of the child. The loading routes
+        // still dlopen() there, which cannot be moved without replacing the
+        // whole launcher model; that boundary is documented in the report.
+        std::vector<std::string> child_env_storage;
+        std::vector<char*> child_env_ptrs;
+        if (kind != LaunchKind::kExec)
+            BuildInheritedEnvironment(*req, &child_env_storage, &child_env_ptrs);
+
         const pid_t parent_pid = getpid();
         pid_t pid = fork();
         if (pid < 0) {
@@ -561,22 +634,18 @@ static pid_t StartChild(SpawnRequest* req, LaunchKind kind, std::string* why) {
             if (write(STDERR_FILENO, msg, sizeof msg - 1)) {}
             _exit(kExecFailedExit);
         }
-        ApplyRequestEnvironment(*req);
+        // A single pointer assignment: no setenv(), no allocation, in the child.
+        if (kind != LaunchKind::kExec) environ = child_env_ptrs.data();
         // A real PTY needs a controlling terminal. IEC's virtual slave is a
         // socket; its tty shim supplies the equivalent session operations.
         if (req->controlling_tty) {
             ioctl(STDIN_FILENO, TIOCSCTTY, 0);
             // dlopen does not close CLOEXEC descriptors. In particular, keeping
             // a master/server socket in this child prevents PTY hangup forever.
-            DIR* dir = opendir("/proc/self/fd");
-            if (dir) {
-                const int keep = dirfd(dir);
-                while (dirent* entry = readdir(dir)) {
-                    const int fd = atoi(entry->d_name);
-                    if (fd > 2 && fd != keep) close(fd);
-                }
-                closedir(dir);
-            }
+            // A plain close() loop rather than opendir()/readdir(): this is the
+            // child of a fork and the directory calls allocate, which is not
+            // async-signal-safe. The bound matches the janitor's.
+            for (int fd = STDERR_FILENO + 1; fd < 4096; fd++) close(fd);
         }
         StartByKind(kind, *req);
     }
@@ -617,6 +686,14 @@ SpawnResult Spawn(SpawnRequest req) {
     // kAuto means the caller left the decision to us. It is settled before the
     // fork so that both sides agree on what is being started.
     res.kind = req.kind_hint == LaunchKind::kAuto ? ResolveKind(req.path) : req.kind_hint;
+
+    // Capacity is enforced before the fork so a full table cannot leak a child
+    // nobody can look up. Only finished entries are evicted here.
+    PruneProcMap();
+    if (procmap.size() >= kMaxProcEntries) {
+        res.error = "process table is full";
+        return res;
+    }
 
     std::string start_error;
     const pid_t pid = StartChild(&req, res.kind, &start_error);
@@ -769,6 +846,7 @@ static void RecordExit(ProcessInfo& info, int status) {
     info.exit_code = WIFEXITED(status)   ? WEXITSTATUS(status)
                    : WIFSIGNALED(status) ? 128 + WTERMSIG(status)
                                          : -1;
+    info.ended_ms = NowMillis();
 }
 
 // Folds the endings of native child processes into the table. They are not this
@@ -814,6 +892,7 @@ void ExecServer::onTick() {
     // never reports them; their endings arrive through the platform's callback and
     // are folded into the same table here.
     DrainNativeExits();
+    PruneProcMap();
 
     // Escalate the SIGTERMs whose grace period has run out. Checked against the
     // table rather than fired blindly: by the time this passes, an entry that is
@@ -852,6 +931,9 @@ void ExecServer::onTick() {
         if (it == procmap.end()) continue;
         RecordExit(it->second, status);
     }
+    // Reaping is where entries stop being needed by the loop; the expiry and
+    // the hard cap live in one place so every exit path gets the same cleanup.
+    PruneProcMap();
 }
 
 bool ExecServer::onPing(const Packet& req, Reply& reply) {
@@ -909,15 +991,18 @@ bool ExecServer::onExecute(const Packet& req, Reply& reply) {
     // cannot be tested for liveness later.
     sr.caller_pid = static_cast<pid_t>(req.caller);
     if (sr.caller_pid <= 0) {
-        // SO_PEERCRED is how the server learns who asked, and not every platform
-        // build answers it for AF_UNIX. Refusing on the missing answer would turn
-        // a diagnostic gap into a dead service -- every request would come back as
-        // "handler failed" -- while the child would still be this server's. File
-        // it under the server and say so, rather than refuse the command.
-        Logger::GetInstance()->LogW(
-            "[exec] SO_PEERCRED unavailable (caller %u); filing under the server",
+        // Without a peer identity the request cannot be tied to the process that
+        // asked for it. Filing it under the server (the old behaviour) made
+        // /proc/self/exe and the liveness checks reason about the wrong process,
+        // so this is refused rather than guessed.
+        Logger::GetInstance()->LogE(
+            "[exec] SO_PEERCRED unavailable (caller %u); refusing the request",
             req.caller);
-        sr.caller_pid = getpid();
+        put32(reply.body, 0);
+        put32(reply.body, static_cast<uint32_t>(EACCES));
+        const char why[] = "caller identity is unavailable\0";
+        reply.body.insert(reply.body.end(), why, why + sizeof why - 1);
+        return true;
     }
     argc = get32(b + 8);
     envc = get32(b + 12);
@@ -1045,13 +1130,15 @@ bool ExecServer::onExecute(const Packet& req, Reply& reply) {
     for (uint32_t i = 0; i < argc; i++) {
         std::string a;
         if (!next("argv", a)) return false;
-        Logger::GetInstance()->LogI("[exec]   argv[%u] = %s", i, a.c_str());
+        // Full argv/env is diagnostic material, not routine Info: a command line
+        // can carry a password or a token, so it is Debug and off by default.
+        Logger::GetInstance()->LogD("[exec]   argv[%u] = %s", i, a.c_str());
         sr.argv.push_back(a);
     }
     for (uint32_t i = 0; i < envc; i++) {
         std::string e;
         if (!next("env", e)) return false;
-        Logger::GetInstance()->LogI("[exec]   env[%u] = %s", i, e.c_str());
+        Logger::GetInstance()->LogD("[exec]   env[%u] = %s", i, e.c_str());
         sr.env.push_back(e);
     }
 
@@ -1073,7 +1160,7 @@ bool ExecServer::onExecute(const Packet& req, Reply& reply) {
     }
     if (!has_iec_root) {
         sr.env.push_back(iec_root);
-        Logger::GetInstance()->LogI("[exec]   env[] = %s (added)", iec_root.c_str());
+        Logger::GetInstance()->LogD("[exec]   env[] = %s (added)", iec_root.c_str());
     }
     if (off != n)
         Logger::GetInstance()->LogW("[exec] %zu trailing bytes ignored", n - off);
