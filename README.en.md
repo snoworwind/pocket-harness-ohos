@@ -21,6 +21,25 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 > own debug certificate before installing. The `.app` packaging step below is kept only for a
 > possible future store release.
 
+## Screenshots
+
+Captured on a device (click for full size):
+
+| Home | Settings |
+| :---: | :---: |
+| <a href="docs/images/home.jpg"><img src="docs/images/home.jpg" width="320" alt="Home: workspace, mode switcher and prompt box"></a> | <a href="docs/images/settings.jpg"><img src="docs/images/settings.jpg" width="320" alt="Settings: general"></a> |
+
+| Built-in terminal | File browser |
+| :---: | :---: |
+| <a href="docs/images/terminal.jpg"><img src="docs/images/terminal.jpg" width="320" alt="Built-in terminal in the right sidebar"></a> | <a href="docs/images/files.jpg"><img src="docs/images/files.jpg" width="320" alt="File browser in the right sidebar"></a> |
+
+The file tab previews Markdown and other text files in place:
+
+<p align="center">
+  <a href="docs/images/files-preview.jpg"><img src="docs/images/files-preview.jpg" width="420" alt="File preview: rendered THIRD_PARTY_NOTICES.md"></a><br>
+  <sub>File preview: <code>THIRD_PARTY_NOTICES.md</code> rendered as Markdown</sub>
+</p>
+
 ## Features
 
 - **Official web GUI**: agent loop, tools, approvals, sessions and workspaces are the upstream engine; the UI is not reimplemented.

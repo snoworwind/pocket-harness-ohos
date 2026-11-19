@@ -18,6 +18,25 @@
 
 > 本项目**暂不打算上架华为应用市场**，只通过 GitHub Release 分发未签名的 HAP 与预编译原生库；使用者需要自行用调试证书签名后安装。下文的应用包（`.app`）构建步骤仅作为将来可能上架时的参考保留。
 
+## 截图
+
+真机截图（点击可查看原图）：
+
+| 主界面 | 通用设置 |
+| :---: | :---: |
+| <a href="docs/images/home.jpg"><img src="docs/images/home.jpg" width="320" alt="主界面：工作区、模式选择与输入框"></a> | <a href="docs/images/settings.jpg"><img src="docs/images/settings.jpg" width="320" alt="设置：通用设置"></a> |
+
+| 内置终端 | 文件浏览 |
+| :---: | :---: |
+| <a href="docs/images/terminal.jpg"><img src="docs/images/terminal.jpg" width="320" alt="右侧栏内置终端"></a> | <a href="docs/images/files.jpg"><img src="docs/images/files.jpg" width="320" alt="右侧栏文件浏览"></a> |
+
+文件 tab 里可以直接预览 Markdown 等文本文件：
+
+<p align="center">
+  <a href="docs/images/files-preview.jpg"><img src="docs/images/files-preview.jpg" width="420" alt="文件预览：THIRD_PARTY_NOTICES.md 的 Markdown 渲染"></a><br>
+  <sub>文件预览：<code>THIRD_PARTY_NOTICES.md</code> 的 Markdown 渲染</sub>
+</p>
+
 ## 功能
 
 - **官方 Web GUI**：Agent Loop、工具调用、审批、会话、工作区全部走官方引擎，界面不重写。
