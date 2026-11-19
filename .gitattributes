@@ -3,3 +3,8 @@
 .githooks/pre-push text eol=lf
 .githooks/*.mjs text eol=lf
 *.sh text eol=lf
+
+# GitHub 的语言统计由 Linguist 决定，而 GitHub 当前部署的发行版还不认识 .ets：
+# ArkTS 曾加入 v9.4.0 后回滚，直到 v9.7.0 仍未收录，未覆盖时 ArkTS 源码会被完全排除在统计外。
+# ArkTS 是 TypeScript 的超集，先按 TypeScript 统计；等 GitHub 上线 ArkTS 后改成 linguist-language=ArkTS。
+*.ets linguist-language=TypeScript
