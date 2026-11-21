@@ -1,0 +1,15 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const text = fs.readFileSync('entry/src/main/ets/platform/NativeRuntime.ets', 'utf8');
+const factory = text.slice(text.indexOf('  startBrowserRelay('), text.indexOf('  // 非交互命令'));
+assert(factory.includes('if (!this.ready)'));
+assert(factory.includes('if (this.browserRelay)'));
+assert(factory.includes("'/browser-managed'"));
+assert(factory.includes("installRawfileFile('tools/harmony-browser/relay.cjs', path)"));
+assert(factory.indexOf('installRawfileFile(') < factory.indexOf('new NativeProcess('));
+assert(factory.includes("['--jitless', path, '--publish-ready']"));
+assert(factory.includes('this.context.filesDir, this.buildEnv(), output'));
+assert(!/appendLog|writeLog|console\./.test(factory));
+assert(text.indexOf('this.ready = false;', text.indexOf('async repair(')) < text.indexOf('await pause(300)', text.indexOf('async repair(')));
+console.log('native runtime relay factory static checks passed');

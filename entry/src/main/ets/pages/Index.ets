@@ -4,6 +4,10 @@ import { window, mediaquery } from '@kit.ArkUI';
 import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { util, url } from '@kit.ArkTS';
 import { TerminalView } from './Terminal';
+import { BrowserControl, BrowserView } from './Browser';
+import { BrowserConsentControl, BrowserConsentView } from './BrowserConsent';
+import { BrowserBridge, BrowserBridgeApproval, BrowserBridgeHost } from '../platform/BrowserBridge';
+import { BrowserRelayReady } from '../platform/BrowserRelay';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NativeRuntime } from '../platform/NativeRuntime';
 import { BackgroundKeepAlive } from '../platform/BackgroundKeepAlive';
@@ -128,6 +132,74 @@ interface DownloadJob {
 struct Index {
   @State private url: string = '';
   @State private showTerminal: boolean = false;
+  // 宿主专有控制对象，不提供给网页或现有桥。
+  private browserControl: BrowserControl = new BrowserControl();
+  private browserConsent: BrowserConsentControl = new BrowserConsentControl();
+  private browserBridge?: BrowserBridge;
+  // 不可信的主 GUI 标签，不是会话认证凭据。
+  private browserSessionId: string = '';
+  private browserAgentEpoch: number = 0;
+  @State private browserAgentMessage: string = '';
+  private stopBrowserAgent(message: string): void {
+    this.browserAgentEpoch++;
+    this.browserConsent.cancel();
+    const bridge = this.browserBridge;
+    this.browserBridge = undefined;
+    try { bridge?.stop(); } catch (_error) {}
+    this.browserAgentMessage = message;
+  }
+
+  // 唯一入口是原生按钮；凭据由 relay --publish-ready 安全发布，绝不交给网页。
+  private startBrowserAgent(): void {
+    this.stopBrowserAgent('');
+    const runtime = this.runtime;
+    if (!runtime || !this.browserActuallyVisible() || this.browserControl.currentGeneration() === null ||
+      this.browserSessionId === '') { this.browserAgentMessage = '浏览器或当前会话不可用'; return; }
+    const epoch = ++this.browserAgentEpoch;
+    const visibleSessionId = (): string | null => this.browserSessionId !== '' ? this.browserSessionId : null;
+    const host: BrowserBridgeHost = {
+      visibleSessionId: (): string | null => epoch === this.browserAgentEpoch && this.browserActuallyVisible()
+        ? visibleSessionId() : null,
+      authorize: async (details: BrowserBridgeApproval): Promise<boolean> => {
+        if (epoch !== this.browserAgentEpoch || !this.browserActuallyVisible()) { return false; }
+        const allowed = await this.browserConsent.request(details);
+        return allowed && epoch === this.browserAgentEpoch && this.browserActuallyVisible();
+      },
+      automaticApproved: (details: BrowserBridgeApproval): void => {
+        // Only a notice; the decision was made by the session's live preset.
+        if (epoch !== this.browserAgentEpoch) { return; }
+        this.browserAgentMessage = '已按当前会话权限自动放行：' + details.operation + '。';
+      },
+      deliverReady: async (ready: BrowserRelayReady): Promise<void> => {
+        if (epoch !== this.browserAgentEpoch || !this.browserActuallyVisible()) { throw new Error('Browser stopped'); }
+        // relay 已发布凭据；这里只确认桥仍属于可见浏览器，不读取或写入凭据。
+      },
+      onClosed: (): void => {
+        if (epoch === this.browserAgentEpoch) {
+          this.browserConsent.cancel();
+          this.browserAgentEpoch++;
+          this.browserBridge = undefined;
+          this.browserAgentMessage = '浏览器 Agent 已关闭或发生错误；授权已取消。';
+        }
+      }
+    };
+    try {
+      const bridge = new BrowserBridge(runtime, this.browserControl, host);
+      this.browserBridge = bridge;
+      bridge.start();
+      if (epoch === this.browserAgentEpoch) {
+        this.browserAgentMessage = '浏览器 Agent 正在启动；请启用 browserAgent 插件。只读/工作区修改模式每次操作需原生同意，自动审查/完全权限模式自动放行。';
+      }
+    } catch (_error) { this.stopBrowserAgent('浏览器 Agent 启动失败，授权已取消。'); }
+  }
+  @State private showBrowser: boolean = false;
+  @State private browserLeft: number = 0;
+  @State private browserTop: number = 0;
+  @State private browserWidth: number = 0;
+  @State private browserHeight: number = 0;
+  @State private browserVisible: boolean = false;
+  @State private stageWidth: number = 0;
+  @State private stageHeight: number = 0;
   // 右侧栏终端 tab 的矩形（页面 CSS 像素 == vp），由页面的桥消息更新。
   @State private termLeft: number = 0;
   @State private termTop: number = 0;
@@ -291,7 +363,11 @@ struct Index {
     } catch (error) { /* Web 未挂载 */ }
   }
 
+  onPageHide(): void { this.stopBrowserAgent('应用已进入后台，浏览器 Agent 已停止。'); }
+
   aboutToDisappear(): void {
+    this.stopBrowserAgent('页面已销毁，浏览器 Agent 已停止。');
+    this.browserConsent.destroy();
     if (this.barTimer >= 0) { clearInterval(this.barTimer); this.barTimer = -1; }
     if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
     if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
@@ -322,6 +398,10 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.browserActuallyVisible()) {
+      this.closeBrowser();
+      return true;
+    }
     // 页面若已经跑到站外（onLoadIntercept 的兜底没拦住），先把本地界面拉回来，
     // 不给用户留一个退不出去的白页。
     try {
@@ -645,6 +725,34 @@ struct Index {
     return owner === '' || this.termOwner === '' || owner === this.termOwner;
   }
 
+  // 把页面上报矩形裁到当前容器，屏幕旋转或键盘改变大小后也重新裁剪。
+  private browserClipLeft(): number { return Math.max(0, Math.min(this.stageWidth, this.browserLeft)); }
+  private browserClipTop(): number { return Math.max(0, Math.min(this.stageHeight, this.browserTop)); }
+  private browserClipWidth(): number {
+    return Math.max(0, Math.min(this.stageWidth, this.browserLeft + this.browserWidth) - this.browserClipLeft());
+  }
+  private browserClipHeight(): number {
+    return Math.max(0, Math.min(this.stageHeight, this.browserTop + this.browserHeight) - this.browserClipTop());
+  }
+  private browserActuallyVisible(): boolean {
+    // 启动遮罩必须吃掉触摸；两个原生 tab 同时报可见时终端在上层。
+    return this.webReady && this.showBrowser && this.browserVisible &&
+      !(this.showTerminal && this.termVisible) && this.browserClipWidth() > 1 && this.browserClipHeight() > 1;
+  }
+
+  private closeBrowser(): void {
+    this.stopBrowserAgent('浏览器已关闭，浏览器 Agent 已停止。');
+    this.showBrowser = false;
+    this.browserVisible = false;
+    this.browserSessionId = '';
+    this.browserControl.setVisible(false);
+    try {
+      this.controller.runJavaScript(
+        '(function(){if(window.__dshBrowserClosed)window.__dshBrowserClosed();})()'
+      ).catch(() => {});
+    } catch (error) { /* Web 未挂载 */ }
+  }
+
   private onTermBridge(text: string): void {
     const prefix = 'DSH_TERM:' + this.bridgeNonce + ':';
     if (text.indexOf(prefix) !== 0) { return; }
@@ -652,7 +760,37 @@ struct Index {
       const message = JSON.parse(text.slice(prefix.length)) as Record<string, Object>;
       const op = message['op'] as string;
       const owner = typeof message['owner'] === 'string' ? message['owner'] as string : '';
-      if (op === 'open') {
+      if (op === 'browserOpen') {
+        // 页面只能请求展示空面板，不能指定原生浏览器的初始地址。
+        this.showBrowser = true;
+        this.browserVisible = false;
+      } else if (op === 'browserBounds') {
+        const label = message['sessionId'];
+        const sessionId = typeof label === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(label) ? label : '';
+        if (sessionId !== this.browserSessionId) {
+          this.browserSessionId = sessionId;
+          if (this.browserBridge) { this.stopBrowserAgent('当前会话已变化，浏览器 Agent 已停止。'); }
+        }
+        const left = Number(message['left']);
+        const top = Number(message['top']);
+        const width = Number(message['width']);
+        const height = Number(message['height']);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+          !Number.isFinite(width) || !Number.isFinite(height)) { return; }
+        this.browserLeft = left;
+        this.browserTop = top;
+        this.browserWidth = Math.max(1, width);
+        this.browserHeight = Math.max(1, height);
+        this.browserVisible = message['visible'] === true && width > 1 && height > 1;
+        this.showBrowser = true;
+      } else if (op === 'browserVisible') {
+        this.browserVisible = message['visible'] === true;
+      } else if (op === 'browserClose') {
+        this.stopBrowserAgent('浏览器已关闭，浏览器 Agent 已停止。');
+        this.showBrowser = false;
+        this.browserVisible = false;
+        this.browserSessionId = '';
+      } else if (op === 'open') {
         if (!this.termOwnerMatches(owner)) { return; }
         if (owner !== '') { this.termOwner = owner; }
         this.showTerminal = true;
@@ -704,6 +842,10 @@ struct Index {
         this.termOwner = '';
       }
     } catch (error) { /* 不是桥消息，忽略 */ }
+    this.browserControl.setVisible(this.browserActuallyVisible());
+    if (!this.browserActuallyVisible() && this.browserBridge) {
+      this.stopBrowserAgent('浏览器不再可见，浏览器 Agent 已停止。');
+    }
   }
 
   private applyBars(dark: boolean, background: string): void {
@@ -766,11 +908,13 @@ struct Index {
 
   private boot(): void {
     if (this.busy) { return; }
+    this.stopBrowserAgent('运行时重启，浏览器 Agent 已停止。');
     this.busy = true;
     this.failed = '';
     this.url = '';
     this.detail = '';
     this.webReady = false;
+    this.browserControl.setVisible(false);
     if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
     if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
     this.status = '正在准备本地运行时';
@@ -912,6 +1056,7 @@ struct Index {
       this.status = '正在加载官方界面';
       this.url = url;
       this.webReady = false;
+    this.browserControl.setVisible(false);
       this.armAbsoluteFallback();
       this.stopUnpackingWatch();
       // onPageEnd 不一定每次都触发；启动后先同步一次并挂上轮询，避免背景色一直停在启动回退色。
@@ -980,11 +1125,13 @@ struct Index {
   // 界面上的「重新解包运行时」：用户手动触发一次整棵重建。
   private async repairRuntime(): Promise<void> {
     if (this.busy) { return; }
+    this.stopBrowserAgent('运行时修复，浏览器 Agent 已停止。');
     this.busy = true;
     this.failed = '';
     this.url = '';
     this.detail = '';
     this.webReady = false;
+    this.browserControl.setVisible(false);
     if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
     if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
     this.status = '正在删除并重新解包运行时';
@@ -1227,6 +1374,33 @@ struct Index {
         .padding({ left: 16, right: 16 })
         .position({ x: 0, y: this.insetTop + 10 })
       }
+      if (this.showBrowser && this.browserWidth > 0 && this.browserHeight > 0) {
+        BrowserView({
+          control: this.browserControl,
+          isHostVisible: () => this.browserActuallyVisible(),
+          stageLeft: this.browserClipLeft(),
+          // 与终端相同：页面坐标以 Web 内容区为原点，沉浸式时 Web 被顶部避让区
+          // 下推了 insetTop，浏览器浮层要跟着加同样的偏移。
+          stageTop: this.browserClipTop() + this.insetTop,
+          stageWidth: this.browserClipWidth(),
+          stageHeight: this.browserClipHeight(),
+          visible: this.browserActuallyVisible(),
+          agentMessage: this.browserAgentMessage,
+          onStartAgent: () => { this.startBrowserAgent(); },
+          onStopAgent: () => { this.stopBrowserAgent('浏览器 Agent 已停止。'); },
+          onNavigationFailure: () => {
+            if (this.browserBridge) { this.stopBrowserAgent('主页面加载失败，浏览器 Agent 已停止。'); }
+          },
+          onConfirmPage: () => {
+            const confirmed = this.browserBridge?.confirmCurrentPage() === true;
+            this.browserAgentMessage = confirmed ?
+              '已确认当前页面；后续每次操作仍需单独同意。页面仍可能变化。' :
+              '无法恢复：请等待导航开始及页面结束，并确认浏览器和当前会话仍可见。';
+          },
+          onClose: () => { this.closeBrowser(); }
+        })
+      }
+      BrowserConsentView({ control: this.browserConsent })
       // 右侧栏 tab 的终端画面：只铺在页面报上来的矩形上，侧栏和 dock 仍是页面的。
       if (this.showTerminal && this.termWidth > 0 && this.termHeight > 0) {
         TerminalView({
@@ -1245,6 +1419,16 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((_old: Area, area: Area) => {
+      const width = Number(area.width);
+      const height = Number(area.height);
+      this.stageWidth = Number.isFinite(width) ? Math.max(0, width) : 0;
+      this.stageHeight = Number.isFinite(height) ? Math.max(0, height) : 0;
+      this.browserControl.setVisible(this.browserActuallyVisible());
+      if (!this.browserActuallyVisible() && this.browserBridge) {
+        this.stopBrowserAgent('浏览器不再可见，浏览器 Agent 已停止。');
+      }
+    })
     // 两种模式都全屏：系统栏区域由外层背景铺满，颜色跟 Web 主题同步；
     // 内容自己的留白由 insetTop/insetBottom 负责，不能用安全区再挤一次。
     .backgroundColor(this.barBg)

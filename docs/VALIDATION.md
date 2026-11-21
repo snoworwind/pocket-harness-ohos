@@ -150,6 +150,13 @@ gitignore 的构建产物，本机算 `2283e9c24fa0`、仓库里是 `74c42676208
 - auto-review 从「旧版本自动安装」升级到本版的迁移未构造旧 profile 复现。
 
 
+## 应用内浏览器原型（未验收）
+
+- 设备运行环境中安装仓库声明的 TypeScript 开发依赖后，`env -u NODE_OPTIONS node scripts/test.cjs`：163 项通过、6 项因缺少随包 `official-engine.tar.gz` 跳过；包含浏览器侧栏、观察脚本和信箱的宿主模拟测试。
+- `BrowserMailbox.ets` 在模拟 `@kit.ArkTS` 模块声明下通过 TypeScript 严格类型检查；这不是 ArkTS SDK 编译。`env -u NODE_OPTIONS node scripts/test-fetch-polyfill.cjs` 与 `node tests/fetch-redirect.cjs` 分别通过；敏感信息扫描通过。
+- 浏览器确认与权限预设联动已由宿主模拟覆盖：`auto`/`danger-full-access` 跳过原生面板，`read-only`/`workspace-write`/`custom`/读取失败仍要求确认，模式中途变化降级为人工确认；使用真实中继进程与转译后的原生中继/桥完成端到端模拟。真实 `permissionPresets` 服务经引擎源码确认，但未在真机会话中实测。
+- **未验收**：HAP 构建、DSH profile 的插件加载、ArkWeb 的导航/隔离/关闭和页面观察、Agent 端到端操作及原生人工授权。控制工具默认不注册，显式开启代码路径亦未真机验收；不能据宿主模拟测试声称 Agent 已可在实际应用中操作浏览器。独立 Web controller 不证明 Cookie 隔离；浏览器当前跨会话共享。
+
 ## 2026-11-18 安全审查整改
 
 针对 `SECURITY-REVIEW-2026-11-18.md` 的整改。本轮**没有连接设备、没有交叉编译原生库、没有重打包 HAP/引擎归档**；宿主侧验证项与真机未验收项严格分开。

@@ -139,6 +139,8 @@ export class NativeRuntime {
   private terminal?: NativeProcess;
   private shell?: NativeProcess;
   private web?: NativeProcess;
+  // 持有到进程真正退出，而不是 close() 返回：不能并行启动替代中继。
+  private browserRelay?: NativeProcess;
   private webUrl: string = '';
   private owned: Set<string> = new Set<string>();
   private env: Record<string, string> = {};
@@ -269,6 +271,7 @@ export class NativeRuntime {
     this.engineVersion = manifest.engineVersion; this.ready = true;
     this.installHarmonyPlugin();
     this.installTerminalPlugin();
+    this.installBrowserPlugin();
     // 插件启用状态跨更新保持：显式 true 注册，显式 false 移除；没有显式值时不
     // 擅自改动已有行——旧版本默认装载过的插件（auto-review）说明用户此前就在用，
     // 升级不能替用户关掉。选择会写回 harmony-native.json，后续更新按它执行。
@@ -854,6 +857,99 @@ export class NativeRuntime {
       }
     } catch (error) { /* 插件没装上只是没有侧栏终端入口 */ }
   }
+  // browserAgent 必须在 harmony-native.json 中显式为布尔 true。目录 mkdir 是唯一
+  // 的独占创建操作：平台没有 EXCL/硬链接，绝不能用 access + open 来认领已有文件。
+  // 同 UID 是信任边界；已有目录只有标记和全部字节均匹配时才复用，任何修改或
+  // 版本变化均拒绝自动升级，保留用户内容。中断后残留目录也必须由用户手动处理。
+  // 这里沿用 terminal 的 profile patch 形状，但真实 DSH profile 的客户端解析尚未
+  // 验证；静态/模拟测试不能代替设备上端到端验证。
+  // 用独占 mkdir 获得临时目录，再原子替换 patch；绝不复用预存临时路径。
+  // 若写入失败，旧 patch 保持原样；同 UID 并发修改仍处于信任边界内。
+  private writeBrowserBytes(fd: number, text: string): void {
+    const bytes = new util.TextEncoder().encodeInto(text);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.writeSync(fd, bytes.slice(offset).buffer);
+      if (count <= 0 || count > bytes.length - offset) { throw new Error('browser write failed'); }
+      offset += count;
+    }
+  }
+  private writeBrowserPatch(patch: string, text: string): void {
+    const dir = patch + '.pocket-browser-tmp';
+    fs.mkdirSync(dir);
+    const temporary = dir + '/patch';
+    try {
+      const out = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+      try { this.writeBrowserBytes(out.fd, text); } finally { fs.closeSync(out); }
+      if (fs.accessSync(patch) && !fs.lstatSync(patch).isFile()) { throw new Error('unsafe browser patch'); }
+      fs.renameSync(temporary, patch);
+    } finally {
+      try { if (fs.accessSync(temporary)) { fs.unlinkSync(temporary); } } catch (error) { /* 保留残留 */ }
+      // CoreFileKit rmdirSync 是递归删除；非空时绝不调用，避免清掉意外文件。
+      try { if (fs.listFileSync(dir).length === 0) { fs.rmdirSync(dir); } } catch (error) { /* 保留残留 */ }
+    }
+  }
+  private installBrowserPlugin(): void {
+    const profile = this.context.filesDir + '/harness-home/profiles/web';
+    const patch = profile + '/cordis.patch.yml';
+    const name = '@local/dsh-harmony-browser';
+    const dest = profile + '/node_modules/' + name;
+    const marker = '.pocket-harness-browser-v1';
+    const files: string[] = ['package.json', 'index.js', 'client-relay.js', 'relay.cjs', 'credential-provider.js'];
+    const row = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '" + name + "'\n      config:\n        enabled: true\n# pocket-harness-browser end\n";
+    const oldRow = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '" + name + "'\n# pocket-harness-browser end\n";
+    try {
+      // 只删除完整且独有的本程序标记块，不规范化或修改其它 patch。
+      if (fs.accessSync(patch) && !fs.lstatSync(patch).isFile()) { return; }
+      let text = fs.accessSync(patch) ? fs.readTextSync(patch) : '';
+      const existingRow = text.indexOf(row) >= 0 ? row : oldRow;
+      const first = text.indexOf(existingRow);
+      if (first >= 0) {
+        if (text.indexOf(existingRow, first + existingRow.length) >= 0) { return; }
+        text = text.slice(0, first) + text.slice(first + existingRow.length);
+        if (text.trim().length === 0) { text = '[]\n'; }
+        this.writeBrowserPatch(patch, text);
+      }
+      const config = this.context.filesDir + '/harness-home/harmony-native.json';
+      if (!fs.accessSync(config) ||
+        (JSON.parse(fs.readTextSync(config)) as Record<string, boolean>).browserAgent !== true) { return; }
+      // 有相似但不完全相同的用户配置/标记时，不尝试修复或重复登记。
+      if (text.indexOf(name) >= 0 || text.indexOf('harmony-native-browser') >= 0 ||
+        text.indexOf('pocket-harness-browser') >= 0) { return; }
+      const decoder = util.TextDecoder.create('utf-8');
+      const contents: string[] = [];
+      for (const file of files) {
+        contents.push(decoder.decodeToString(this.context.resourceManager.getRawFileContentSync('tools/harmony-browser/' + file)));
+      }
+      this.ensureDir(profile + '/node_modules/@local');
+      let created = false;
+      try { fs.mkdirSync(dest); created = true; } catch (error) { /* 已存在或无法创建 */ }
+      if (created) {
+        for (let i = 0; i < files.length; i++) {
+          const out = fs.openSync(dest + '/' + files[i], fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+          try { this.writeBrowserBytes(out.fd, contents[i]); } finally { fs.closeSync(out); }
+        }
+        const out = fs.openSync(dest + '/' + marker, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+        try { this.writeBrowserBytes(out.fd, 'pocket-harness-browser-v1\n'); } finally { fs.closeSync(out); }
+      }
+      const directoryStat = fs.lstatSync(dest);
+      if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) { return; }
+      const entries = fs.listFileSync(dest);
+      if (entries.length !== files.length + 1 || entries.indexOf(marker) < 0) { return; }
+      const markerStat = fs.lstatSync(dest + '/' + marker);
+      if (markerStat.isSymbolicLink() || !markerStat.isFile() ||
+        fs.readTextSync(dest + '/' + marker) !== 'pocket-harness-browser-v1\n') { return; }
+      for (let i = 0; i < files.length; i++) {
+        if (entries.indexOf(files[i]) < 0) { return; }
+        const stat = fs.lstatSync(dest + '/' + files[i]);
+        if (stat.isSymbolicLink() || !stat.isFile() || fs.readTextSync(dest + '/' + files[i]) !== contents[i]) { return; }
+      }
+      // 只处理整个文档是空数组的情况；嵌套或其它用户 YAML 保持原样。
+      if (text.trim() === '[]') { text = ''; }
+      if (text.length > 0 && !text.endsWith('\n')) { text += '\n'; }
+      this.writeBrowserPatch(patch, text + row);
+    } catch (error) { /* fail closed：不覆盖目录，也不登记未确认的插件 */ }
+  }
   // 第三方声明随 HAP 以 rawfile 分发，启动时解到应用沙箱，方便用户/审计直接查看，
   // 也保证分发物里始终带着 MIT / GPL / BSD 等许可证原文。
   private installNotices(): void {
@@ -972,6 +1068,9 @@ export class NativeRuntime {
   // 运行时目录被改坏时的整棵重建：停掉子进程、删掉这棵目录、把状态归零，
   // 然后重新走 ensure()（它会重新解包并写 .installed）。
   async repair(onInstalling?: (active: boolean) => void): Promise<void> {
+    // 在任何让出事件循环之前禁止新中继使用即将删除的运行时。
+    this.ready = false;
+    this.browserRelay?.close();
     this.stopWebUI();
     if (this.root) {
       // 删除旧运行时同样要遍历整棵目录树，先让界面切到「正在解包」再动手。
@@ -1106,6 +1205,38 @@ export class NativeRuntime {
     }
   }
   async ensureReady(): Promise<void> { await this.ensure(); }
+  // 仅供未来授权层显式调用；stdout 是私有协议，可能包含凭据，绝不记录。
+  // 调用方负责解析帧、授权请求、保管凭据并在不再需要时 close()。
+  startBrowserRelay(output: (text: string) => void, exit: (code: number) => void): NativeProcess {
+    if (!this.ready) { throw new Error('原生运行时未就绪'); }
+    if (this.browserRelay) { throw new Error('浏览器中继尚未退出'); }
+    const base = this.context.filesDir + '/browser-managed';
+    const dir = base + '/relay-' + Date.now().toString() + '-' + Math.random().toString().slice(2);
+    const path = dir + '/relay.cjs';
+    let created = false;
+    try {
+      this.ensureDir(base);
+      if (!fs.lstatSync(base).isDirectory()) { throw new Error('中继目录无效'); }
+      // 不复用已有目录或覆盖已有文件；原生安装器检查全部写入及 close。
+      fs.mkdirSync(dir);
+      created = true;
+      if (installRawfileFile('tools/harmony-browser/relay.cjs', path) !== 0) {
+        throw new Error('浏览器中继安装失败');
+      }
+      const process = new NativeProcess(this.root + '/bin/node', ['--jitless', path, '--publish-ready'],
+        this.context.filesDir, this.buildEnv(), output, (code: number, _error: string) => {
+          this.browserRelay = undefined;
+          try { this.removeTree(dir); } catch (ignored) { /* best effort */ }
+          // stderr 和内部异常可能包含私有协议数据，不传给日志或调用方。
+          exit(code);
+        });
+      this.browserRelay = process;
+      return process;
+    } catch (error) {
+      if (created) { try { this.removeTree(dir); } catch (ignored) { /* best effort */ } }
+      throw new Error('浏览器中继启动失败');
+    }
+  }
   // 非交互命令：一次 bash -lc，输出按流回传。真正的 PTY 需要 node-pty，见文档的已知边界。
   runShell(command: string, cwd: string, output: (text: string) => void, exit: (code: number, error: string) => void): void {
     if (!this.ready) { exit(-1, '原生运行时未就绪'); return; }

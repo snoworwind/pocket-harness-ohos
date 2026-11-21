@@ -195,6 +195,60 @@ window.__ModuleLoader__.load({
       });
     }
 
+    // 浏览器视图由壳层持有；切换 tab 仅隐藏，不应销毁或重新导航。
+    function BrowserStage(props) {
+      // Slot 提供的 action 绑定具体 session 和 tab，不能用当前会话的全局导航代替。
+      const info = props.useTabInfo();
+      const actions = React.useRef(info.tab.actions);
+      actions.current = info.tab.actions;
+      const stage = React.useRef(null);
+      React.useEffect(function () {
+        const element = stage.current;
+        if (!element) return undefined;
+        let last = '';
+        function report() {
+          const rect = element.getBoundingClientRect();
+          const visible = document.visibilityState !== 'hidden' && rect.width > 1 && rect.height > 1
+            && rect.bottom > 0 && rect.right > 0 && rect.left < window.innerWidth && rect.top < window.innerHeight;
+          // 主 GUI 的会话标签是不可信数据，不是认证凭据；变化也必须上报。
+          const sessionId = activeSessionId();
+          const signature = JSON.stringify([rect.left, rect.top, rect.width, rect.height, visible, sessionId]);
+          if (signature === last) return;
+          last = signature;
+          send('browserBounds', { left: rect.left, top: rect.top, width: rect.width, height: rect.height, visible: visible, sessionId: sessionId });
+        }
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(report);
+        if (observer) observer.observe(element);
+        window.addEventListener('resize', report);
+        document.addEventListener('visibilitychange', report);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', report);
+          window.visualViewport.addEventListener('scroll', report);
+        }
+        const nativeClosed = function () { actions.current.close(); };
+        window.__dshBrowserClosed = nativeClosed;
+        send('browserOpen', {});
+        report();
+        const timer = window.setInterval(report, 300);
+        const raf = window.requestAnimationFrame(report);
+        return function () {
+          window.clearInterval(timer);
+          window.cancelAnimationFrame(raf);
+          if (observer) observer.disconnect();
+          window.removeEventListener('resize', report);
+          document.removeEventListener('visibilitychange', report);
+          if (window.visualViewport) {
+            window.visualViewport.removeEventListener('resize', report);
+            window.visualViewport.removeEventListener('scroll', report);
+          }
+          if (window.__dshBrowserClosed === nativeClosed) delete window.__dshBrowserClosed;
+          send('browserVisible', { visible: false });
+        };
+      }, []);
+      return h('div', { ref: stage, 'data-harmony-browser-stage': '',
+        style: { position: 'absolute', inset: 0, overflow: 'hidden' } });
+    }
+
     /* ------------------------------------------------------------------ */
     /* 关于（设置里的一个分区）                                             */
     /* ------------------------------------------------------------------ */
@@ -283,6 +337,26 @@ window.__ModuleLoader__.load({
             }, Stage);
           });
         }, 'harmony-terminal.body');
+
+        ctx.effect(function () {
+          return ctx.sidebarRightTabs.register({
+            id: 'harmony-native-browser', kind: 'browser-harmony', priority: 'extension',
+            multiple: false, keepMounted: false,
+            title: function () { return '共享浏览器'; },
+            guide: [{ id: 'new', order: 21, title: function () { return '共享浏览器'; },
+              description: function () { return '各会话共用同一个原生浏览器和页面'; } }],
+          });
+        }, 'harmony-browser.type');
+        ctx.effect(function () {
+          return ctx.sidebarRight.registerCloseHandler('browser-harmony', function () {
+            send('browserClose', {});
+          });
+        }, 'harmony-browser.close');
+        ctx.effect(function () {
+          return ctx.slots.inject('sidebar.right.pane.tab', function () {
+            return ctx.slots.register({ name: 'sidebar.right.pane.tab', key: 'harmony-native-browser' }, BrowserStage);
+          });
+        }, 'harmony-browser.body');
 
         // 设置里的「关于」：仓库、上游、许可证与源码入口。
         ctx.effect(function () {
