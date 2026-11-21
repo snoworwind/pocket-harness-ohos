@@ -135,6 +135,10 @@ struct Index {
   @State private termVisible: boolean = false;
   // 当前 DSH 会话的工作目录，由页面插件从宿主 API 解析后下发；终端用它作为 cwd。
   @State private termCwd: string = '';
+  // 当前终端 tab 的 owner。壳层只有一路原生终端（插件注册为 multiple:false），
+  // 这里记录 owner 只是为了忽略旧 tab / 迟到消息，避免它们改掉现有终端的几何
+  // 或把它关掉。
+  private termOwner: string = '';
   @State private status: string = '正在准备原生运行时';
   @State private detail: string = '';
   @State private failed: string = '';
@@ -174,7 +178,17 @@ struct Index {
   private webNav: boolean = false;
   private keepAliveOn: boolean = false;
   @State private barDark: boolean = false;
+  // 沉浸式时页面要给挖孔（top）和底部手势条（bottom）让出的高度；系统栏
+  // 可见时由系统布局负责，两项都归零。
   @State private insetTop: number = 0;
+  @State private insetBottom: number = 0;
+  // 设置里的「显示系统状态栏与底部手势条」（harmony-native.json）。
+  @State private systemBarsOn: boolean = false;
+  private systemBarsApplied: boolean = false;
+  // 安全模式隔离提示：Web GUI 已经起来时用浮层提示还剩多少个插件被停用。
+  @State private quarantineCount: number = 0;
+  @State private quarantineError: string = '';
+  private autoRestoreScheduled: boolean = false;
   @State private barBg: string = '';
 
   aboutToAppear(): void {
@@ -333,6 +347,30 @@ struct Index {
       this.keepAlive.stop(context).catch(() => {});
       this.keepAliveOn = false;
     }
+  }
+
+  // 系统栏开关（同一个镜像文件）：打开时恢复状态栏/导航栏并取消全屏布局，
+  // 关闭时回到沉浸式。首次也会应用一次，避免「先全屏再跳一下」。
+  private applySystemBars(): void {
+    const runtime = this.runtime;
+    const context = this.context;
+    if (!runtime || !context) { return; }
+    const want = runtime.readShowSystemBars();
+    if (this.systemBarsApplied && want === this.systemBarsOn) { return; }
+    this.systemBarsApplied = true;
+    this.systemBarsOn = want;
+    window.getLastWindow(context).then((win: window.Window) => {
+      try { win.setWindowLayoutFullScreen(!want); } catch (error) { /* 忽略 */ }
+      try {
+        if (want) {
+          win.setWindowSystemBarEnable(['status', 'navigation']);
+        } else {
+          win.setWindowSystemBarEnable([]);
+        }
+      } catch (error) { /* 忽略 */ }
+      // 布局模式变了，重新取避让区并同步栏色。
+      this.applyBars(this.barDark, this.barBg);
+    }).catch(() => {});
   }
 
   // 系统主题变化时先按系统色把状态栏/导航栏刷成同色，避免 Web 还没加载时的白条。
@@ -581,19 +619,30 @@ struct Index {
   }
   // 页面 → 壳层：DSH 客户端插件把终端 tab 的 open/bounds/visible/close 以
   // `console.log('DSH_TERM:<nonce>:' + json)` 发过来，没有 JS 代理也能用。
+  //
+  // 页面插件注册为单实例（multiple:false），所以壳层只需维护一路终端；owner
+  // 仍然参与判断：迟到的旧 tab 消息不能改几何，更不能把现有终端关掉。
+  private termOwnerMatches(owner: string): boolean {
+    return owner === '' || this.termOwner === '' || owner === this.termOwner;
+  }
+
   private onTermBridge(text: string): void {
     const prefix = 'DSH_TERM:' + this.bridgeNonce + ':';
     if (text.indexOf(prefix) !== 0) { return; }
     try {
       const message = JSON.parse(text.slice(prefix.length)) as Record<string, Object>;
       const op = message['op'] as string;
+      const owner = typeof message['owner'] === 'string' ? message['owner'] as string : '';
       if (op === 'open') {
+        if (!this.termOwnerMatches(owner)) { return; }
+        if (owner !== '') { this.termOwner = owner; }
         this.showTerminal = true;
         this.termVisible = false;
         const cwd = message['cwd'] as string;
         if (typeof cwd === 'string' && cwd !== '') { this.termCwd = cwd; }
       } else if (op === 'cwd') {
         // 页面从宿主 API 拿到当前会话的工作目录后补发过来，终端跟随它。
+        // cwd 是会话级状态，不属于某个 tab，所以不按 owner 过滤。
         const cwd = message['cwd'] as string;
         if (typeof cwd === 'string' && cwd !== '') { this.termCwd = cwd; }
       } else if (op === 'ui') {
@@ -603,12 +652,14 @@ struct Index {
         this.webMenu = message['menu'] === true;
         this.webRight = message['right'] === true;
       } else if (op === 'bounds') {
+        if (!this.termOwnerMatches(owner)) { return; }
         const left = Number(message['left']);
         const top = Number(message['top']);
         const width = Number(message['width']);
         const height = Number(message['height']);
         if (!Number.isFinite(left) || !Number.isFinite(top) ||
           !Number.isFinite(width) || !Number.isFinite(height)) { return; }
+        if (owner !== '' && this.termOwner === '') { this.termOwner = owner; }
         this.termLeft = left;
         this.termTop = top;
         this.termWidth = Math.max(1, width);
@@ -616,8 +667,10 @@ struct Index {
         this.termVisible = message['visible'] === true && this.termWidth > 1 && this.termHeight > 1;
         this.showTerminal = true;
       } else if (op === 'visible') {
+        if (!this.termOwnerMatches(owner)) { return; }
         this.termVisible = message['visible'] === true;
       } else if (op === 'focus') {
+        if (!this.termOwnerMatches(owner)) { return; }
         // 页面要求聚焦终端输入框时再弹键盘：终端 tab 打开本身不抢焦点，
         // 否则横屏下键盘一上来就把仅剩的几行终端压没了。
         try { this.getUIContext().getFocusController().requestFocus('term-input'); } catch (error) { /* 未挂载 */ }
@@ -625,7 +678,11 @@ struct Index {
         const url = message['url'] as string;
         if (typeof url === 'string') { this.openExternal(url); }
       } else if (op === 'close') {
+        // 只关掉匹配的 owner：多个标签时代（旧版插件）关一个不能把共用终端关掉。
+        if (!this.termOwnerMatches(owner)) { return; }
         this.showTerminal = false;
+        this.termVisible = false;
+        this.termOwner = '';
       }
     } catch (error) { /* 不是桥消息，忽略 */ }
   }
@@ -640,20 +697,39 @@ struct Index {
     window.getLastWindow(context).then((win: window.Window) => {
       // 沉浸式（EntryAbility 里已设全屏 + 透明栏）：这里只同步栏区图标颜色、
       // 页面背景色，并把内容按避让区让开；栏区露出的就是页面背景。
+      // 系统栏可见时要连同底色一起刷，否则默认白底会和深色页面割裂。
       try {
-        win.setWindowSystemBarProperties({
-          statusBarContentColor: dark ? '#FFFFFF' : '#000000',
-          navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
-        });
+        if (this.systemBarsOn) {
+          win.setWindowSystemBarProperties({
+            statusBarColor: this.barBg,
+            navigationBarColor: this.barBg,
+            statusBarContentColor: dark ? '#FFFFFF' : '#000000',
+            navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
+          });
+        } else {
+          win.setWindowSystemBarProperties({
+            statusBarContentColor: dark ? '#FFFFFF' : '#000000',
+            navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
+          });
+        }
       } catch (error) { /* 忽略 */ }
       try { win.setWindowBackgroundColor(this.barBg); } catch (error) {
         hilog.warn(0, 'DSH_THEME', 'window background failed: %{public}s %{public}s', this.barBg, (error as Error).message);
       }
       try {
-        const system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-        const cutout = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
-        // 系统栏已隐藏，但状态栏/挖孔在系统侧仍有高度；取较大值让顶部 UI 让开前摄。
-        this.insetTop = px2vp(Math.max(system.topRect.height, cutout.topRect.height));
+        if (this.systemBarsOn) {
+          // 系统栏可见：内容回到安全区，额外让位交给系统布局。
+          this.insetTop = 0;
+          this.insetBottom = 0;
+        } else {
+          const system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+          const cutout = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
+          const navigation = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+          // 系统栏已隐藏，但状态栏/挖孔/手势条在系统侧仍有高度；取较大值让
+          // 顶部 UI 让开前摄，底部输入框让开手势条。
+          this.insetTop = px2vp(Math.max(system.topRect.height, cutout.topRect.height));
+          this.insetBottom = px2vp(Math.max(system.bottomRect.height, navigation.bottomRect.height));
+        }
       } catch (error) { /* 拿不到避让区就不留边 */ }
     }).catch(() => {});
   }
@@ -702,6 +778,46 @@ struct Index {
     this.busy = false;
     if (this.readyTimer >= 0) { clearTimeout(this.readyTimer); this.readyTimer = -1; }
     if (this.absoluteTimer >= 0) { clearTimeout(this.absoluteTimer); this.absoluteTimer = -1; }
+    this.settleQuarantine();
+  }
+
+  // 安全模式停用的插件：崩溃/看门狗导致的隔离自动恢复一次（恢复后重启引擎），
+  // 插件自身加载失败导致的隔离则保留，并在 Web 上显示可手动恢复的提示条。
+  private settleQuarantine(): void {
+    const guard = this.guard;
+    if (!guard || !guard.hasQuarantine()) {
+      this.quarantineCount = 0;
+      return;
+    }
+    if (!this.autoRestoreScheduled && guard.canAutoRestore()) {
+      this.autoRestoreScheduled = true;
+      guard.markAutoRestoreAttempted();
+      const error = guard.restoreLastQuarantine();
+      if (error === '') {
+        // 插件目录已移回 profile，需要重启引擎才会重新加载。
+        this.quarantineCount = 0;
+        this.quarantineError = '';
+        this.boot();
+        return;
+      }
+      this.quarantineError = error;
+    }
+    this.quarantineCount = guard.quarantineCount();
+  }
+
+  // 提示条上的「恢复」：与启动页的恢复按钮走同一条路径。
+  private restoreFromBanner(): void {
+    const guard = this.guard;
+    if (!guard) { return; }
+    const error = guard.restoreLastQuarantine();
+    if (error !== '') {
+      this.quarantineError = error;
+      this.quarantineCount = guard.quarantineCount();
+      return;
+    }
+    this.quarantineCount = 0;
+    this.quarantineError = '';
+    this.boot();
   }
 
   // 兜底只从「官方前端已经挂载出首页」开始计时，不能从 URL 就绪时计时：
@@ -746,9 +862,13 @@ struct Index {
       if (attempt === 1 && guard.lastBootFailed()) {
         // 上一次启动没走到界面：先按安全模式起，只留内置 bundle，
         // 让用户能进界面处理插件，而不是卡在启动失败。
-        const removed = guard.quarantine('上次启动未完成');
-        if (removed.length > 0) {
-          this.status = '安全模式：已临时停用 ' + removed.length.toString() + ' 个插件';
+        const outcome = guard.quarantine('上次启动未完成');
+        if (outcome.moved.length > 0) {
+          this.status = '安全模式：已临时停用 ' + outcome.moved.length.toString() + ' 个插件';
+        }
+        if (outcome.error !== '') {
+          // 隔离有残留（目录不存在/移动失败/状态写不进）时提示出来，别静默。
+          this.detail = (this.detail + '隔离插件：' + outcome.error + '\n').slice(-1200);
         }
       }
       guard.markBootStarted();
@@ -771,8 +891,12 @@ struct Index {
       }
       // 界面就绪后再处理保活，避免权限弹窗挡住首屏；之后每 3 秒跟一次插件设置。
       this.applyKeepAlive();
+      this.applySystemBars();
       if (this.keepAliveTimer < 0) {
-        this.keepAliveTimer = setInterval(() => { this.applyKeepAlive(); }, 3000);
+        this.keepAliveTimer = setInterval(() => {
+          this.applyKeepAlive();
+          this.applySystemBars();
+        }, 3000);
       }
     } catch (error) {
       const message = (error as Error).message;
@@ -780,8 +904,8 @@ struct Index {
         // 先怀疑用户插件：隔离第三方 bundle 再试一次，运行时目录不动。
         this.status = '插件导致启动失败，正在停用用户插件后重试';
         this.detail = message;
-        const removed = this.guard.quarantine(message.slice(0, 200));
-        if (removed.length > 0) {
+        const outcome = this.guard.quarantine(message.slice(0, 200));
+        if (outcome.moved.length > 0) {
           try {
             await this.start(3);
             return;
@@ -792,6 +916,10 @@ struct Index {
             this.busy = false;
             return;
           }
+        }
+        if (outcome.error !== '') {
+          // 隔离没成功（例如包目录已损坏）：保留原始启动错误，同时说明为什么没重试。
+          this.detail = (message + '\n隔离插件失败：' + outcome.error).slice(-1200);
         }
       }
       if (attempt === 1 && this.isRuntimeCorrupt(message)) {
@@ -847,6 +975,9 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.Center }) {
       if (this.url !== '') {
+        // 沉浸式下系统栏是隐藏的，但挖孔/底部手势条仍会盖住页面：这里按
+        // 避让区给 Web 让出上下两条（inset 为 0 时就是原来的满屏）。
+        Column() {
         Web({ src: this.url, controller: this.controller })
           // 不开应用内新窗口：window.open 和 <a target="_blank"> 都由文档起点注入的
           // BRIDGE_DOCUMENT_SCRIPT 拦下并转给系统浏览器，内核不会拿到新窗口请求。
@@ -943,15 +1074,33 @@ struct Index {
               this.failed = event.error.getErrorInfo();
             }
           })
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ top: this.insetTop, bottom: this.insetBottom })
       }
       if (this.url === '' || !this.webReady) {
-        Column({ space: 16 }) {          Text('Pocket Harness')
-            .fontSize(28)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.barDark ? '#DCEFE2' : '#1F3D2E')
+        Column({ space: 16 }) {
+          Image($r('app.media.app_icon'))
+            .width(88)
+            .height(88)
+            .borderRadius(22)
+            .objectFit(ImageFit.Cover)
+            .shadow({ radius: 20, color: '#33000000', offsetY: 6 })
+          Column({ space: 6 }) {
+            Text('Pocket Harness')
+              .fontSize(28)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.barDark ? '#DCEFE2' : '#1F3D2E')
+            Text('DeepSeek Harness · 鸿蒙原生')
+              .fontSize(12)
+              .fontColor(this.barDark ? '#8FA396' : '#6B8474')
+          }
           Text(this.status)
             .fontSize(15)
             .fontColor(this.barDark ? '#9FB8A8' : '#4C6B58')
+            .textAlign(TextAlign.Center)
+            .padding({ left: 24, right: 24 })
           if (this.failed !== '') {
             Text(this.failed)
               .fontSize(13)
@@ -973,7 +1122,14 @@ struct Index {
                   .fontSize(15)
                   .backgroundColor('#6B5B4C')
                   .onClick(() => {
-                    this.guard?.restoreLastQuarantine();
+                    const error = this.guard !== undefined ? this.guard.restoreLastQuarantine() : '插件的守门人未初始化';
+                    // 恢复没完全成功时保留隔离记录并把原因显示出来，不重启引擎。
+                    if (error !== '') {
+                      this.failed = error;
+                      this.status = '恢复插件失败';
+                      return;
+                    }
+                    this.failed = '';
                     this.boot();
                   })
               }
@@ -985,7 +1141,7 @@ struct Index {
               .color(this.barDark ? '#7FC79B' : '#1F5D3A')
             // 只有真的在解包时才说「首次启动」；普通冷启动只是等 Web 服务起来。
             Text(this.unpacking
-              ? '首次启动要把官方引擎解包到应用沙箱，需要一到两分钟。'
+              ? '首次启动会把官方引擎解包到应用沙箱，约 1–2 分钟，请保持应用在前台。'
               : (this.url === '' ? '正在启动本地运行时…' : '正在恢复上次会话与工作区…'))
               .fontSize(12)
               .fontColor(this.barDark ? '#8FA396' : '#7A8F81')
@@ -1003,29 +1159,67 @@ struct Index {
         }
         .width('100%')
         .height('100%')
+        .padding({ top: this.insetTop, bottom: this.insetBottom })
         .justifyContent(FlexAlign.Center)
         .backgroundColor(this.barBg)
         // 启动页必须真正吃掉触摸：否则用户仍能点到下面半就绪的 Web UI。
         .hitTestBehavior(HitTestMode.Block)
+      }
+      // 安全模式仍有隔离插件时，在 Web 上压一条提示：主界面已经能用，但用户
+      // 需要知道哪些插件被停用，并能一键恢复。
+      if (this.webReady && this.quarantineCount > 0) {
+        Column() {
+          Column({ space: 4 }) {
+            Row({ space: 10 }) {
+              Text('安全模式：已停用 ' + this.quarantineCount.toString() + ' 个插件')
+                .fontSize(12)
+                .fontColor(this.barDark ? '#F0D9B5' : '#5A421F')
+                .layoutWeight(1)
+              Button('恢复插件')
+                .fontSize(12)
+                .height(28)
+                .backgroundColor('#6B5B4C')
+                .onClick(() => { this.restoreFromBanner(); })
+            }
+            if (this.quarantineError !== '') {
+              Text(this.quarantineError)
+                .fontSize(10)
+                .fontColor(this.barDark ? '#F0A0A0' : '#8C2F2F')
+                .maxLines(3)
+            }
+          }
+          .width('100%')
+          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .backgroundColor(this.barDark ? '#E62A2A2E' : '#E6FFF6E0')
+          .borderRadius(10)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16 })
+        .position({ x: 0, y: this.insetTop + 10 })
       }
       // 右侧栏 tab 的终端画面：只铺在页面报上来的矩形上，侧栏和 dock 仍是页面的。
       if (this.showTerminal && this.termWidth > 0 && this.termHeight > 0) {
         TerminalView({
           runtime: this.runtime,
           stageLeft: this.termLeft,
-          stageTop: this.termTop,
+          // 页面坐标的原点在 Web 内容区；沉浸式时 Web 被顶部避让区下推了
+          // insetTop，终端浮层要跟着加同样的偏移。
+          stageTop: this.termTop + this.insetTop,
           stageWidth: this.termWidth,
           stageHeight: this.termHeight,
           visible: this.termVisible,
           workspaceCwd: this.termCwd,
-          onClose: () => { this.showTerminal = false; }
+          onClose: () => { this.showTerminal = false; this.termVisible = false; this.termOwner = ''; }
         })
       }
     }
     .width('100%')
     .height('100%')
-    // 状态栏/导航栏现在是透明的，这两条留白由外层背景补上，颜色跟 Web 主题同步。
+    // 状态栏/导航栏隐藏时，这两条留白由外层背景补上，颜色跟 Web 主题同步；
+    // 系统栏可见时不再扩安全区，内容交给系统布局避让。
     .backgroundColor(this.barBg)
-    .expandSafeArea([SafeAreaType.SYSTEM, SafeAreaType.KEYBOARD], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .expandSafeArea(
+      this.systemBarsOn ? [] : [SafeAreaType.SYSTEM, SafeAreaType.KEYBOARD],
+      this.systemBarsOn ? [] : [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

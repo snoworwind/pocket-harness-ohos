@@ -365,6 +365,17 @@ export struct TerminalView {
     this.dirty = true;
   }
 
+  // 回车提交后保持输入焦点与软键盘：终端要能连续敲命令，而不是每条都重新
+  // 点输入框。部分输入法/版本在 onSubmit 返回的同一帧会忽略聚焦请求，
+  // 下一帧再补一次。
+  private keepInputFocus(): void {
+    const focus = this.getUIContext().getFocusController();
+    try { focus.requestFocus('term-input'); } catch (error) { /* 未挂载 */ }
+    setTimeout(() => {
+      try { focus.requestFocus('term-input'); } catch (error) { /* 已离开页面 */ }
+    }, 50);
+  }
+
   private onTextChange(value: string): void {
     let common = 0;
     while (common < value.length && common < this.input.length && value[common] === this.input[common]) common++;
@@ -443,8 +454,15 @@ export struct TerminalView {
           .fontColor(DEFAULT_FG)
           .backgroundColor('#17181b')
           .id('term-input')
+          // 默认的 Done 动作会在回车后收起软键盘。终端要连续敲命令，改成
+          // Send：输入法只提交、不主动收起；onSubmit 里再补一次聚焦兜底。
+          .enterKeyType(EnterKeyType.Send)
           .onChange((value: string) => this.onTextChange(value))
-          .onSubmit(() => { this.send('\n'); this.input = ''; })
+          .onSubmit(() => {
+            this.send('\n');
+            this.input = '';
+            this.keepInputFocus();
+          })
       }
       .width('100%')
       .height('100%')

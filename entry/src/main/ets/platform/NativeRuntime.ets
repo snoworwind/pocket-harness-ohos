@@ -32,6 +32,8 @@ const INTEGRITY_FILES: string[] = [
 const INSTALLED_SCHEMA = 2;
 const LOG_ROTATE_BYTES = 4 * 1024 * 1024;
 const LOG_BACKUP_COUNT = 2;
+// 旧运行时目录切片删除时，目录的第二次访问用这个不可见后缀标记。
+const PRUNE_REVISIT = '\u0000';
 
 // 日志落盘前的统一脱敏（纯函数，Node 侧可单独 transpile 后测试）。
 // 只替换值、保留键名，避免把 token/Authorization/密钥写进诊断包。
@@ -260,12 +262,16 @@ export class NativeRuntime {
     this.engineVersion = manifest.engineVersion; this.ready = true;
     this.installHarmonyPlugin();
     this.installTerminalPlugin();
-    // L-03：实验性 auto-review 默认关闭，只有用户在 harmony-native.json 里显式
-    // 打开才注册；关闭时还要清掉旧版本写进 profile 的插入行，否则升级后仍生效。
-    if (this.readAutoReview()) {
+    // 插件启用状态跨更新保持：显式 true 注册，显式 false 移除；没有显式值时不
+    // 擅自改动已有行——旧版本默认装载过的插件（auto-review）说明用户此前就在用，
+    // 升级不能替用户关掉。选择会写回 harmony-native.json，后续更新按它执行。
+    const autoReview = this.readAutoReviewChoice();
+    if (autoReview === true) {
       this.installAutoReviewPlugin();
-    } else {
+    } else if (autoReview === false) {
       this.uninstallAutoReviewPlugin();
+    } else {
+      this.adoptAutoReviewPlugin();
     }
     this.installNotices();
     this.migrateLegacyHomePaths();
@@ -344,15 +350,51 @@ export class NativeRuntime {
     }
     throw new Error('未找到当前设备架构的原生运行时库');
   }
+  // 旧运行时目录里有两万多个文件，一次性递归删除会把 UI 线程卡住超过 6 秒，
+  // 触发 THREAD_BLOCK_6S 看门狗（首个升级到新运行时的版本就这样被系统杀掉，
+  // 下次启动还会被当成「插件导致启动失败」进安全模式）。这里改成切片删除：
+  // 每个宏任务最多删 8ms，剩下的用 setTimeout 让出去，界面保持可响应。
+  private pruneQueue: string[] = [];
+  private pruneTimer: number = -1;
   private pruneOldRuntimes(): void {
     const base = this.context.filesDir;
     const current = this.root.slice(base.length + 1);
     try {
       for (const name of fs.listFileSync(base)) {
         if (name === current || name.indexOf('runtime-') !== 0) { continue; }
-        this.removeTree(base + '/' + name);
+        this.pruneQueue.push(base + '/' + name);
       }
     } catch (error) { /* 清理失败不影响运行 */ }
+    this.pruneSlice();
+  }
+  private pruneSlice(): void {
+    if (this.pruneQueue.length === 0) { return; }
+    const deadline = Date.now() + 8;
+    while (this.pruneQueue.length > 0 && Date.now() < deadline) {
+      const path = this.pruneQueue.pop() as string;
+      if (path.endsWith(PRUNE_REVISIT)) {
+        // 子项已经处理完：空目录才删得掉；失败就放弃这一支，避免反复重试。
+        try { fs.rmdirSync(path.slice(0, -1)); } catch (error) { /* 非空/已删 */ }
+        continue;
+      }
+      try {
+        const stat = fs.lstatSync(path);
+        if (!stat.isDirectory()) {
+          fs.unlinkSync(path);
+          continue;
+        }
+        const children = fs.listFileSync(path);
+        if (children.length === 0) {
+          fs.rmdirSync(path);
+          continue;
+        }
+        this.pruneQueue.push(path + PRUNE_REVISIT);
+        for (const name of children) { this.pruneQueue.push(path + '/' + name); }
+      } catch (error) { /* 已不存在或没权限：跳过 */ }
+    }
+    if (this.pruneQueue.length > 0) {
+      this.pruneTimer = setTimeout(() => { this.pruneTimer = -1; this.pruneSlice(); }, 16);
+    }
   }
   // fs.mkdirSync 在目录已存在时会抛 13900015（File exists），即使 recursion=true，
   // 所以这里先探测再创建：重试一次 ensure() 不能因为上次留下的空目录而失败。
@@ -431,17 +473,70 @@ export class NativeRuntime {
       return parsed.keepAlive === true;
     } catch (error) { return false; }
   }
-  // L-03：auto-review 是实验性“自动批准”预设（danger-full-access + LLM 裁决），
-  // 默认不注册。需要恢复使用过 auto 预设的旧会话时，在
-  // <filesDir>/harness-home/harmony-native.json 里写 {"autoReview": true} 再重启应用。
-  readAutoReview(): boolean {
+  // 是否显示系统状态栏/导航栏（设置 → 通用 → 鸿蒙适配）。缺省 false：
+  // 保持原来的沉浸式全屏，页面自己给挖孔与底部手势条让位。
+  readShowSystemBars(): boolean {
     try {
       const file = this.context.filesDir + '/harness-home/harmony-native.json';
       if (!fs.accessSync(file)) { return false; }
       const text = fs.readTextSync(file);
       const parsed = JSON.parse(text) as Record<string, boolean>;
-      return parsed.autoReview === true;
+      return parsed.showSystemBars === true;
     } catch (error) { return false; }
+  }
+  // L-03：auto-review 是实验性“自动批准”预设（danger-full-access + LLM 裁决），
+  // 默认不注册。需要恢复使用过 auto 预设的旧会话时，在
+  // <filesDir>/harness-home/harmony-native.json 里写 {"autoReview": true} 再重启应用。
+  // 返回 undefined 表示用户从未做过显式选择（旧版本遗留状态）。
+  readAutoReviewChoice(): boolean | undefined {
+    try {
+      const file = this.context.filesDir + '/harness-home/harmony-native.json';
+      if (!fs.accessSync(file)) { return undefined; }
+      const text = fs.readTextSync(file);
+      const parsed = JSON.parse(text) as Record<string, Object>;
+      const value = parsed['autoReview'];
+      if (value === true) { return true; }
+      if (value === false) { return false; }
+      return undefined;
+    } catch (error) { return undefined; }
+  }
+  // 只写给应用壳层读的开关，保留 harmony-native.json 里的其它字段（keepAlive、
+  // showSystemBars 等由 harmony-compat 插件负责）。原子替换，写一半不会损坏文件。
+  private writeHarmonyNativeFlag(key: string, value: boolean): void {
+    const dir = this.context.filesDir + '/harness-home';
+    const file = dir + '/harmony-native.json';
+    let current: Record<string, Object> = {};
+    try {
+      if (fs.accessSync(file)) {
+        const parsed = JSON.parse(fs.readTextSync(file)) as Record<string, Object>;
+        if (parsed !== null && typeof parsed === 'object') { current = parsed; }
+      }
+    } catch (error) { current = {}; }
+    current[key] = value;
+    this.ensureDir(dir);
+    const temporary = file + '.tmp';
+    const out = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(out.fd, JSON.stringify(current) + '\n');
+    } finally {
+      fs.closeSync(out);
+    }
+    fs.renameSync(temporary, file);
+  }
+  // 旧版本曾默认把 auto-review 插入行写进 profile。用户没有显式选择时，磁盘上
+  // 已有这行就说明用户此前在用它：认可为开启并固化到 harmony-native.json，
+  // 而不是按“默认关闭”把它删掉。其它由壳层托管的插件行同样只补缺、不删用户状态。
+  private adoptAutoReviewPlugin(): void {
+    const name = '@deepseek-ai/dsh-experimental-auto-review';
+    const profileDir = this.context.filesDir + '/harness-home/profiles/web';
+    const patchPath = profileDir + '/cordis.patch.yml';
+    try {
+      if (!fs.accessSync(patchPath)) { return; }
+      const text = this.normalizeProfilePatch(fs.readTextSync(patchPath));
+      if (text.indexOf(name) < 0) { return; }
+      this.writeHarmonyNativeFlag('autoReview', true);
+      this.installAutoReviewPlugin();
+    } catch (error) { /* 读不到/写不进就维持现状，绝不主动关闭 */ }
   }
   // 一次性迁移：旧版本把 HOME 放在 runtime-<版本>/home，升级后该目录被删，
   // 会话里存的工作目录就失效。把 harness-home 里残留的这种路径改写成稳定路径。

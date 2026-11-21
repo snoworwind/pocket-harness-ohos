@@ -12,4 +12,4 @@ if(diagnostics.length){console.error(ts.formatDiagnosticsWithColorAndContext(dia
 program.emit();
 const nativeSource=fs.readFileSync(path.join(root,'entry/src/main/ets/platform/DeepSeek.ets'),'utf8');
 fs.writeFileSync(path.join(out,'DeepSeek.js'),ts.transpileModule(nativeSource,{compilerOptions:options}).outputText);
-const result=cp.spawnSync(process.execPath,['--test',path.join(root,'tests/core.cjs'),path.join(root,'tests/transport.cjs'),path.join(root,'tests/rpc.cjs'),path.join(root,'tests/attachment-pure-js.cjs'),path.join(root,'tests/resource-url-shim.cjs'),path.join(root,'tests/secret-scan.cjs')],{stdio:'inherit'});process.exit(result.status??1);
+const result=cp.spawnSync(process.execPath,['--test',path.join(root,'tests/core.cjs'),path.join(root,'tests/transport.cjs'),path.join(root,'tests/rpc.cjs'),path.join(root,'tests/attachment-pure-js.cjs'),path.join(root,'tests/resource-url-shim.cjs'),path.join(root,'tests/secret-scan.cjs'),path.join(root,'tests/plugin-guard.cjs')],{stdio:'inherit'});process.exit(result.status??1);

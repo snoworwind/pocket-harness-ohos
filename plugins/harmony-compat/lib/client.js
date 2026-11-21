@@ -121,39 +121,67 @@ window.__ModuleLoader__.load({
 		/** HarmonyOS adaptation copy, Chinese first. */
 		const zh = {
 			title: "鸿蒙适配 / 后台保活",
-			description: "开启后，应用会在后台维持定位连续任务，降低被系统冻结的概率。"
+			description: "开启后，应用会在后台维持定位连续任务，降低被系统冻结的概率。",
+			systemBarsTitle: "显示系统状态栏与底部手势条",
+			systemBarsDescription: "关闭沉浸式全屏。开启后可以看到时间、电量与底部手势条，页面内容会整体让开这两条系统栏。"
 		};
 		/** English copy, checked against the Chinese keys. */
 		const en = {
 			title: "HarmonyOS adaptation / Background keep-alive",
-			description: "Keep location-based continuous tasks running in the background so the system is less likely to freeze the app."
+			description: "Keep location-based continuous tasks running in the background so the system is less likely to freeze the app.",
+			systemBarsTitle: "Show system status and navigation bars",
+			systemBarsDescription: "Leave immersive full screen. Enabling this shows the clock, battery and gesture bar, and the page is inset below them."
 		};
 		//#endregion
 		//#region @deepseek-ai/dsh-harmony-compat/HarmonyRow.js
 		/**
-		* Render the HarmonyOS keep-alive row: localized title and description on
-		* the left, one switch bound to the Host `keepAlive` field on the right.
-		* @param props - slot props: copy hook, config-form hook and writer.
+		* One settings row: localized title and description on the left, one switch
+		* bound to a Host Config boolean field on the right.
+		* @param props - copy hook, config-form hook, field name, copy keys, writer.
 		* @returns the settings row element tree.
 		*/
-		function HarmonyRow({ t, useConfig, setKeepAlive }) {
+		function HarmonySwitchRow({ t, useConfig, field, titleKey, descriptionKey, setValue }) {
 			const state = useConfig((value) => value);
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: HarmonyRow_module_css_default.row,
 				children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("div", {
 					className: HarmonyRow_module_css_default.title,
-					children: t("title")
+					children: t(titleKey)
 				}), (0, react_jsx_runtime.jsx)("div", {
 					className: HarmonyRow_module_css_default.description,
-					children: t("description")
+					children: t(descriptionKey)
 				})] }), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Switch, {
-					checked: state.value?.keepAlive === true,
-					label: t("title"),
+					checked: state.value?.[field] === true,
+					label: t(titleKey),
 					disabled: state.status !== "ready" || !state.writable,
 					onChange: (enabled) => {
-						setKeepAlive(enabled);
+						setValue(enabled);
 					}
 				})]
+			});
+		}
+
+		/** Keep-alive row (background location continuous task). */
+		function HarmonyRow(props) {
+			return (0, react_jsx_runtime.jsx)(HarmonySwitchRow, {
+				t: props.t,
+				useConfig: props.useConfig,
+				field: "keepAlive",
+				titleKey: "title",
+				descriptionKey: "description",
+				setValue: props.setKeepAlive
+			});
+		}
+
+		/** System bars row (leave immersive full screen). */
+		function SystemBarsRow(props) {
+			return (0, react_jsx_runtime.jsx)(HarmonySwitchRow, {
+				t: props.t,
+				useConfig: props.useConfig,
+				field: "showSystemBars",
+				titleKey: "systemBarsTitle",
+				descriptionKey: "systemBarsDescription",
+				setValue: props.setShowSystemBars
 			});
 		}
 		//#endregion
@@ -184,6 +212,12 @@ window.__ModuleLoader__.load({
 					void form.set("keepAlive", enabled);
 				}
 			});
+			const systemBarsFace = () => ({
+				hooks: { config: form },
+				setShowSystemBars: (enabled) => {
+					void form.set("showSystemBars", enabled);
+				}
+			});
 			ctx.effect(() => ctx.configForms.whileServed([namespace], () => ctx.slots.inject("settings.general.item", () => ctx.slots.register({
 				name: "settings.general.item",
 				id: namespace,
@@ -191,6 +225,14 @@ window.__ModuleLoader__.load({
 				locale,
 				inject: face
 			}, HarmonyRow))), "harmony-compat: general settings row");
+			// 显示状态栏/导航栏：与保活同一命名空间下的另一个开关。
+			ctx.effect(() => ctx.configForms.whileServed([namespace], () => ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+				name: "settings.general.item",
+				id: namespace + "-system-bars",
+				order: 96,
+				locale,
+				inject: systemBarsFace
+			}, SystemBarsRow))), "harmony-compat: system bars settings row");
 		}
 		//#endregion
 		exports.apply = apply;

@@ -1,19 +1,56 @@
 import { UIAbility, ConfigurationConstant, common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import BuildProfile from 'BuildProfile';
 
 // 沉浸式：全屏布局 + 隐藏系统栏。
 //
 // 这台设备上 setWindowSystemBarProperties 的 statusBarColor/navigationBarColor
 // 不生效（栏区始终是系统默认白底），改色、透明栏 + 页面留白都试过，栏区仍然白。
-// 于是采用官方「方式一」：直接不显示状态栏和导航栏，让 Web 内容占满整屏。
+// 于是默认采用官方「方式一」：直接不显示状态栏和导航栏，让 Web 内容占满整屏，
+// 页面自己给挖孔和底部手势条让位。
+//
+// 设置 → 通用 → 鸿蒙适配 里可以打开「显示系统状态栏与底部手势条」：
+// 那时恢复系统栏、取消全屏布局，内容回到安全区内。开关镜像在
+// harness-home/harmony-native.json，这里启动时先按它决定初始状态，
+// 之后由 Index 轮询应用变化（避免先全屏再跳一下）。
 export default class EntryAbility extends UIAbility {
   private win?: window.Window;
 
-  private immersive(win: window.Window): void {
-    try { win.setWindowLayoutFullScreen(true); } catch (error) { /* 忽略 */ }
-    try { win.setWindowSystemBarEnable([]); } catch (error) { /* 忽略 */ }
+  private showSystemBars(): boolean {
+    try {
+      const file = this.context.filesDir + '/harness-home/harmony-native.json';
+      if (!fs.accessSync(file)) { return false; }
+      const parsed = JSON.parse(fs.readTextSync(file)) as Record<string, boolean>;
+      return parsed.showSystemBars === true;
+    } catch (error) { return false; }
+  }
+
+  private immersive(win: window.Window, showBars: boolean): void {
+    try { win.setWindowLayoutFullScreen(!showBars); } catch (error) { /* 忽略 */ }
+    try {
+      if (showBars) {
+        win.setWindowSystemBarEnable(['status', 'navigation']);
+      } else {
+        win.setWindowSystemBarEnable([]);
+      }
+    } catch (error) { /* 忽略 */ }
+    if (showBars) { this.applySystemBarColors(win); }
+  }
+
+  // 系统栏可见时把它刷成和页面同色；内容色跟随深浅模式，避免深色主题下
+  // 状态栏文字还是黑的。
+  private applySystemBarColors(win: window.Window): void {
+    const dark = this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    try {
+      win.setWindowSystemBarProperties({
+        statusBarColor: dark ? '#101113' : '#F7F7F0',
+        navigationBarColor: dark ? '#101113' : '#F7F7F0',
+        statusBarContentColor: dark ? '#FFFFFF' : '#000000',
+        navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
+      });
+    } catch (error) { /* 忽略 */ }
   }
 
   // 窗口背景色必须在 loadContent() 之后设置才生效（官方社区明确过：loadContent 前
@@ -34,7 +71,7 @@ export default class EntryAbility extends UIAbility {
     } catch (error) { /* 旧版本没有该接口 */ }
     try {
       this.win = stage.getMainWindowSync();
-      this.immersive(this.win);
+      this.immersive(this.win, this.showSystemBars());
     } catch (error) { /* 忽略 */ }
     stage.loadContent('pages/Index').then(() => {
       const win = this.win;
@@ -44,7 +81,7 @@ export default class EntryAbility extends UIAbility {
 
   onConfigurationUpdate(): void {
     if (!this.win) { return; }
-    this.immersive(this.win);
+    this.immersive(this.win, this.showSystemBars());
     this.applyWindowBackground(this.win);
   }
 }

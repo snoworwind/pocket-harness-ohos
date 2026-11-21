@@ -1,20 +1,24 @@
 # @deepseek-ai/dsh-harmony-compat
 
 DeepSeek Harness 0.2.2-rc.1 的鸿蒙适配插件（Host 半 + Web Client 半）。
-第一版只提供一个开关：**鸿蒙适配 / 后台保活**（`keepAlive`，默认 `true`）。
+提供两个开关：
 
-这个开关本身不执行任何保活动作。Host 半只负责把当前值镜像到
+- **鸿蒙适配 / 后台保活**（`keepAlive`，默认 `false`）；
+- **显示系统状态栏与底部手势条**（`showSystemBars`，默认 `false`，即保持沉浸式全屏）。
+
+开关本身不执行任何动作。Host 半只负责把当前值镜像到
 `$DSH_HOME/harmony-native.json`；HarmonyOS 应用（`entry/src/main/ets/pages/Index.ets`）
-每 3 秒读一次该文件，值变化时启停后台定位连续任务
-（`entry/src/main/ets/platform/NativeRuntime.ets` 的 `readKeepAlive()`，文件缺失按 `true` 处理）。
+每 3 秒读一次该文件：`keepAlive` 变化时启停后台定位连续任务
+（`entry/src/main/ets/platform/NativeRuntime.ets` 的 `readKeepAlive()`，文件缺失按 `false` 处理），
+`showSystemBars` 变化时切换全屏布局与系统栏（`readShowSystemBars()`）。
 
 ## 文件镜像
 
 | 项 | 值 |
 | --- | --- |
 | 路径 | `$DSH_HOME/harmony-native.json`（应用里是 `filesDir/harness-home/harmony-native.json`） |
-| 内容 | `{"keepAlive":true}` / `{"keepAlive":false}`，单行 JSON，无其它字段 |
-| 时机 | 插件挂载时写一次；之后每次 Loader 提交该字段的新值都重写 |
+| 内容 | `{"keepAlive":false,"showSystemBars":false}`，单行 JSON；其它字段（如 `autoReview`）原样保留 |
+| 时机 | 插件挂载时写一次；之后每次 Loader 提交这两个字段的新值都重写 |
 | 原子性 | 先写同目录 `<file>.<pid>.tmp`，再 `rename` 覆盖目标文件 |
 | 失败 | 仅 `ctx.logger.warn`，不阻塞设置写入 |
 
@@ -36,9 +40,9 @@ Host 用 `@deepseek-ai/dsh-home-paths` 的 `dshHomePath()` 解析 home：
 
 因此：
 
-- Host 的 `Config = z.object({ keepAlive: z.boolean().default(true).volatile() })`；
+- Host 的 `Config = z.object({ keepAlive: z.boolean().default(false).volatile(), showSystemBars: z.boolean().default(false).volatile() })`；
 - **profile entry id 必须叫 `harmony-native`**，命名空间才会是 `harmony-native`；
-- Client 用 `ctx.configForms.get("harmony-native")`、`form.set("keepAlive", value)`。
+- Client 用 `ctx.configForms.get("harmony-native")`、`form.set("keepAlive" | "showSystemBars", value)`。
 
 这正是 `cordis.patch.yml` 里 id 用 `harmony-native`（而不是任务书初稿里的
 `harmony-compat`）的原因：包名仍是 `@deepseek-ai/dsh-harmony-compat`，但 entry id
@@ -105,5 +109,5 @@ node --check lib/index.js
 node --check lib/client.js
 ```
 
-浏览器端只能在真实 Web UI 里验证：设置 → 通用应出现两行文案与一个 `Switch`；
-切换后 `$DSH_HOME/harmony-native.json` 内容跟随变化，应用轮询后启停后台任务。
+浏览器端只能在真实 Web UI 里验证：设置 → 通用应出现两行文案与两个 `Switch`；
+切换后 `$DSH_HOME/harmony-native.json` 内容跟随变化，应用轮询后启停后台任务或切换系统栏。

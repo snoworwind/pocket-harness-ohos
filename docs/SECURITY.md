@@ -64,7 +64,7 @@ DSH 引擎 + 原生运行时（同 UID）
 | 同 UID 可篡改运行时与 `.installed` | 见上“同 UID 即信任”；逐文件基线由设备首次安装时生成，随包清单暂无逐文件签名。 |
 | 第三方插件无沙箱 | 见上“安装插件 = 完全信任”。 |
 | WebView 同源预览可读取 `window.__dshNonce` | nonce 防止跨源伪造，不隔离同源内容；若引擎以同源方式渲染不可信 HTML，仍可调用下载桥。后续应把预览放到独立 origin。 |
-| `auto` 预设可被显式开启 | 默认关闭；在 `harness-home/harmony-native.json` 写 `{"autoReview": true}` 并重启才注册，开启后由 LLM reviewer 自动裁决，存在提示注入绕过人工确认的风险。 |
+| `auto` 预设可被显式开启 | 默认关闭；在 `harness-home/harmony-native.json` 写 `{"autoReview": true}` 并重启才注册，开启后由 LLM reviewer 自动裁决，存在提示注入绕过人工确认的风险。**开启状态跨更新保留**：只有显式写成 `false` 或删除插入行才会关闭；旧版本默认安装过的行会按「用户此前在用」沿用并固化选择。 |
 | 上游源码/二进制未全部固定 SHA-256 | **已补齐**：有官方 SHA-256/commit 的按官方值固定；上游只发布 PGP/SHA-512 的条目，固定“按官方下载地址计算”的可复现 SHA-256，并在 [SOURCES.md](SOURCES.md) 标注依据。任何上游字节变化都会让构建失败。 |
 | 历史提交含开发环境公开 CA 与早期构建模板 | 历史中发现一次提交过 `extra-ca.pem`（Kaspersky 公开根证书，1273 字节，无私钥）和两份无签名口令的 `build-profile.json5` 模板，均已移出版本库。`secret-scan --history` 按精确 blob SHA-256 豁免这两类历史内容；同名文件以不同内容再次出现仍会被拦截。 |
 

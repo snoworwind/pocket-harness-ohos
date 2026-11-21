@@ -47,3 +47,21 @@ bash native/iec/tests/elf_dl_x86/run.sh
 ```
 
 覆盖 x86_64 的相对重定位、GOT/PLT、弱符号、宿主函数查找与构造函数。x86 装载器遇到未实现的重定位会明确失败；当前引擎插件没有 TLS 重定位。
+
+## 已知问题：预编译 libnode 的冷启动取模
+
+当前 x86_64 `libnode.so`（Node 24.22.1，本次验证用）有一个只在 x86 上出现的冷启动
+缺陷：**进程内第一次浮点取模会返回 NaN**，之后同一条表达式恢复正常。
+
+`@js-temporal/polyfill` 在模块初始化第一行就执行 `Date.now() % 1e6` 计算纪元纳秒，
+于是 11 个核心服务插件（session-persistence、subagent、session-controller、schedule…）
+全部 `failed to import: RangeError: The number NaN cannot be converted to BigInt`，
+Web UI 停在「Failed to load plugins」。
+
+修复方式在 `entry/src/main/resources/rawfile/harmony/runtime-preload.cjs`：x64 上先做一次
+**用变量参与**的浮点取模（纯字面量会被 V8 解析期折叠，消耗不掉这次冷启动），再让引擎
+加载。arm64 上执行同样分支但无副作用。这是一处针对当前预编译产物的兼容垫片；重新
+构建 x86 `libnode` 后应复测并考虑移除。
+
+已用 HarmonyOS 6.1.1（API 24）x86_64 模拟器验证：引擎正常启动、设置页出现两个
+鸿蒙适配开关、终端可打开并执行命令。

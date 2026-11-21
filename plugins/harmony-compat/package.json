@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-harmony-compat",
   "version": "0.1.0",
-  "description": "HarmonyOS adaptation settings for DeepSeek Harness: a General-settings keep-alive switch whose value is mirrored to $DSH_HOME/harmony-native.json",
+  "description": "HarmonyOS adaptation settings for DeepSeek Harness: General-settings switches for background keep-alive and system bars, mirrored to $DSH_HOME/harmony-native.json",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

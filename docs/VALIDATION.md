@@ -1,6 +1,89 @@
 # 验证说明
 
-记录截至 2026-11-18 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+记录截至 2026-11-21 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+
+## 2026-11-21 GitHub issue 修复（#2–#6、终端回车）
+
+本轮处理仓库里 5 个 open issue，并另外修了终端回车后软键盘自动收起、以及插件启用状态在应用更新后被关闭的问题。
+环境：Windows 构建机 + DevEco Studio（hvigor），WSL 里有原生库与官方引擎暂存树。
+先在 arm64 上构建；随后按用户要求补齐 x86_64 运行时，并在 HarmonyOS 6.1.1（API 24）模拟器上做了验收（见下方 x86 小节）。
+
+| Issue | 修复 | 本轮验证 |
+| --- | --- | --- |
+| #2 fetch polyfill 收到 HTTP 205 抛未捕获异常 | `makeResponse()` 改用 `isNullBodyStatus()`：HEAD/204/**205**/304 都摘掉 body 并 `resume()` 底层连接；Response 构造放进 `settleWithResponse()`，状态码/响应头非法时 reject Promise 而不是在异步 HTTP 回调里 throw | `node scripts/test-fetch-polyfill.cjs` 19 项 PASS（新增 205 空 body、非 2xx–5xx 状态码 reject、无 body 判定）；`node tests/fetch-redirect.cjs` 12 项 PASS；设备端未单独构造 205 |
+| #3 插件隔离/恢复失败会丢配置与恢复记录 | `quarantine()` 先保存**完整原 bundle 列表**再改配置；隔离记录改为可追加的 `records`（兼容旧单条格式）；配置与记录都改成临时文件 + rename；写失败时回滚配置和已移动的包；一个包都没移动成功时不改配置。`restoreLastQuarantine()` 只在**所有包都移回且配置写成功**后删记录，否则保留记录并返回错误文案；`Index` 把错误显示在启动页 | `node scripts/test.cjs` 57 项（56 pass / 1 skip，含 plugin-guard 5 项）；ArkTS 经 hvigor `CompileArkTS` 通过；失败路径未在设备上构造 |
+| #4 多终端标签共用原生终端状态 | 壳层只有一路原生终端，插件改为 `multiple: false`（内核单实例地址），所有桥消息用固定 `OWNER`；`Index` 记录 owner 并忽略不匹配的 bounds/visible/focus/close，关一个标签不再清掉共用状态；`watchActiveSession` 的 cwd 也统一 owner | ArkTS 编译通过；**x86 模拟器实测**：连续两次「原生终端」仍只有 1 个 tab / 1 个 stage，bash 可执行 `echo hello` |
+| #5 后台保活异步启停竞态 | `BackgroundKeepAlive` 改成串行队列 + generation：start/stop 按顺序执行，等待点后代号变化就回滚；本次新建的定位订阅在失败/被取代时撤销；连续任务刚启动就被取代时立即 `stopBackgroundRunning`；stop 失败保留 `active` 供下次重试 | ArkTS 编译通过；代码审查覆盖权限拒绝、等待中 stop、启动后立即 stop 三条路径；竞态未在设备上复现 |
+| #6 全屏且无状态栏开关、挖孔挡内容、启动页简陋 | `harmony-compat` 新增 `showSystemBars`（volatile）设置行；`NativeRuntime.readShowSystemBars()` + `Index.applySystemBars()` 每 3 秒跟随，`EntryAbility` 启动时先按镜像值决定布局；沉浸式时按 `TYPE_SYSTEM`/`TYPE_CUTOUT`/`TYPE_NAVIGATION_INDICATOR` 给 Web 上下留出避让区（终端浮层同步偏移），系统栏可见时恢复安全区布局；启动页加应用图标、副标题和更清楚的解包提示 | ArkTS 编译通过；`official-engine.tar.gz` 重新打包（含新插件），运行时清单 `0.2.2-rc.1-74c426762080`；**x86 模拟器实测**：设置页两行文案与开关都在，切换后系统栏即时出现/消失，沉浸式下挖孔区域留白 |
+| 终端回车后软键盘收起 | `TextInput` 改用 `enterKeyType(EnterKeyType.Send)`，`onSubmit` 里发送换行、清空输入并重新请求焦点（下一帧再补一次），可以连续敲命令 | ArkTS 编译通过；**x86 模拟器实测**：软键盘动作键显示「发送」，`echo hello` 执行后输入框清空、键盘保持展开 |
+| 插件启用状态在更新后被关闭 | `NativeRuntime` 把 auto-review 改为三态：显式 `true` 注册、显式 `false` 移除、没有显式值时**不改动已有行**；旧版本默认写入的行按「用户此前在用」沿用，并把 `autoReview: true` 固化进 `harmony-native.json`；其它壳层托管的插件行同样只补缺、不删用户状态 | ArkTS 编译通过；代码审查覆盖 true / false / 缺失三条分支；旧 profile 升级场景未在设备上构造 |
+
+### x86_64 模拟器验收（2026-11-21）
+
+模拟器：HarmonyOS 6.1.1（API 24），`hdc -t 127.0.0.1:5555`。x86 运行时使用
+`/var/tmp/deepseek-harmony-x86` 里的 9 个命令库（node/bash/toybox/tar/cpio/unzip/zip/rg）
+重新打包引擎（x86 addons + 新插件），HAR 以 `abiFilters: ["x86_64"]` 构建，HAP 仅含 x86 库。
+
+- 首次启动解包：引擎 49 MB 约 23 s，npm/python/vim 约 7 s；`IEC_LOGGER` 无
+  `THREAD_BLOCK`/`APP_FREEZE`。
+- 发现并修复：当前预编译 x86 `libnode.so` 进程内**第一次浮点取模返回 NaN**，撞上
+  `@js-temporal/polyfill` 初始化，导致 11 个核心插件 import 失败、界面停在
+  「Failed to load plugins」。`runtime-preload.cjs` 在 x64 上先用变量做一次浮点取模
+  预热（字面量会被解析期折叠），修复后 `web-stderr.log` 无插件失败，Web GUI 正常。
+- 已验证：
+  - Web GUI 正常显示工作区选择、会话输入框与「Get started」；
+  - 设置 → General 末尾出现 `HarmonyOS adaptation / Background keep-alive` 与
+    `Show system status and navigation bars` 两行；
+  - 打开系统栏开关后状态栏（时间/电量）与底部手势条立即出现，
+    `harmony-native.json` 变为 `{"keepAlive":false,"showSystemBars":true}`；关掉后恢复
+    沉浸式，顶部保留挖孔高度的背景留白（[截图](images/x86-system-bars.jpg)）；
+  - 原生终端：打开后有 `bash-5.3$` 提示符，`echo hello` 正常执行；软键盘动作键为
+    「发送」，执行后输入框清空、键盘不收起（[截图](images/x86-terminal-enter.jpg)）；
+    再次点「原生终端」仍只有一个 tab；
+  - 终端插件标志 `window.__dshHarmonyTerminalReady/Apply === true`，nonce 已注入；
+  - 首页/工作区选择界面见 [截图](images/x86-home.jpg)。
+- 未验证：x86 运行时只有 12 个命令，python/git/gh/curl 等未构建，未测试这些功能；
+  auto-review 旧 profile 升级保持、保活竞态、插件隔离失败路径仍未在设备上构造。
+
+### 0.1.0.6 首次启动看门狗与安全模式误隔离（2026-11-21）
+
+0.1.0.6 首次安装到真机后的第一次启动在解包末尾触发 `THREAD_BLOCK_6S` / `APP_FREEZE`；
+第二次启动进入安全模式，把所有第三方插件（包括用户启用的 auto-review）移进隔离目录。
+
+- **根因**：`NativeRuntime.pruneOldRuntimes()` 在 `ensure()` 里**同步递归删除**旧
+  `runtime-*` 目录（约 593 MB、2.6 万个文件），跑在 UI 线程上；解包完成后一次删完，
+  超过 6 秒看门狗阈值。进程被杀时还没走到 `markBootSucceeded()`，`.boot-in-progress`
+  残留，下次启动被误判为「插件导致启动失败」，于是整批隔离。
+- **修复**：
+  1. 旧运行时改为**分片删除**：每个宏任务最多 8 ms，剩余交给 16 ms 定时器继续；
+     目录用不可见后缀标记二次访问，非空/失败不再重试，避免空转。
+  2. `PluginGuard` 新增一次性自动恢复：只对「上次启动未完成」这类崩溃/看门狗隔离
+     生效，每个安装最多尝试一次（`.auto-restore-attempted`）；插件 import 失败导致的
+     隔离不自动恢复，避免反复把引擎弄挂。
+  3. Web GUI 起来后若仍有隔离，显示「安全模式：已停用 N 个插件 / 恢复插件」提示条。
+  4. 新增宿主测试 `tests/plugin-guard.cjs`（5 项：原配置保存、完整恢复、缺目录不改配置、
+     半恢复保留记录、自动恢复仅一次/插件失败不自动恢复），并纳入 `scripts/test.cjs`。
+- **验证**：
+  - 修复后的 0.1.0.6 已装到真机（versionCode 7）并启动：`hilog -x` 中
+    `THREAD_BLOCK` 与 `APP_FREEZE` 计数均为 0；Web GUI 与插件页正常，
+    `web-stderr.log` 无 `did not activate`。
+  - `node tests/plugin-guard.cjs` 5/5 通过；`node scripts/test.cjs` 纳入后通过。
+  - **未在设备上复现**「全新解包后删除旧运行时」这条路径：修复包安装时 runtime 已存在，
+    没有旧目录可删；分片删除的实际耗时留待下一次运行时升级复核。
+  - **自动恢复未在设备上触发**：手机上的隔离由旧版本造成，用户已手动恢复；当前自动
+    恢复逻辑只有宿主测试覆盖。下次再出现崩溃类隔离时会走一次性自动恢复。
+
+### 本轮未验收（明确不写成已通过）
+
+- **arm64 真机**已安装 0.1.0.6（versionCode 7）并启动成功，但界面/终端功能项仍以 x86
+  模拟器验收为准；分片删除旧运行时与自动恢复插件这两条路径没有在真机上触发；
+- 挖孔/手势条避让的像素值与真机 `getWindowAvoidArea()` 返回值是否一致未验证（模拟器只看到留白）；
+- 系统栏可见时状态栏/导航栏底色在报告机型上是否仍被系统强制成白色（历史问题）未复测；
+- `showSystemBars` 切换时 ArkUI 安全区布局重排是否闪动未逐帧验证；
+- 终端 `EnterKeyType.Send` 在不同输入法下的行为未逐一验证（模拟器键盘为「发送」且保持展开）；
+- 插件隔离/恢复的失败路径（目录只读、磁盘满）未在设备上构造复现；
+- auto-review 从「旧版本自动安装」升级到本版的迁移未构造旧 profile 复现。
+
 
 ## 2026-11-18 安全审查整改
 

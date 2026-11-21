@@ -68,6 +68,19 @@ const server = http.createServer((req, res) => {
     res.end();
     return;
   }
+  if (req.url === '/205') {
+    // 205 也必须按空 body 处理：旧实现把它当有 body，Response 构造器抛
+    // TypeError，而异常发生在异步回调里，会直接终止引擎进程。
+    res.statusCode = 205;
+    res.end('this body must be ignored');
+    return;
+  }
+  if (req.url === '/bad-status') {
+    // 不可表示的状态码：Response 构造器会抛错，fetch 必须 reject 而不是崩掉。
+    res.statusCode = 700;
+    res.end('bad');
+    return;
+  }
   if (req.url === '/head') {
     res.end('ignored');
     return;
@@ -186,6 +199,26 @@ function pass(name) { console.log('PASS', name); }
     assert.strictEqual(r.status, 204);
     assert.strictEqual(r.body, null);
     pass('204 null body');
+
+    // 13b. 205 body === null（issue #2 回归）
+    r = await fetch(base + '/205');
+    assert.strictEqual(r.status, 205);
+    assert.strictEqual(r.body, null);
+    assert.strictEqual(await r.text(), '');
+    pass('205 null body');
+
+    // 13c. 状态码无法构造 Response 时，fetch 以 TypeError 拒绝而不是未捕获异常
+    await assert.rejects(fetch(base + '/bad-status'), TypeError);
+    pass('invalid status rejects');
+
+    // 13d. 纯函数层面的无 body 判定（HEAD/204/205/304）
+    const internals = globalThis.__dshFetchPolyfillInternals;
+    assert.strictEqual(internals.isNullBodyStatus('HEAD', 200), true);
+    assert.strictEqual(internals.isNullBodyStatus('GET', 204), true);
+    assert.strictEqual(internals.isNullBodyStatus('GET', 205), true);
+    assert.strictEqual(internals.isNullBodyStatus('GET', 304), true);
+    assert.strictEqual(internals.isNullBodyStatus('GET', 200), false);
+    pass('null-body status predicate');
 
     // 14. HEAD body === null
     r = await fetch(base + '/head', { method: 'HEAD' });

@@ -36,8 +36,23 @@ export const MIRROR_FILENAME = "harmony-native.json";
  * `{ get() }` reference that the Loader commits into in place.
  */
 export const Config = z.object({
-	keepAlive: z.boolean().default(false).volatile()
+	keepAlive: z.boolean().default(false).volatile(),
+	showSystemBars: z.boolean().default(false).volatile()
 });
+
+/**
+ * Read a boolean field that may be a volatile `{ get }` reference.
+ * @param config - parsed plugin Config.
+ * @param key - field name.
+ * @param fallback - value used when the field is absent.
+ * @returns the accepted boolean.
+ */
+function booleanOf(config, key, fallback) {
+	const value = config?.[key];
+	if (typeof value?.get === "function") return value.get() === true;
+	if (typeof value === "boolean") return value;
+	return fallback;
+}
 
 /**
  * Read the current keep-alive value from the possibly-volatile Config field.
@@ -45,9 +60,7 @@ export const Config = z.object({
  * @returns the accepted boolean, defaulting to the enabled state.
  */
 function keepAliveOf(config) {
-	const value = config?.keepAlive;
-	if (typeof value?.get === "function") return value.get() === true;
-	return value !== false;
+	return booleanOf(config, "keepAlive", true);
 }
 
 /**
@@ -64,9 +77,10 @@ export function apply(ctx, config) {
 
 	const mirror = () => {
 		const keepAlive = keepAliveOf(config);
+		const showSystemBars = booleanOf(config, "showSystemBars", false);
 		tail = tail.then(async () => {
-			// 应用壳层还会往同一文件写 autoReview 等开关；这里只更新 keepAlive，
-			// 必须保留其它字段，否则插件一挂载就把手工/未来的设置冲掉。
+			// 应用壳层还会往同一文件写 autoReview 等开关；这里只更新本插件
+			// 负责的字段，必须保留其它字段，否则插件一挂载就把手工/未来的设置冲掉。
 			let previous = {};
 			try {
 				const parsed = JSON.parse(await readFile(file, "utf8"));
@@ -74,7 +88,7 @@ export function apply(ctx, config) {
 			} catch (error) {
 				/* 首次写入或文件损坏：按空对象处理 */
 			}
-			const body = JSON.stringify({ ...previous, keepAlive });
+			const body = JSON.stringify({ ...previous, keepAlive, showSystemBars });
 			await mkdir(dirname(file), { recursive: true });
 			const temporary = `${file}.${process.pid}.tmp`;
 			await writeFile(temporary, body, "utf8");
@@ -88,7 +102,8 @@ export function apply(ctx, config) {
 	mirror();
 	ctx.on("loader/volatile-update", (paths) => {
 		if (!Array.isArray(paths)) return;
-		if (!paths.some((path) => Array.isArray(path) && path[0] === "keepAlive")) return;
+		// keepAlive 与 showSystemBars 都镜像给应用壳层。
+		if (!paths.some((path) => Array.isArray(path) && (path[0] === "keepAlive" || path[0] === "showSystemBars"))) return;
 		mirror();
 	});
 

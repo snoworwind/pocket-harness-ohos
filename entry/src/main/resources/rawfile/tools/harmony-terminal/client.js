@@ -20,6 +20,9 @@ window.__ModuleLoader__.load({
 
     const TAB_ID = 'harmony-native-terminal';
     const TAB_KIND = 'terminal-harmony';
+    // 壳层只有一路原生终端（一个 PTY + 一块 libvterm 画面），所以所有桥消息
+    // 都用固定 owner：标签 id 由页面内核生成，随版本/恢复策略变化，不能当键用。
+    const OWNER = TAB_ID;
 
     function send(op, payload) {
       try {
@@ -32,17 +35,6 @@ window.__ModuleLoader__.load({
       } catch (error) {
         /* 控制台不可用时静默：终端本身仍然可用 */
       }
-    }
-
-    function tabOwner(props) {
-      try {
-        const info = props.useTabInfo && props.useTabInfo();
-        const tab = info && info.tab;
-        if (tab && tab.id !== undefined && tab.id !== null) return String(tab.id);
-      } catch (error) {
-        /* 没有 tab 信息时退回固定 owner */
-      }
-      return 'harmony-terminal';
     }
 
     /** 当前打开的会话 id（DSH 会话视图会把它写在 data-conversation-session 上）。 */
@@ -107,16 +99,15 @@ window.__ModuleLoader__.load({
         if (id === '' || id === lastId) return;
         lastId = id;
         activeSessionCwd().then(function (cwd) {
-          if (cwd) send('cwd', { owner: 'harmony-terminal', cwd: cwd });
+          if (cwd) send('cwd', { owner: OWNER, cwd: cwd });
         });
       }, 1200);
     }
 
     /** tab 的内容区：一块透明的 stage，矩形变化就回报给壳层。 */
     function Stage(props) {
-      const owner = tabOwner(props);
-      const ownerRef = React.useRef(owner);
-      ownerRef.current = owner;
+      const ownerRef = React.useRef(OWNER);
+      ownerRef.current = OWNER;
       const stage = React.useRef(null);
       const opened = React.useRef(false);
 
@@ -260,7 +251,10 @@ window.__ModuleLoader__.load({
             id: TAB_ID,
             kind: TAB_KIND,
             priority: 'extension',
-            multiple: true,
+            // 壳层只有一路原生终端：multiple:false 让内核只保留一个 tab，
+            // 点「原生终端」只会聚焦已有 tab，不会出现多个标签共用一个画面、
+            // 关掉其中一个把另一个也弄没的情况。
+            multiple: false,
             // 收起侧栏时保留 tab 的 body：会话要继续跑，只有 × 才停止。
             keepMounted: true,
             title: function () { return '终端'; },
@@ -276,8 +270,8 @@ window.__ModuleLoader__.load({
 
         // × 关闭 tab：告诉壳层停止会话（这是唯一的停止入口）。
         ctx.effect(function () {
-          return ctx.sidebarRight.registerCloseHandler(TAB_KIND, function (sessionId, tab) {
-            send('close', { owner: tab && tab.id !== undefined ? String(tab.id) : 'harmony-terminal' });
+          return ctx.sidebarRight.registerCloseHandler(TAB_KIND, function () {
+            send('close', { owner: OWNER });
           });
         }, 'harmony-terminal.close');
 

@@ -11,11 +11,26 @@ interface ProfileDsh {
 interface ProfileBundles {
   bundles?: string[];
 }
-interface QuarantineState {
+interface QuarantineRecord {
   time: string;
   reason: string;
+  // 实际移进隔离目录的包名。
   bundles: string[];
+  // 隔离前的完整 bundle 列表：恢复时按它还原，目录缺失/移动失败的包也不会丢配置。
+  originalBundles: string[];
   dir: string;
+  // 隔离时没能移动的包及原因；恢复后仍要提示用户。
+  failed: string[];
+  // 是否已经由壳层自动尝试恢复过（每个安装只尝试一次）。
+  autoRestored?: boolean;
+}
+interface QuarantineState {
+  version: number;
+  records: QuarantineRecord[];
+}
+interface QuarantineResult {
+  moved: string[];
+  error: string;
 }
 
 // 用户插件的守门人。
@@ -38,6 +53,9 @@ export class PluginGuard {
   private get marker(): string { return this.home + '/.boot-in-progress'; }
   private get quarantineState(): string { return this.home + '/plugin-quarantine.json'; }
   private get quarantineRoot(): string { return this.home + '/plugin-quarantine'; }
+  // 自动恢复只尝试一次：写一个跨启动保留的标记，避免坏插件导致「隔离→自动恢复→
+  // 再崩→再隔离」的循环。用户仍可在界面上手动恢复。
+  private get autoRestoreMarker(): string { return this.home + '/.auto-restore-attempted'; }
 
   private builtin(): string[] { return ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']; }
 
@@ -56,13 +74,24 @@ export class PluginGuard {
   private writeBundles(names: string[]): void {
     const path = this.profile + '/package.json';
     const manifest = this.readJson(path) as ProfileManifest | undefined;
-    if (!manifest) { return; }
+    if (!manifest) { throw new Error('profile 的 package.json 缺失或无法解析'); }
     if (!manifest.dsh) { manifest.dsh = {}; }
     if (!manifest.dsh.profile) { manifest.dsh.profile = {}; }
     manifest.dsh.profile.bundles = names;
-    const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-    fs.writeSync(file.fd, JSON.stringify(manifest, null, 2) + '\n');
-    fs.closeSync(file);
+    // 先写同目录临时文件再 rename：中途失败也不会把原配置截断成空文件。
+    const temporary = path + '.tmp';
+    const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(file.fd, JSON.stringify(manifest, null, 2) + '\n');
+    } finally {
+      fs.closeSync(file);
+    }
+    fs.renameSync(temporary, path);
+  }
+
+  // 回滚用：尽力把配置写回原值，失败也不覆盖原始错误。
+  private restoreBundlesQuietly(names: string[]): void {
+    try { this.writeBundles(names); } catch (error) { /* 保留原始错误 */ }
   }
 
   private thirdPartyBundles(): string[] {
@@ -88,53 +117,225 @@ export class PluginGuard {
     try { return fs.accessSync(this.marker); } catch (error) { return false; }
   }
 
-  /** 安全模式：把第三方 bundle 全部隔离，只留内置集合。返回被隔离的包名。 */
-  quarantine(reason: string): string[] {
-    const names = this.thirdPartyBundles();
-    if (names.length === 0) { return []; }
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const target = this.quarantineRoot + '/' + stamp;
-    this.ensureDir(target);
-    const moved: string[] = [];
-    for (const name of names) {
-      const from = this.home + '/profiles/web/node_modules/' + name;
-      if (!fs.accessSync(from)) { continue; }
-      try {
-        fs.renameSync(from, target + '/' + name.replace(/\//g, '+'));
-        moved.push(name);
-      } catch (error) { /* 单个包移动失败就留着，最多再失败一次 */ }
-    }
-    this.writeBundles(this.builtin());
-    const state: QuarantineState = { time: stamp, reason: reason, bundles: moved, dir: target };
-    try {
-      const file = fs.openSync(this.quarantineState, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, JSON.stringify(state, null, 2) + '\n');
-      fs.closeSync(file);
-    } catch (error) { /* 状态写不进去，至少 bundle 列表已经清了 */ }
-    return moved;
+  private quarantineSegment(name: string): string {
+    return name.replace(/\//g, '+');
   }
 
-  /** 有隔离记录时，恢复上次隔离掉的插件并还原 bundle 列表。 */
-  restoreLastQuarantine(): boolean {
+  // 读取隔离记录；兼容旧版单条记录（顶层直接是 {dir,bundles,...}）。
+  // 解析失败按「没有记录」处理，但调用方不能因此删除磁盘上的隔离目录。
+  private readQuarantineRecords(): QuarantineRecord[] {
     const state = this.readJson(this.quarantineState);
-    if (!state) { return false; }
-    const dir = state.dir as string;
-    const names = (state.bundles as string[]) ?? [];
-    for (const name of names) {
-      const from = dir + '/' + name.replace(/\//g, '+');
-      const to = this.home + '/profiles/web/node_modules/' + name;
-      if (!fs.accessSync(from)) { continue; }
-      this.ensureDir(to.slice(0, to.lastIndexOf('/')));
-      try { fs.renameSync(from, to); } catch (error) { /* 单个失败继续 */ }
+    if (!state) { return []; }
+    const records: QuarantineRecord[] = [];
+    const list = state['records'];
+    if (Array.isArray(list)) {
+      for (const entry of list as QuarantineRecord[]) {
+        if (!entry || typeof entry.dir !== 'string') { continue; }
+        const bundles = Array.isArray(entry.bundles) ? entry.bundles : [];
+        const original = Array.isArray(entry.originalBundles) ? entry.originalBundles : [];
+        const failed = Array.isArray(entry.failed) ? entry.failed : [];
+        records.push({
+          time: typeof entry.time === 'string' ? entry.time : '',
+          reason: typeof entry.reason === 'string' ? entry.reason : '',
+          bundles: bundles,
+          originalBundles: original,
+          dir: entry.dir,
+          failed: failed,
+          autoRestored: entry.autoRestored === true
+        });
+      }
+      return records;
     }
-    const next = this.builtin().concat(names);
-    this.writeBundles(next);
-    try { fs.unlinkSync(this.quarantineState); } catch (error) { /* 忽略 */ }
-    return true;
+    const legacyDir = state['dir'];
+    if (typeof legacyDir !== 'string' || legacyDir === '') { return []; }
+    const legacyNames = Array.isArray(state['bundles']) ? state['bundles'] as string[] : [];
+    // 旧记录没有保存原配置：只能按「内置 + 已隔离包」推断。
+    records.push({
+      time: typeof state['time'] === 'string' ? state['time'] as string : '',
+      reason: typeof state['reason'] === 'string' ? state['reason'] as string : '',
+      bundles: legacyNames,
+      originalBundles: this.builtin().concat(legacyNames),
+      dir: legacyDir,
+      failed: []
+    });
+    return records;
+  }
+
+  private writeQuarantineRecords(records: QuarantineRecord[]): void {
+    const state: QuarantineState = { version: 2, records: records };
+    const temporary = this.quarantineState + '.tmp';
+    const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(file.fd, JSON.stringify(state, null, 2) + '\n');
+    } finally {
+      fs.closeSync(file);
+    }
+    fs.renameSync(temporary, this.quarantineState);
+  }
+
+  /** 安全模式：把第三方 bundle 全部隔离，只留内置集合。返回被隔离的包名与失败原因。 */
+  quarantine(reason: string): QuarantineResult {
+    const original = this.bundles();
+    const names = original.filter((name: string) => this.builtin().indexOf(name) < 0);
+    if (names.length === 0) { return { moved: [], error: '' }; }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const target = this.quarantineRoot + '/' + stamp;
+    try {
+      this.ensureDir(target);
+    } catch (error) {
+      return { moved: [], error: '无法创建隔离目录：' + (error as Error).message };
+    }
+    const moved: string[] = [];
+    const failed: string[] = [];
+    for (const name of names) {
+      const from = this.home + '/profiles/web/node_modules/' + name;
+      if (!fs.accessSync(from)) {
+        failed.push(name + '：包目录不存在');
+        continue;
+      }
+      try {
+        fs.renameSync(from, target + '/' + this.quarantineSegment(name));
+        moved.push(name);
+      } catch (error) {
+        failed.push(name + '：移动失败（' + (error as Error).message + '）');
+      }
+    }
+    if (moved.length === 0) {
+      // 一个都没移动成功：配置保持原样，否则包还在、profile 里却没了。
+      try { this.removeTree(target); } catch (error) { /* 空目录清理失败无影响 */ }
+      return { moved: [], error: failed.join('；') };
+    }
+    // 没隔离成功的包继续留在配置里：它们可能仍能启动，不能顺手丢配置。
+    const kept = names.filter((name: string) => moved.indexOf(name) < 0);
+    const next = this.builtin().concat(kept);
+    const record: QuarantineRecord = {
+      time: stamp, reason: reason, bundles: moved, originalBundles: original,
+      dir: target, failed: failed
+    };
+    try {
+      this.writeBundles(next);
+      this.writeQuarantineRecords(this.readQuarantineRecords().concat([record]));
+    } catch (error) {
+      // 配置或隔离记录没写成功：把配置和已移动的包都回滚，保证三者一致。
+      this.restoreBundlesQuietly(original);
+      for (const name of moved) {
+        try {
+          fs.renameSync(target + '/' + this.quarantineSegment(name),
+            this.home + '/profiles/web/node_modules/' + name);
+        } catch (rollbackError) { /* 尽力而为 */ }
+      }
+      return { moved: [], error: '隔离状态写入失败，已回滚：' + (error as Error).message };
+    }
+    return { moved: moved, error: failed.join('；') };
+  }
+
+  /**
+   * 有隔离记录时恢复：把所有隔离记录里的包移回 profile，并还原隔离前的完整
+   * bundle 列表。任何一步失败都保留记录、返回错误，用户可以重试。
+   */
+  restoreLastQuarantine(): string {
+    const records = this.readQuarantineRecords();
+    if (records.length === 0) { return '没有可恢复的隔离记录'; }
+    const failed: string[] = [];
+    // 先只搬文件，不动配置：搬失败时记录仍然有效。
+    for (const record of records) {
+      for (const name of record.bundles) {
+        const from = record.dir + '/' + this.quarantineSegment(name);
+        const to = this.home + '/profiles/web/node_modules/' + name;
+        if (!fs.accessSync(from)) {
+          // 上次恢复到一半（文件已搬回、配置没写成）时视为已恢复。
+          if (fs.accessSync(to)) { continue; }
+          failed.push(name + '：隔离目录里找不到（' + from + '）');
+          continue;
+        }
+        try {
+          this.ensureDir(to.slice(0, to.lastIndexOf('/')));
+          fs.renameSync(from, to);
+        } catch (error) {
+          failed.push(name + '：移回失败（' + (error as Error).message + '）');
+        }
+      }
+    }
+    if (failed.length > 0) {
+      return '恢复未完成，隔离记录已保留（可重试）：' + failed.join('；');
+    }
+    let original = records[0].originalBundles;
+    if (original.length === 0) {
+      // 旧记录没有原配置：退回「内置 + 所有记录里的包」。
+      const all: string[] = [];
+      for (const record of records) {
+        for (const name of record.bundles) {
+          if (all.indexOf(name) < 0) { all.push(name); }
+        }
+      }
+      original = this.builtin().concat(all);
+    }
+    try {
+      this.writeBundles(original);
+    } catch (error) {
+      // 配置没写成：把刚搬回来的包再放回隔离目录，让记录和磁盘保持一致。
+      for (const record of records) {
+        for (const name of record.bundles) {
+          const from = this.home + '/profiles/web/node_modules/' + name;
+          const to = record.dir + '/' + this.quarantineSegment(name);
+          try {
+            if (fs.accessSync(from) && !fs.accessSync(to)) { fs.renameSync(from, to); }
+          } catch (rollbackError) { /* 尽力而为 */ }
+        }
+      }
+      return '写入 profile 失败，已回滚：' + (error as Error).message;
+    }
+    try {
+      fs.unlinkSync(this.quarantineState);
+    } catch (error) {
+      // 插件与配置都已恢复；记录删不掉只会让下次恢复提示失败，不阻塞启动。
+      return '插件已恢复，但隔离记录删除失败：' + (error as Error).message;
+    }
+    // 隔离目录空了就一并清掉，避免占空间。
+    for (const record of records) {
+      try { if (fs.listFileSync(record.dir).length === 0) { fs.rmdirSync(record.dir); } }
+      catch (error) { /* 目录非空或已不存在 */ }
+    }
+    return '';
   }
 
   hasQuarantine(): boolean {
     try { return fs.accessSync(this.quarantineState); } catch (error) { return false; }
+  }
+
+  /** 当前隔离记录里共有多少个包（用于界面提示）。 */
+  quarantineCount(): number {
+    let count = 0;
+    for (const record of this.readQuarantineRecords()) { count += record.bundles.length; }
+    return count;
+  }
+
+  /**
+   * 是否可以把这次隔离自动恢复掉：
+   * - 只处理「上次启动未完成」这种崩溃/看门狗导致的隔离；插件自身 import 失败的
+   *   隔离不自动恢复，避免重新把引擎弄挂；
+   * - 每次安装只自动尝试一次（`.auto-restore-attempted` 跨启动保留）。
+   */
+  canAutoRestore(): boolean {
+    try { if (fs.accessSync(this.autoRestoreMarker)) { return false; } } catch (error) { /* 未尝试过 */ }
+    const records = this.readQuarantineRecords();
+    if (records.length === 0) { return false; }
+    for (const record of records) {
+      if (record.reason.indexOf('上次启动未完成') < 0) { return false; }
+      if (record.autoRestored === true) { return false; }
+    }
+    return true;
+  }
+
+  markAutoRestoreAttempted(): void {
+    try {
+      const file = fs.openSync(this.autoRestoreMarker, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, Date.now().toString());
+      fs.closeSync(file);
+    } catch (error) { /* 标记失败最多多试一次 */ }
+    const records = this.readQuarantineRecords();
+    for (const record of records) { record.autoRestored = true; }
+    try { this.writeQuarantineRecords(records); } catch (error) { /* 尽力而为 */ }
   }
 
   /**

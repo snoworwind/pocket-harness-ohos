@@ -10,7 +10,7 @@ This project packages the **official DeepSeek Harness** as a HarmonyOS app. The 
 | --- | --- |
 | App name | Pocket Harness |
 | Bundle | `com.snoworwind.phoh` |
-| Version | `0.1.0.5` (versionCode 6) |
+| Version | `0.1.0.6` (versionCode 7) |
 | Min / target API | HarmonyOS 5.1.0 (API 18) / API 24 |
 | Engine | `@deepseek-ai/dsh` 0.2.2-rc.1 (web profile, 291 plugins) |
 | Runtime | Node 24.22.1 (`--jitless`), Bash 5.3, Git 2.56.0 (with HTTPS), toybox 0.8.14, libarchive 3.7.7, ripgrep 14.1.1, CPython 3.12.14 (with pip), curl 8.22.0, jq 1.7.1, Dropbear SSH, less/Vim, SQLite 3.50.4, rsync 3.4.1, xz 5.8.1, zstd 1.5.7, gh, Git LFS |
@@ -46,6 +46,7 @@ The file tab previews Markdown and other text files in place:
 - **Native terminal**: a closable right-sidebar tab with PTY and job control (`Ctrl-Z`, `fg`, `bg`), libvterm rendering, IME-aware layout and orientation support. It starts in the current DSH session's working directory and follows session/workspace switches.
 - **Built-in Git**: `git` and `git-remote-http(s)` are cross-compiled from source into IEC shared libraries and use the app's CA bundle, so `clone`/`fetch`/`push` over HTTPS work without an external toolchain.
 - **Back gesture**: closes overlays in priority order — menu → settings dialog → right sidebar/terminal → left drawer → system. Collapsing the terminal keeps the process running; only the tab's × stops it.
+- **Immersive and system bars**: the app is full screen by default and insets content around the camera cutout and gesture bar; Settings → General → HarmonyOS adaptation can show the system status and navigation bars again.
 - **Attachments**: ArkWeb has no reliable blob-Worker upload path, so a document-start `fetch` hook sends uploads on the main thread; images are identified from file headers and passed through unchanged in an engine without sharp/WASM.
 - **Quote popover**: the "quote text" button is placed below the selection, clear of the system selection toolbar.
 - **Pinch zoom disabled**: the layout is viewport-based; zoom would break terminal/sidebar geometry.
@@ -74,7 +75,7 @@ scripts/
   ├─ build-x86-runtime.sh        staged x86_64 emulator runtime build
   ├─ pack-native.sh              native libs + engine archive → entry/
   ├─ runtime-manifest.mjs        compute/verify runtime version from shipped bytes
-  └─ test-fetch-polyfill.cjs     15 fetch-polyfill regression tests
+  └─ test-fetch-polyfill.cjs     19 fetch-polyfill regression tests
 ```
 
 ## Building
@@ -151,8 +152,8 @@ Output: `build/outputs/default/*.app`; the single HAP is at
 ## Tests
 
 ```bash
-node scripts/test.cjs                  # 39 host-side tests (session protocol, SSE, path sandbox, upload hook, image patch)
-node scripts/test-fetch-polyfill.cjs   # 15 fetch-polyfill tests (JSON/SSE/redirect/FormData/abort)
+node scripts/test.cjs                  # 57 host-side tests (session protocol, SSE, path sandbox, upload hook, image patch)
+node scripts/test-fetch-polyfill.cjs   # 19 fetch-polyfill tests (JSON/SSE/redirect/FormData/abort)
 bash scripts/audit-sources.sh          # unpack the HAP, verify binaries and npm.tar.gz
 bash scripts/check-engine-web.sh       # web profile: 291 plugins, empty stderr
 ```

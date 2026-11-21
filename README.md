@@ -10,7 +10,7 @@
 | --- | --- |
 | 应用名 | Pocket Harness |
 | 包名 | `com.snoworwind.phoh` |
-| 版本 | `0.1.0.5`（versionCode 6） |
+| 版本 | `0.1.0.6`（versionCode 7） |
 | 最低 API | HarmonyOS 5.1.0（API 18），target API 24 |
 | 引擎 | `@deepseek-ai/dsh` 0.2.2-rc.1（web profile，291 个插件） |
 | 运行时 | Node 24.22.1（`--jitless`）、Bash 5.3、Git 2.56.0（含 HTTPS）、toybox 0.8.14、libarchive 3.7.7、ripgrep 14.1.1、CPython 3.12.14（含 pip）、curl 8.22.0、jq 1.7.1、Dropbear SSH、less/Vim、SQLite 3.50.4、rsync 3.4.1、xz 5.8.1、zstd 1.5.7、gh、Git LFS |
@@ -43,6 +43,7 @@
 - **原生终端**：右侧栏可关闭 tab，PTY + 作业控制（`Ctrl-Z`/`fg`/`bg`）、libvterm 绘制、软键盘防遮挡、横竖屏自适应；终端默认进入当前 DSH 会话的工作目录，切换会话/工作区时自动跟随。
 - **内置 Git**：`git` 及 `git-remote-http(s)` 由源码交叉编译成 IEC 共享库，直接使用应用内的 CA bundle，可执行 `clone`/`fetch`/`push` 等 HTTPS 操作。
 - **返回手势**：按浮层优先级逐层关闭——菜单 → 设置 → 右侧栏/终端 → 左侧抽屉 → 系统；终端收起时进程继续运行，只有 tab 的 × 才停止。
+- **沉浸式与系统栏**：默认全屏显示，并由壳层给挖孔摄像头和底部手势条让位；设置 → 通用 → 鸿蒙适配里可以打开「显示系统状态栏与底部手势条」，恢复系统栏。
 - **附件上传**：ArkWeb 没有可靠的 blob Worker 上传通道，改在文档开始时注入 `fetch` 钩子走主线程；图片附件在没有 sharp / WASM 的引擎里按文件头识别、原字节透传。
 - **选区引用**：选中文本时「引用文本」浮层显示在选区下方，避开系统选区工具条。
 - **禁用双指缩放**：界面按视口宽度布局，避免缩放把终端/侧栏几何算乱。
@@ -59,7 +60,7 @@ entry/src/main/ets
 
 plugins/
   ├─ dsh-harmony-terminal/       终端 tab：注册、stage 矩形、open/close/focus、工作目录跟随
-  └─ harmony-compat/             鸿蒙适配：浮层状态上报（返回手势）、引用浮层位置
+  └─ harmony-compat/             鸿蒙适配：返回手势浮层上报、引用浮层位置、保活与系统栏设置
 
 native/
   ├─ iec/                        端侧执行核（IEC，来自 Bettersh）：exec/tty/fs shim、ELF 装载
@@ -71,7 +72,7 @@ scripts/
   ├─ build-x86-runtime.sh        x86_64 模拟器运行时的分阶段构建
   ├─ pack-native.sh              原生库 + 引擎归档 → entry/
   ├─ runtime-manifest.mjs        按实际随包字节计算/校验运行时版本
-  └─ test-fetch-polyfill.cjs     fetch 补丁的 15 项回归测试
+  └─ test-fetch-polyfill.cjs     fetch 补丁的 19 项回归测试
 ```
 
 ## 构建
@@ -166,8 +167,8 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 ## 测试与校验
 
 ```bash
-node scripts/test.cjs                  # 宿主侧 52 项（会话协议、SSE、路径沙箱、附件钩子、桥脚本顺序与门禁规则）
-node scripts/test-fetch-polyfill.cjs   # fetch 补丁 16 项（JSON/SSE/重定向/FormData/abort/undici 覆盖…）
+node scripts/test.cjs                  # 宿主侧 57 项（会话协议、SSE、路径沙箱、附件钩子、桥脚本顺序与门禁规则）
+node scripts/test-fetch-polyfill.cjs   # fetch 补丁 19 项（JSON/SSE/重定向/FormData/abort/undici 覆盖…）
 node tests/fetch-redirect.cjs          # 重定向安全 12 项（跨源剥离认证头、HTTPS→HTTP 降级、非 http(s) 目标）
 bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合、npm.tar.gz 与 ELF 加固标志
 bash scripts/check-engine-web.sh       # web profile 291 个插件，stderr 为空
@@ -204,7 +205,8 @@ filesDir/
   启动时重算比对，不一致就整棵重解（旧版只有版本号的标记同样按未安装处理）；
 - 实验性 `auto` 预设（`danger-full-access` + LLM 自动批准）**默认不注册**；确需恢复
   记了该预设的旧会话时，在 `harness-home/harmony-native.json` 写 `{"autoReview": true}`
-  后重启应用；
+  后重启应用。**开启后会跨应用更新保留**；要关闭就显式写 `{"autoReview": false}` 再重启，
+  应用不会在升级时替用户关掉已启用的插件；
 - `harness-home` 永不被应用删除：覆盖安装保留会话与设置，卸载才清空；
 - 目录被改坏时：三项存在性探测失败会整棵重解；引擎启动报缺文件症状会自动重解一次；
   仍失败则界面提供「重新解包运行时」。
@@ -213,9 +215,17 @@ filesDir/
 
 | 场景 | 启动页表现 |
 | --- | --- |
-| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎、Python 与 Vim」和首次启动说明；解包是同步操作，进度圈可能短暂停住 |
+| 首次安装 / 清数据 / 运行时变化 | 显示「正在解包官方引擎、Python 与 Vim」和首次启动说明；解包在 NAPI 工作线程，启动页进度保持可响应 |
 | 覆盖升级但运行时未变 | 与普通冷启动相同，不出现解包提示 |
 | 普通冷启动 | 「正在启动本地运行时…」→「正在启动官方 Web 服务」→「正在恢复上次会话与工作区…」；首个会话挂载后才撤掉启动页 |
+
+解包完成后，壳层会在后台**分片删除**旧 `runtime-*` 目录（一个版本约 500 MB、2.6 万个文件）：
+每个宏任务最多删 8 ms，剩下的交给定时器继续，避免一次性递归删除把 UI 线程卡住触发
+`THREAD_BLOCK_6S`。启动页可能先撤掉、删除随后在后台完成，属正常现象。
+
+如果上次启动没走完（崩溃/看门狗），下次启动会进入安全模式并临时停用第三方插件：
+崩溃类原因只**自动恢复一次**，插件自身加载失败则不自动恢复；仍有隔离时 Web 上会显示
+「安全模式：已停用 N 个插件 / 恢复插件」提示条，用户可手动重试。
 
 官方 Web GUI 的 `onPageEnd` 只代表静态资源加载完，此时输入框和右栏仍未就绪。启动页会一直
 盖住 Web 并拦截触摸，直到 `[data-conversation-session]` 出现；首页出现后 60 秒仍无会话才放行；另有 120 秒绝对兜底，避免 Web 页面完全挂死时永久停在启动页。

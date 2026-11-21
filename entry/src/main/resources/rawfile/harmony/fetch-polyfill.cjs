@@ -11,7 +11,8 @@
  *   - 响应：流式 body（SSE 不被整块缓冲）、gzip/br/deflate 解压
  *   - 重定向：follow / error / manual，方法改写符合规范
  *   - AbortSignal：中止时以 AbortError 拒绝
- *   - HEAD/204/304 的 body 为 null
+ *   - HEAD/204/205/304 的 body 为 null（205 在部分运行时的 Response 构造器里
+ *     仍被当成有 body，必须与 204 一样先摘掉流，否则会抛 TypeError）
  *   - 响应对象带 url / type / redirected
  *
  * 只在 WebAssembly 不可用时安装；DSH_FORCE_FETCH_POLYFILL=1 可强制安装用于测试。
@@ -227,10 +228,23 @@
     return stream.pipe(decoder);
   }
 
+  // 无 body 的状态：HEAD 与 204/205/304。205 Reset Content 也要求 body 为空，
+  // 但并不是所有 Response 实现都把它当无 body 状态，传流进去会抛 TypeError。
+  function isNullBodyStatus(method, status) {
+    return method === 'HEAD' || status === 204 || status === 205 || status === 304;
+  }
+
+  // 把 Node 的 IncomingMessage 转成 Response。状态不可表示时 Response 构造器会
+  // 抛错；这个函数只在 requestOnce 的 HTTP 回调里被调用，调用点必须捕获并
+  // reject，否则异常会穿透事件回调、直接终止进程。
   function makeResponse(response, method, url, redirected) {
     const headers = headerObject(response.headers);
     const status = response.statusCode || 502;
-    const nullBody = method === 'HEAD' || status === 204 || status === 304;
+    const nullBody = isNullBodyStatus(method, status);
+    if (nullBody) {
+      // 无 body 的响应也要把底层连接读空，否则 keep-alive 连接会一直占着。
+      response.resume();
+    }
     const stream = nullBody ? null : decode(response, headers);
     const body = stream ? Readable.toWeb(stream) : null;
     const result = new Response(body, {
@@ -242,6 +256,19 @@
     Object.defineProperty(result, 'redirected', { value: redirected, enumerable: true });
     Object.defineProperty(result, 'type', { value: 'basic', enumerable: true });
     return result;
+  }
+
+  // 统一在 Promise 里收口：构造 Response 的异常（状态码/头非法等）必须变成
+  // 拒绝，不能让异步 HTTP 回调里的 throw 逃出去。
+  function settleWithResponse(resolve, reject, response, method, url, redirected) {
+    try {
+      resolve(makeResponse(response, method, url, redirected));
+    } catch (error) {
+      response.resume();
+      reject(error instanceof TypeError
+        ? error
+        : new TypeError('fetch failed: ' + error.message, { cause: error }));
+    }
   }
 
   function requestOnce(url, init, redirects, redirected) {
@@ -319,10 +346,10 @@
               return;
             }
             // manual：返回 3xx 本身，不自动跟随。
-            resolve(makeResponse(response, method, url, redirected));
+            settleWithResponse(resolve, reject, response, method, url, redirected);
             return;
           }
-          resolve(makeResponse(response, method, url, redirected));
+          settleWithResponse(resolve, reject, response, method, url, redirected);
         });
 
         req.on('error', (error) => {
@@ -387,6 +414,8 @@
       originOf,
       isSameOrigin,
       redirectPlan,
+      isNullBodyStatus,
+      makeResponse,
       SENSITIVE_REDIRECT_HEADERS,
       BODY_REDIRECT_HEADERS,
       MAX_REDIRECTS,
