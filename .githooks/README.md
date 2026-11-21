@@ -20,7 +20,16 @@ git config core.hooksPath .githooks
 
 `core.hooksPath` 要求 git 能 `execve` 钩子脚本本身。设备上应用进程不能直接执行普通脚本，且 `#!/bin/sh` 解析不到解释器，结果是 `git hook run pre-commit` 返回 **127**、**每次 `git commit` 直接失败**（只剩 `--no-verify` 能提交）。所以设备上执行 `node scripts/install-hooks.mjs` 等于把提交锁死。
 
-设备上的正确做法是绕过 `core.hooksPath`，在 `.git/hooks/` 放两个本地包装脚本（该目录不入库，绝对路径可按机器写）：
+设备上的正确做法是绕过 `core.hooksPath`，在 `.git/hooks/` 放两个本地包装脚本（该目录不入库，绝对路径可按机器写）。仓库提供了一个安装器自动完成这件事：
+
+```sh
+node scripts/install-device-hooks.mjs   # 设备上随时可重跑
+```
+
+它会从 `IEC_SYSROOT`（或 `files/runtime-*` 里最新的可用运行时）取绝对路径，重写
+`.git/hooks/pre-commit` 与 `pre-push`，并在 `core.hooksPath` 等于 `.githooks` 时清除它。
+
+手工等价步骤：
 
 ```sh
 git config --unset core.hooksPath      # 确认 git config core.hooksPath 为空
@@ -30,8 +39,10 @@ git config --unset core.hooksPath      # 确认 git config core.hooksPath 为空
 
 ```sh
 #!<IEC_SYSROOT>/bin/sh
-exec node .githooks/secret-scan.mjs --staged
+exec "<IEC_SYSROOT>/bin/node" .githooks/secret-scan.mjs --staged
 ```
+
+**应用升级会让钩子再次失效**：`runtime-<ver>` 会整棵重建、旧路径被清理，shebang 随即指向不存在的文件，`git commit` 报 127。升级后重跑上面的安装器即可。
 
 - shebang 必须是 `$IEC_SYSROOT/bin/sh` 的**真实绝对路径**（如 `.../files/runtime-<ver>/bin/sh`），不能写 `#!/bin/sh`，也不能用 `/usr/bin/env`（设备上没有）。
 - 钩子逻辑仍只有 `.githooks/secret-scan.mjs` 一份，包装脚本只做 `exec node`。

@@ -7,7 +7,10 @@
     "hooks:install": "node scripts/install-hooks.mjs",
     "secrets:scan": "node .githooks/secret-scan.mjs --all",
     "runtime:sync": "node scripts/runtime-manifest.mjs sync",
-    "runtime:check": "node scripts/runtime-manifest.mjs check"
+    "runtime:check": "node scripts/runtime-manifest.mjs check",
+    "hooks:install:device": "node scripts/install-device-hooks.mjs"
   },
-  "devDependencies": { "typescript": "5.9.3" }
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
 }
