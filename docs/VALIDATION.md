@@ -2,6 +2,24 @@
 
 记录截至 2026-11-22 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
 
+## 2026-11-22 issue #6 三修（仍为 0.1.0.7，不升版本）：设置项消失与顶部交界线
+
+用户反馈 0.1.0.7（提交 `ef9da06`）之后：设置 → 通用 → 鸿蒙适配里「显示系统状态栏与底部手势条」
+这一行整个消失，所以无法在沉浸式与非沉浸式之间切换，看着只有沉浸式；沉浸式下上层栏与主界面的
+交界线正好压在前摄中心。用户要求：非沉浸式显示状态栏、上方有系统栏；沉浸式默认不显示系统栏、
+由顶部下滑临时露出；两种模式的底部保持一致，不要留白条；沉浸式的交界线落在前摄下方一点。
+
+| 现象 | 根因 | 修复 | 本轮验证 |
+| --- | --- | --- | --- |
+| 设置里调沉浸式/非沉浸式的开关消失 | 应用启动时从 `runtime-<ver>/engine/node_modules/@deepseek-ai/dsh-harmony-compat` 同步插件进 profile，而引擎归档是 gitignore 的构建产物。归档没跑 `scripts/pack-native.sh` 重打时，装进应用的是**旧版插件**（只有 `keepAlive`，没有 `showSystemBars`）；客户端 `whileServed(["harmony-native"])` 就不会注册这一行，壳层读不到开关也永远按 `false`（沉浸式）处理 | 插件改为随 HAP `rawfile/tools/harmony-compat/` 分发，启动时优先从 rawfile 整包同步进 profile（先读齐再替换，rawfile 缺文件时退回引擎归档副本）；新增 `tests/harmony-plugin-rawfile.cjs`（3 项）锁住 rawfile 与 `plugins/harmony-compat` 一致且仍导出 `showSystemBars` | `node scripts/test.cjs` 65 项全部通过；ArkTS 编译通过；确认 `entry-default-unsigned.hap` 内含 `resources/rawfile/tools/harmony-compat/lib/{index,client}.js`；**未真机验收** |
+| 开关只能进沉浸式，回不到显示系统栏 | `ef9da06` 让两种模式都 `setWindowLayoutFullScreen(true)`，只用 `setWindowSystemBarEnable` 显隐系统栏。该接口要求主窗口处于全屏主窗口状态，机型/版本上从隐藏切回显示会被系统策略吞掉 | 新增 `platform/WindowMode.ets`：显隐同时走 `setSpecificSystemBarEnabled`（API 11+，逐个系统栏真正控制显隐）与 `setWindowSystemBarEnable`；两种模式都保持全屏布局，避免非沉浸式底部出现系统白条；非沉浸式显示状态栏，内容下移到状态栏下方 | ArkTS 编译通过（hvigor `CompileArkTS`）；**未真机验收** |
+| 沉浸式下上层栏与主界面的交界线压在前摄中心 | `insetTop` 只取 `AvoidArea.topRect.height`；挖孔 Rect 不贴屏幕顶边时漏掉了 `rect.top`，交界线整体上移 | 新增 `avoidAreaBottom()` 取 `top + height`，并加 `IMMERSIVE_TOP_GAP = 6vp` 余量；沉浸式用挖孔底边 + 余量，非沉浸式用状态栏底边；机型没有独立挖孔避让区时退回状态栏高度 + 余量 | ArkTS 编译通过；**未真机验收** |
+| 非沉浸式底部留系统白条 | 此前非沉浸式把布局切回安全区（`setWindowLayoutFullScreen(false)`），窗口不再铺满，栏区由系统绘制，机型把栏区刷成系统默认白底 | 两种模式都保持全屏布局，窗口背景铺到屏幕底边；底部 inset 两种模式一致，只让开手势条/导航栏高度，不额外留边 | ArkTS 编译通过；**未真机验收** |
+| 沉浸式平时不显示系统栏、下滑才露出 | 由系统栏可见性接口决定；沉浸式保持隐藏 | 沉浸式 `setSystemBarVisible(win, false)`；顶部下滑临时露出状态栏属于系统行为，壳层不再额外覆盖 | ArkTS 编译通过；**未真机验收** |
+
+说明：`README.md` / `README.en.md` 的「沉浸式与系统栏」条目已同步；`px2vp` 的弃用告警与
+`setWindowSystemBarEnable` 的 2in1 告警是既有告警，本轮未新增。
+
 ## 2026-11-22 issue #6 重开（0.1.0.7）：上下沉浸、重启回新对话与设置复位
 
 用户重新打开 #6，反馈 0.1.0.6 还有三类问题：打开「显示系统状态栏与底部手势条」后上下不再沉浸；

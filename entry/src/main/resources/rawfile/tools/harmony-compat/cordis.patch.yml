@@ -1,0 +1,16 @@
+# HarmonyOS adaptation plugin — profile insert row.
+#
+# The application applies this file as an extra patch layer:
+#
+#   dsh --profile web --patch <path-to-this-file>
+#
+# In DeepSeek Harness 0.2.2-rc.1 a settings namespace is NOT registered by an
+# explicit API call. `ctx.settings.describe()` derives one form per profile
+# entry from that plugin's exported `Config` schema (`entry.options.id` becomes
+# the namespace — see `@deepseek-ai/dsh-settings/lib/index.js`, `describe()`).
+# The browser half therefore addresses the form as `configForms.get("harmony-native")`,
+# which means this entry id MUST stay `harmony-native`; the row id and the
+# settings namespace are the same string. Rename both together if you rename it.
+- insert:
+    - id: harmony-native
+      name: '@deepseek-ai/dsh-harmony-compat'

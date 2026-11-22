@@ -108,7 +108,7 @@
 | `npm.tar.gz` | Node.js v24.22.1 源码树里的 `deps/npm`（npm 11.19.1） | `build_node.sh` 打包；**构建产物，不进入版本库**。`pack-native.sh` 缺少本次构建产物时直接失败，不再复用仓库旧副本；审计脚本校验与构建产物一致 |
 | `node_modules/@vscode/ripgrep` | 本工程自写的兼容包（MIT） | 上游包只做「找到 rg 路径」这一件事，且会 require 平台预编译包；这里换成把 `rgPath` 指向 `<sysroot>/bin/rg` 的 8 行模块 |
 | `assets/cacert.pem` | Mozilla CA 根证书集 | 纯数据，编译进 `libiec_server.so` |
-| `node_modules/@deepseek-ai/dsh-harmony-compat` | 本仓库 `plugins/harmony-compat`（MIT） | 打包时由 `scripts/pack-native.sh` 覆盖进引擎归档；提供返回手势所需的浮层状态与引用浮层定位 |
+| `node_modules/@deepseek-ai/dsh-harmony-compat` | 本仓库 `plugins/harmony-compat`（MIT） | 内容与 `entry/src/main/resources/rawfile/tools/harmony-compat/` 一致：随 HAP rawfile 分发、启动时优先同步进 profile（引擎归档里的副本只当兜底），避免归档未重打时装进旧插件；`scripts/pack-native.sh` 仍会把同一份覆盖进引擎归档 |
 | `node_modules/@local/dsh-harmony-terminal` | 本仓库 `plugins/dsh-harmony-terminal`（MIT） | 原生终端 tab 插件，随 HAP rawfile 分发、启动时同步进 profile |
 | `entry/src/main/resources/rawfile/harmony/extra-ca.pem` | 用户自行提供，**不随仓库分发** | 可选附加 CA，用于会拦截 HTTPS 的开发环境；公开构建保持缺省 |
 

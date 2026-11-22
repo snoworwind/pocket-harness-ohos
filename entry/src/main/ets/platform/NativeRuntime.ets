@@ -685,19 +685,28 @@ export class NativeRuntime {
     });
   }
   stopWebUI(): void { this.web?.close(); this.web = undefined; this.webUrl = ''; }
-  // 鸿蒙适配插件：引擎归档里带一份；profile 层的行只从 profile 自己的
-  // node_modules 解析，所以启动时同步包目录，并把它的插入行写进 profile 的
-  // 用户 patch 层（cordis.patch.yml）。这样它是「用户可编辑」的行，设置表单可写。
+  // 鸿蒙适配插件：随 HAP 以 rawfile 分发（优先），引擎归档里的旧副本只当兜底。
+  //
+  // 以前只从 runtime 的引擎归档同步：归档是 gitignore 的构建产物，命令行构建机
+  // 没跑 `pack-native.sh` 重新打包时，同步进 profile 的仍是旧插件——设置页的
+  // 「显示系统状态栏与底部手势条」整行消失，壳层读到缺省 false 就永远只能沉浸式。
+  // 改成和终端插件一样随包分发后，插件版本不再依赖归档是否重打。
+  //
+  // profile 层的行只从 profile 自己的 node_modules 解析，所以还要把包目录同步到
+  // profile，并把它的插入行写进 profile 的用户 patch 层（cordis.patch.yml）。
+  // 这样它是「用户可编辑」的行，设置表单可写。
   private installHarmonyPlugin(): void {
     const name = '@deepseek-ai/dsh-harmony-compat';
-    const source = this.root + '/engine/node_modules/' + name;
     const profileDir = this.context.filesDir + '/harness-home/profiles/web';
     const dest = profileDir + '/node_modules/' + name;
     try {
-      if (!fs.accessSync(source)) { return; }
-      this.removeTree(dest);
-      this.ensureDir(dest);
-      this.copyTree(source, dest);
+      if (!this.syncHarmonyPluginFromRawfile(dest)) {
+        const source = this.root + '/engine/node_modules/' + name;
+        if (!fs.accessSync(source)) { return; }
+        this.removeTree(dest);
+        this.ensureDir(dest);
+        this.copyTree(source, dest);
+      }
 
       const manifestPath = profileDir + '/package.json';
       if (fs.accessSync(manifestPath)) {
@@ -720,6 +729,29 @@ export class NativeRuntime {
       const row = "- insert:\n    - id: harmony-native\n      name: '" + name + "'\n";
       this.appendProfilePatchRow(patchPath, name, row);
     } catch (error) { /* 同步失败只是插件不出现，不影响引擎 */ }
+  }
+  // 把 rawfile 里的插件文件整包写到 profile；所有文件先读齐再删旧目录，
+  // rawfile 缺文件时不会留下半套插件（返回 false 让调用方退回引擎归档副本）。
+  private syncHarmonyPluginFromRawfile(dest: string): boolean {
+    const files: string[] = [
+      'package.json', 'README.md', 'cordis.patch.yml', 'lib/index.js', 'lib/client.js'
+    ];
+    try {
+      const decoder = util.TextDecoder.create('utf-8');
+      const texts: string[] = [];
+      for (const file of files) {
+        const content = this.context.resourceManager.getRawFileContentSync('tools/harmony-compat/' + file);
+        texts.push(decoder.decodeToString(content));
+      }
+      this.removeTree(dest);
+      this.ensureDir(dest + '/lib');
+      for (let index = 0; index < files.length; index++) {
+        const out = fs.openSync(dest + '/' + files[index], fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        fs.writeSync(out.fd, texts[index]);
+        fs.closeSync(out);
+      }
+      return true;
+    } catch (error) { return false; }
   }
   // profile 的 cordis.patch.yml 初始内容是一段注释加空数组「[]」。直接在「[]」后面
   // 追加 patch 行会让整份 YAML 解析失败（引擎起不来），追加前必须把这行去掉。

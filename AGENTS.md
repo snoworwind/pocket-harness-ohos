@@ -105,6 +105,7 @@ hdc shell hilog -x | grep -E "IEC_LOGGER|THREAD_BLOCK|APP_FREEZE"
 - 所有 C++ 产物（`libnode.so`、`pty.node`、`require_builtin.node`）必须用 libc++ 22 头文件 + `_LIBCPP_ABI_NAMESPACE __n1` 编译（SDK 的 `libc++_shared.so` 只导出 `__n1`）。
 - C++ 服务端逻辑保持“纯函数可测”：路由/解析的判据放 `exec_route.cpp`、`path_resolver.cpp`，宿主测试在 `native/iec/tools/*selftest*`。
 - ArkTS 中加新环境变量时放在 `NativeRuntime.buildEnv()`；设备端不存在的绝对路径不要写进二进制。
+- 壳层插件（`plugins/harmony-compat`）必须同时保留一份在 `entry/src/main/resources/rawfile/tools/harmony-compat/`：应用启动时优先从 rawfile 同步进 profile，引擎归档里的副本只当兜底。只改 `plugins/` 不同步 rawfile 会命中 `tests/harmony-plugin-rawfile.cjs`，且旧引擎归档会让设置页少一行。
 
 ---
 

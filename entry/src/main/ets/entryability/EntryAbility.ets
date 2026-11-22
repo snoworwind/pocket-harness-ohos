@@ -2,14 +2,19 @@ import { UIAbility, ConfigurationConstant, common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { setSystemBarVisible } from '../platform/WindowMode';
 import BuildProfile from 'BuildProfile';
 
-// 沉浸式：始终全屏布局（内容铺到状态栏/手势条下方），系统栏按设置显示或隐藏。
+// 两种窗口模式，由设置里的「显示系统状态栏与底部手势条」决定：
 //
-// 早期版本在「显示系统状态栏与底部手势条」打开时把 setWindowLayoutFullScreen
-// 关掉，结果系统栏占据独立的一条，页面背景与栏区割裂，上下失去沉浸感；而且
-// 部分设备上栏底色被系统刷成白色。现在两种模式都保持全屏布局，打开的只是
-// 系统栏本身的可见性：栏区透明地盖在应用背景上，Index 再按避让区给内容留边。
+//   沉浸式（默认）：隐藏系统状态栏/导航栏，Web 内容铺满整屏，Index 按避让区
+//     给前摄挖孔与底部手势条让位；系统栏由系统在顶部下滑时临时露出。
+//   非沉浸式：显示系统状态栏，内容下移到状态栏下方。
+//
+// 两种模式都保持 setWindowLayoutFullScreen(true)：窗口始终铺满整屏，栏区露出
+// 的是应用自己画的主题背景。这样非沉浸式底部也不会出现系统白条（过去把布局
+// 切回安全区时，设备会把栏区刷成系统默认白底，页面背景和栏区割裂）。
+// 因此模式差异只体现在系统栏的可见性与 Index 的顶部留白，不切换布局。
 //
 // 开关镜像在 harness-home/harmony-native.json，这里启动时先按它决定初始状态，
 // 之后由 Index 轮询应用变化（避免先全屏再跳一下）。
@@ -26,21 +31,13 @@ export default class EntryAbility extends UIAbility {
   }
 
   private immersive(win: window.Window, showBars: boolean): void {
-    // 两种模式都全屏：显示系统栏时栏区覆盖在应用背景上，不再单独占一条。
     try { win.setWindowLayoutFullScreen(true); } catch (error) { /* 忽略 */ }
-    try {
-      if (showBars) {
-        win.setWindowSystemBarEnable(['status', 'navigation']);
-      } else {
-        win.setWindowSystemBarEnable([]);
-      }
-    } catch (error) { /* 忽略 */ }
+    setSystemBarVisible(win, showBars);
     this.applySystemBarColors(win);
   }
 
   // 栏区透明，露出下面 Index 同步成页面主题色的窗口背景；图标/文字颜色跟随
-  // 深浅模式。部分设备会忽略 color 只保留透明，这也是显示系统栏时仍要全屏的
-  // 原因：透明栏盖在应用背景上，不会出现一条系统白底。
+  // 深浅模式，避免深色主题下状态栏文字还是黑的。
   private applySystemBarColors(win: window.Window): void {
     const dark = this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
     try {

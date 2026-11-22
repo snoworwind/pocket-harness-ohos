@@ -8,6 +8,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NativeRuntime } from '../platform/NativeRuntime';
 import { BackgroundKeepAlive } from '../platform/BackgroundKeepAlive';
 import { PluginGuard } from '../platform/PluginGuard';
+import { IMMERSIVE_TOP_GAP, avoidAreaBottom, setSystemBarVisible } from '../platform/WindowMode';
 
 // 页面里的终端入口把 location.hash 改成 #dshterm，原生轮询 controller.getUrl() 读取，
 // 不依赖 javascriptProxy 注册，避免桥上偶发失效。
@@ -178,8 +179,9 @@ struct Index {
   private webNav: boolean = false;
   private keepAliveOn: boolean = false;
   @State private barDark: boolean = false;
-  // 沉浸式时页面要给挖孔（top）和底部手势条（bottom）让出的高度；系统栏
-  // 可见时由系统布局负责，两项都归零。
+  // 页面要给前摄挖孔 / 状态栏（top）和底部手势条（bottom）让出的高度（vp）。
+  // 两种模式都保持全屏布局，所以上下都靠这两项留边；非沉浸式顶部等于状态栏
+  // 高度，沉浸式顶部等于挖孔底边再加一点余量。
   @State private insetTop: number = 0;
   @State private insetBottom: number = 0;
   // 设置里的「显示系统状态栏与底部手势条」（harmony-native.json）。
@@ -200,9 +202,24 @@ struct Index {
     if (this.downloadTimer < 0) {
       this.downloadTimer = setInterval(() => { this.cleanupDownloads(); }, 60000);
     }
+    this.systemBarsOn = this.readShowSystemBarsEarly();
     this.followSystemBars();
     this.startUiWatch();
     this.boot();
+  }
+
+  // EntryAbility 启动时已按镜像文件设过窗口模式；Index 在 runtime 创建前也会
+  // 走一次 applyBars()，这里先把开关读进来，避免顶部留白按默认的「沉浸式」
+  // 算、开局跳一下。
+  private readShowSystemBarsEarly(): boolean {
+    try {
+      const context = this.context;
+      if (!context) { return false; }
+      const file = context.filesDir + '/harness-home/harmony-native.json';
+      if (!fs.accessSync(file)) { return false; }
+      const parsed = JSON.parse(fs.readTextSync(file)) as Record<string, boolean>;
+      return parsed.showSystemBars === true;
+    } catch (error) { return false; }
   }
 
   // 返回手势需要同步判断页面上的浮层，runJavaScript 是异步的：这里每 500ms
@@ -349,8 +366,8 @@ struct Index {
     }
   }
 
-  // 系统栏开关（同一个镜像文件）：只切换系统栏的可见性，布局始终全屏。
-  // 与 EntryAbility 的初始设置走同一套语义，避免「开栏即退出沉浸」。
+  // 系统栏开关（同一个镜像文件）：切换系统栏可见性，窗口始终全屏布局。
+  // 与 EntryAbility 的初始设置走同一套语义。
   private applySystemBars(): void {
     const runtime = this.runtime;
     const context = this.context;
@@ -360,17 +377,19 @@ struct Index {
     this.systemBarsApplied = true;
     this.systemBarsOn = want;
     window.getLastWindow(context).then((win: window.Window) => {
-      try { win.setWindowLayoutFullScreen(true); } catch (error) { /* 忽略 */ }
-      try {
-        if (want) {
-          win.setWindowSystemBarEnable(['status', 'navigation']);
-        } else {
-          win.setWindowSystemBarEnable([]);
-        }
-      } catch (error) { /* 忽略 */ }
-      // 可见性变了，重新取避让区并同步栏色。
+      this.applyWindowMode(win);
+      // 布局模式/可见性变了，重新取避让区并同步栏色。
       this.applyBars(this.barDark, this.barBg);
     }).catch(() => {});
+  }
+
+  // 沉浸式 / 非沉浸式靠系统栏可见性区分（窗口始终全屏布局，不切回安全区）：
+  //   沉浸式：隐藏系统栏，日常只留主题背景；系统栏由系统在顶部下滑时临时露出。
+  //   非沉浸式：显示系统状态栏，内容下移到状态栏下方。
+  private applyWindowMode(win: window.Window): void {
+    try { win.setWindowLayoutFullScreen(true); } catch (error) { /* 忽略 */ }
+    setSystemBarVisible(win, this.systemBarsOn);
+    this.updateInsets(win);
   }
 
   // 系统主题变化时先按系统色把状态栏/导航栏刷成同色，避免 Web 还没加载时的白条。
@@ -695,8 +714,8 @@ struct Index {
     const context = this.context;
     if (!context) { return; }
     window.getLastWindow(context).then((win: window.Window) => {
-      // 始终全屏布局：系统栏透明地盖在应用背景上，栏区露出的就是主题色；
-      // 显示系统栏时也只改图标颜色，不再把内容压回系统安全区。
+      // 两种模式都是全屏布局：系统栏透明地盖在应用背景上，栏区露出的就是主题色。
+      // 非沉浸式也走透明栏，避免设备把栏区刷成系统白底；显示与否由系统栏开关控制。
       try {
         win.setWindowSystemBarProperties({
           statusBarColor: '#00000000',
@@ -726,10 +745,20 @@ struct Index {
       const system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
       const cutout = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
       const navigation = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
-      // 无论系统栏显示与否都按同一套避让区留边：全屏布局下状态栏/挖孔/手势条
-      // 都盖在内容上，内容必须让开；栏区本身露出外层背景。
-      const top = px2vp(Math.max(system.topRect.height, cutout.topRect.height));
-      const bottom = px2vp(Math.max(system.bottomRect.height, navigation.bottomRect.height));
+      // 挖孔 Rect 不一定贴着屏幕顶边，只取 height 会把交界线压到前摄中心；
+      // 取 top + height 再留 IMMERSIVE_TOP_GAP 的余量，交界线才会落在前摄下方。
+      const cutoutBottom = avoidAreaBottom(cutout.topRect) + IMMERSIVE_TOP_GAP;
+      const statusBottom = avoidAreaBottom(system.topRect);
+      // 非沉浸式显示状态栏，内容要让到状态栏（含前摄）下方；
+      // 沉浸式状态栏隐藏，只让开前摄挖孔；机型没有独立挖孔避让区时退回状态栏高度。
+      const topPx = cutout.topRect.height > 0
+        ? Math.max(cutoutBottom, this.systemBarsOn ? statusBottom : 0)
+        : Math.max(statusBottom + IMMERSIVE_TOP_GAP, 0);
+      // 底部两种模式一致：内容让开手势条/导航栏就好，栏区本身由应用背景铺满，
+      // 不再多留一条系统白边。
+      const bottomPx = Math.max(system.bottomRect.height, navigation.bottomRect.height);
+      const top = px2vp(topPx);
+      const bottom = px2vp(bottomPx);
       if (Number.isFinite(top) && Math.abs(top - this.insetTop) > 0.5) { this.insetTop = top; }
       if (Number.isFinite(bottom) && Math.abs(bottom - this.insetBottom) > 0.5) { this.insetBottom = bottom; }
     } catch (error) { /* 拿不到避让区就不留边 */ }

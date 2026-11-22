@@ -10,7 +10,8 @@ DeepSeek Harness 0.2.2-rc.1 的鸿蒙适配插件（Host 半 + Web Client 半）
 `$DSH_HOME/harmony-native.json`；HarmonyOS 应用（`entry/src/main/ets/pages/Index.ets`）
 每 3 秒读一次该文件：`keepAlive` 变化时启停后台定位连续任务
 （`entry/src/main/ets/platform/NativeRuntime.ets` 的 `readKeepAlive()`，文件缺失按 `false` 处理），
-`showSystemBars` 变化时切换全屏布局与系统栏（`readShowSystemBars()`）。
+`showSystemBars` 变化时切换系统栏可见性（`readShowSystemBars()`；窗口始终全屏布局，
+只切换状态栏/导航栏的显示，避免非沉浸式底部出现系统白条）。
 
 ## 文件镜像
 
