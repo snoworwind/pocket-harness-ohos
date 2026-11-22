@@ -161,6 +161,7 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 - **真机调试**需要 `com.snoworwind.phoh` 的 debug Profile（含设备 UDID），在 DevEco
   Project Structure → Signing Configs 里自动生成；
 - **GitHub Release** 只提供**未签名**的 arm64 HAP 与 arm64 预编译原生库，使用者需自行签名；x86_64 从 0.1.0.3 起不再提供预编译包，按 `docs/X86_64-BUILD.md` 自行构建；
+- 原生库 zip 只在 `native/` 源码变化时重新生成；纯 ArkTS/JS/插件版本沿用上一个 Release 的同一份资产（SHA-256 不变），避免同一个包反复变化；
 - Release 里的 HAP 按 **debug 构建模式**编译（`BuildProfile.DEBUG = true`），**有意保留 ArkWeb 远程调试能力**：这个渠道面向开发者自签安装与排查，不是面向应用市场的正式包。只有“开发者模式 + USB”才能连上调试端口；将来若要做正式分发，再走 release 模式 + release 签名（`DEBUG=false`）；
 - 本项目**不计划上架华为应用市场**；如果自行上架，才需要发布证书 + release Profile 签名的
   `.app`，并自行承担商店审核、备案、商标与 AI 服务合规等责任；

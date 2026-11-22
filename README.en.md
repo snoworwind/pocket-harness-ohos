@@ -147,6 +147,9 @@ Output: `build/outputs/default/*.app`; the single HAP is at
   device UDID (generate it in DevEco → Project Structure → Signing Configs).
 - **GitHub Releases** ship an **unsigned** HAP and native libraries; sign them yourself before
   installing.
+- The native-library zip is regenerated only when `native/` sources change; releases that only touch
+  ArkTS/JS/plugins reuse the same asset from the previous release (identical SHA-256) so it does not
+  keep changing.
 - The released HAP is built in **debug build mode** (`BuildProfile.DEBUG = true`) and deliberately
   keeps ArkWeb remote debugging enabled: this channel targets developers who self-sign and debug,
   not an app-store release. The debugging port still requires developer mode plus USB. A formal

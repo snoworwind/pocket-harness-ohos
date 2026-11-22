@@ -157,6 +157,7 @@ hdc shell hilog -x | grep -E "IEC_LOGGER|THREAD_BLOCK|APP_FREEZE"
 - `PocketHarness-<version>-arm64-unsigned.hap`：取 `entry-default-unsigned.hap`，**未签名**。
 - `pocket-harness-native-arm64-v8a.zip`：扁平结构，包含 `entry/libs/arm64-v8a/*` 与 HAR 构建产物 `native/iec/platform/ohos/har/build/default/intermediates/libs/default/arm64-v8a/*`（`libc++_shared.so`、`libdsh_terminal.so`、`libiec_server.so`、`libncploader.so`），以及 `libarchive.so.13`。
 - 默认只发布 **arm64** 预编译包；需要 x86_64 运行时请按 `docs/X86_64-BUILD.md` 自行构建。
+- **原生库 zip 不要每个版本重打**：只有 `native/`（含 HAR 源码）变化时才重新生成；纯 ArkTS/JS/插件版本直接沿用上一个 Release 的同一份资产（SHA-256 不变），发布说明里注明“沿用”。HAP 仍然每个版本重新构建。
 - Release 说明里附两个资产的 SHA-256，并注明“未签名、需自行签名安装”。
 
 ```bash
