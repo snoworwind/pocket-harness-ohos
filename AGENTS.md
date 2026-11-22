@@ -51,7 +51,7 @@ node scripts/build.mjs --strict-runtime-manifest   # 发布/CI：清单不匹配
 - 从 Windows 仓库同步源码到 Linux 构建树时**必须转成 LF**；不要把 Windows 生成的 `build-cmake/` 带过去。
 - 单个命令库：`bash native/iec/scripts/optional/build_<tool>.sh`（如 `build_git.sh`、`build_gitlfs.sh`、`build_gh.sh`、`build_python.sh`）；ripgrep 用 `bash scripts/rg/build-ripgrep.sh`，node-pty 用 `bash scripts/pty/build-node-pty.sh`。
 - 打包回仓库：`bash scripts/pack-native.sh`（缺库会失败；`--partial` 仅用于分阶段验证），它会把 `.so` 复制到 `entry/libs/<abi>/`、复制运行时归档并调用 `runtime-manifest.mjs sync`。
-- 运行时清单版本由**实际随包字节**计算，禁止手改 `runtime-manifest.json` 的 `version`；改完原生库/归档后执行 `npm run runtime:sync`。
+- 运行时清单版本由**实际随包字节**计算，禁止手改 `runtime-manifest.json` 的 `version`。哈希只在构建时临时算、不落盘：`build.mjs` 每次构建前自动 sync，`pack-native.sh` 末尾也会 sync；发布构建加 `--strict-runtime-manifest` 会在清单与归档不一致时直接失败。改原生库或壳层插件不需要 sync：`.so` 直接从 HAP 加载、插件随 rawfile 分发，都不在摘要域里；`pack-native.sh` 也不再把这些插件打进引擎归档。
 
 ### 设备
 
@@ -105,7 +105,7 @@ hdc shell hilog -x | grep -E "IEC_LOGGER|THREAD_BLOCK|APP_FREEZE"
 - 所有 C++ 产物（`libnode.so`、`pty.node`、`require_builtin.node`）必须用 libc++ 22 头文件 + `_LIBCPP_ABI_NAMESPACE __n1` 编译（SDK 的 `libc++_shared.so` 只导出 `__n1`）。
 - C++ 服务端逻辑保持“纯函数可测”：路由/解析的判据放 `exec_route.cpp`、`path_resolver.cpp`，宿主测试在 `native/iec/tools/*selftest*`。
 - ArkTS 中加新环境变量时放在 `NativeRuntime.buildEnv()`；设备端不存在的绝对路径不要写进二进制。
-- 壳层插件（`plugins/harmony-compat`）必须同时保留一份在 `entry/src/main/resources/rawfile/tools/harmony-compat/`：应用启动时优先从 rawfile 同步进 profile，引擎归档里的副本只当兜底。只改 `plugins/` 不同步 rawfile 会命中 `tests/harmony-plugin-rawfile.cjs`，且旧引擎归档会让设置页少一行。
+- 壳层插件（`plugins/harmony-compat`）必须同时保留一份在 `entry/src/main/resources/rawfile/tools/harmony-compat/`：应用启动时优先从 rawfile 同步进 profile；新引擎归档已不再包含它（旧归档里的副本只当兜底）。只改 `plugins/` 不同步 rawfile 会命中 `tests/harmony-plugin-rawfile.cjs`，设备上设置页会少一行。
 
 ---
 

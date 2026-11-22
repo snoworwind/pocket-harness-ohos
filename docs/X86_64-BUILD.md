@@ -28,7 +28,7 @@ bash scripts/build-x86-runtime.sh pack
 - `scripts/patch-v8-drumbrake.sh` 是实验性的：Node 24.22.1 随包的 DrumBrake 源码落后于同版本 V8 API，打开后无法编译，因此默认不启用；无 JIT 下的 fetch 由 `harmony/fetch-polyfill.cjs` 提供。
 - Node 中断后用 `node-resume` 复用对象文件；`JOBS` 控制并发（建议不超过 12，16 以上容易触发 OOM）。
 - V8 的构建机辅助工具优先 `-O0`，强制内联不兼容时用 `-O2`；这些辅助程序不随应用分发。
-- `pack` 会改写 `entry/libs/x86_64`、引擎归档和 `runtime-manifest.json`。切换架构前请自行备份 arm64 的 `entry/libs/arm64-v8a`、引擎归档与清单（或从版本库重新生成），切回 arm64 时按 README 的流程恢复。
+- `pack` 会改写 `entry/libs/x86_64`、引擎归档与 `runtime-manifest.json` 的 `version`。切换架构前请自行备份 arm64 的 `entry/libs/arm64-v8a`、引擎归档与清单（或从版本库重新生成），切回 arm64 时按 README 的流程恢复。
 
 HAR 的 `native/iec/platform/ohos/har/build-profile.json5` 应使用 `abiFilters: ["x86_64"]`；arm64 默认值是 `["arm64-v8a"]`。运行时从系统报告的 `nativeLibraryPath` 或当前 ABI 的 bundle 路径生成工具启动器。
 

@@ -1,9 +1,8 @@
 name: runtime-manifest
 
-# 运行时归档（official-engine.tar.gz / npm.tar.gz 等）是构建产物，被 .gitignore
-# 排除，clean checkout 里永远没有。这个 job 只能校验工作区里已有归档的构建机，
-# 因此在 tag push（发布）时不触发；发布前请在打包机上本地执行
-# `node scripts/runtime-manifest.mjs check`。
+# 版本号是归档字节的函数，而归档是构建产物、不入库：clean checkout 上这个 job
+# 只会打印“跳过校验”。真正的门禁在打包机上执行
+# `node scripts/runtime-manifest.mjs check`（或 build.mjs --release）。
 on:
   push:
     branches: ['**']
@@ -24,15 +23,6 @@ jobs:
           node-version: 20
       - name: Check runtime manifest
         run: |
-          TOOLS=entry/src/main/resources/rawfile/tools
-          missing=0
-          for f in official-engine.tar.gz official-engine.sha256 npm.tar.gz python-stdlib.tar vim-runtime.tar.gz; do
-            [ -f "$TOOLS/$f" ] || { echo "::warning::缺少运行时归档 $f（构建产物不入库，需在打包机上校验）"; missing=1; }
-          done
-          if [ "$missing" -eq 1 ]; then
-            # 归档是构建产物：clean checkout / CI 不可能带上，标注后跳过。
-            # 发布门禁在打包机上执行 `node scripts/runtime-manifest.mjs check`。
-            echo "::warning::缺少运行时归档（构建产物不入库），跳过清单校验；发布前在打包机执行 npm run runtime:check"
-            exit 0
-          fi
+          # 归档是构建产物、不入库：clean checkout 上脚本会打印“跳过校验”并以 0 退出。
+          # 真正的门禁在打包机上：node scripts/runtime-manifest.mjs check
           node scripts/runtime-manifest.mjs check

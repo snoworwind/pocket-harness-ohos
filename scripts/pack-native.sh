@@ -182,15 +182,13 @@ EOF
   else
     note "未找到原生插件目录：$ADDON_STAGE（引擎启动会缺少 require-builtin / flock）"
   fi
-  # 鸿蒙适配插件：随引擎分发，用 --patch 叠加在 web profile 上（不进用户 profile）。
-  if [ -d "$PROJECT/plugins/harmony-compat" ]; then
-    mkdir -p "$WORK/engine/node_modules/@deepseek-ai"
-    rm -rf "$WORK/engine/node_modules/@deepseek-ai/dsh-harmony-compat"
-    cp -a "$PROJECT/plugins/harmony-compat" "$WORK/engine/node_modules/@deepseek-ai/dsh-harmony-compat"
-    mkdir -p "$WORK/engine/harmony"
-    cp -f "$PROJECT/plugins/harmony-compat/cordis.patch.yml" "$WORK/engine/harmony/harmony-compat.patch.yml"
-    note "鸿蒙适配插件已打包"
-  fi
+  # 壳层插件（harmony-compat / 原生终端）随 HAP rawfile 分发，应用启动时同步进
+  # profile，不再打进引擎归档：否则改一行插件文案就会改变归档字节、进而换运行时
+  # 版本、触发所有设备重新解包 450 MB。这里顺手清掉旧暂存树里遗留的副本，保证
+  # 重新打包后的归档里没有它。
+  rm -rf "$WORK/engine/node_modules/@deepseek-ai/dsh-harmony-compat"
+  rm -f "$WORK/engine/harmony/harmony-compat.patch.yml"
+  note "壳层插件改由 rawfile 分发，引擎归档不再包含 harmony-compat"
   # 图片附件：随包引擎不含 sharp 原生模块，ArkWeb 侧也没有 WASM 兜底，给
   # attachment-local 追加纯 JS 头解析 + 原字节透传（issue #1 方案 B）。
   # 补丁在解包后的暂存树上原地追加，不改上游 node_modules，也不改 ship 清单。
@@ -275,10 +273,11 @@ PROJECT_NPM="$PROJECT/entry/src/main/resources/rawfile/tools/npm.tar.gz"
 cp -f "$REBUILT_NPM" "$PROJECT_NPM"
 note "npm.tar.gz 取自本次 Node 源码构建（$(file_size "$PROJECT_NPM") 字节）"
 
-# 运行时清单。version 不在这里手算：交给 scripts/runtime-manifest.mjs 按实际
-# 随包字节（引擎/npm 归档、entry/libs 下所有 .so、commands 列表）计算。这样
-# 换引擎、换 npm、重编任一原生库，甚至换一台构建机，版本都会自动变化；不再
-# 依赖绝对路径的 sha256sum 输出，也不会出现「产物变了但清单没变」。
+# 运行时清单。version 不在这里手算：交给 scripts/runtime-manifest.mjs 按四个
+# 运行时归档（engine/npm/python-stdlib/vim）的字节 + commands 列表计算，并把
+# 哈希只在此时临时计算，不写进清单，没有任何需要人跟的数据。entry/libs 的 .so
+# 不计入：它们直接从 HAP 加载、启动器每次启动重写，原生库变化不需要换运行时目录。
+# 归档变了版本一定变，不会出现「产物变了但清单没变」。
 [ -s "$ENGINE_TAR" ] || fail "缺少 $ENGINE_TAR（引擎归档未生成，拒绝继续）"
 [ -s "$ENGINE_SUMS" ] || fail "缺少 $ENGINE_SUMS（引擎完整性清单未生成，拒绝继续）"
 [ -s "$PROJECT_NPM" ] || fail "缺少 $PROJECT_NPM（npm.tar.gz 未生成，拒绝继续）"

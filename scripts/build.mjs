@@ -4,9 +4,10 @@
 //   node scripts/build.mjs [--deveco-home <path>] [--clean] [--force-ohpm]
 //                          [--strict-runtime-manifest] [--release]
 //
-// 每次构建前都会按实际随包的引擎/npm/原生库重算 runtime-manifest.version；
-// --strict-runtime-manifest（或 DSH_STRICT_RUNTIME_MANIFEST=1）只校验不写回，
-// 供 CI/发布门禁使用：清单与产物不一致时直接失败。
+// 每次构建前都会按实际随包的运行时归档重算 runtime-manifest.version（哈希只在
+// 构建时临时算，不落盘）；--strict-runtime-manifest（或
+// DSH_STRICT_RUNTIME_MANIFEST=1）只校验不写回，供 CI/发布门禁使用：清单与
+// 产物不一致时直接失败。
 // --release（或 DSH_BUILD_MODE=release）会强制打开严格的清单校验：
 // 发布构建不接受“先 sync 再打包”的自动修正，debug 构建行为保持不变。
 //
@@ -116,8 +117,9 @@ if (!existsSync(join(root, 'entry', 'oh_modules', 'iec')) || flag('force-ohpm'))
 }
 
 // ── 运行时清单 ────────────────────────────────────────────────────────────
-// 版本号必须由本次真正打进 HAP 的字节算出：手动改清单、替换了引擎或 .so 却
+// 版本号必须跟本次真正打进 HAP 的运行时归档一致：引擎/npm/python/vim 换了却
 // 忘了改 version 时，设备会命中旧 runtime 目录的 .installed，继续用旧运行时。
+// 哈希不落盘：只有真正有归档的机器（打包机/本地构建）才能算，CI 上会跳过。
 const runtimeManifest = join(root, 'scripts', 'runtime-manifest.mjs');
 const buildMode = (option('build-mode') ?? process.env.DSH_BUILD_MODE ?? '').toLowerCase();
 const releaseBuild = flag('release') || buildMode === 'release';

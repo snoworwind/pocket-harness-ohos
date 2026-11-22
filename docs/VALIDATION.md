@@ -2,6 +2,34 @@
 
 记录截至 2026-11-22 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
 
+## 2026-11-22 运行时摘要收窄（0.1.0.7 构建产物）
+
+排查「设置页开关消失」时发现 `runtime-manifest.json` 的版本号已经不能从仓库复算：摘要输入全是
+gitignore 的构建产物，本机算 `2283e9c24fa0`、仓库里是 `74c426762080`，CI 在 clean checkout 上
+直接跳过校验。根因是摘要域还停留在旧打包模型：
+
+| 问题 | 证据 | 修复 |
+| --- | --- | --- |
+| 摘要的是 strip 前的 `.so`，不是设备实际加载的字节 | 同一个本地包：`libpython.so` 构建树 38,448,224 B，HAP 内 15,297,992 B（hvigor 打包会 strip）；`libbccmd.so` 166,656 → 138,176 | 摘要域移除 `entry/libs/**/*.so`：`.so` 直接从 HAP 的 `libs` 加载，启动器每次 `ensure()` 重写，原生库变化不需要换运行时目录 |
+| 引擎归档里还塞着壳层插件，插件改动会触发全量重解包 | `pack-native.sh` 会 `cp -a plugins/harmony-compat` 进归档；改一行插件 README 就会换归档字节 → 换版本 → 所有设备重解 450 MB | 插件随 HAP rawfile 分发；`pack-native.sh` 不再复制插件，并清掉暂存树里遗留的副本 |
+| 干净 checkout / CI 无法校验清单 | `runtime-manifest.yml` 在缺少归档时 `exit 0`；版本只能由有归档的机器算出 | 接受这个限制：版本只由归档字节决定，哈希只在构建/打包时临时算、不落盘；发布门禁靠 `--strict-runtime-manifest`（打包机上有归档，能算） |
+
+本轮结果：本机归档字节算出 `0.2.2-rc.1-e21be3f438ad`（原 `0.2.2-rc.1-74c426762080`）。因为改的是
+归档摘要的输入方式，设备下次启动会重新解包一次；此后只有 engine/npm/python-stdlib/vim 变化才会换版本。
+
+维护方式收敛成一句话：**不要手算任何哈希**。`build.mjs` 每次构建前、`pack-native.sh` 每次打包后
+都会自动 `sync`；清单里只有版本号，没有需要跟归档同步的第二份摘要。发布构建加
+`--strict-runtime-manifest`，清单与归档不一致会直接失败而不是悄悄写回。
+
+**没有 WSL 也能完成本轮**：`sync` 只做哈希计算，macOS 上即可；重打归档（去掉插件副本、补
+`ENGINE-MANIFEST.sha256`）留到有 Linux/Windows 构建树时执行，届时 `sync` 会让版本再变一次。
+
+验证：`node scripts/test.cjs` 70 项全部通过（`tests/runtime-manifest.cjs` 6 项：同输入版本稳定、
+任一归档或命令表变化必换版本、摘要大小写/键序无关、缺归档报错、摘要域只含四个归档）；
+`node scripts/runtime-manifest.mjs check` OK 且重复 sync 幂等；干净 checkout（无归档）模拟 `check`
+按预期跳过；`scripts/pack-native.sh`、`scripts/build.mjs` 语法检查通过；hvigor 构建通过。
+**未真机验收**（本轮只改构建期清单逻辑，设备端行为是重新解包一次）。
+
 ## 2026-11-22 issue #6 三修（仍为 0.1.0.7，不升版本）：设置项消失与顶部交界线
 
 用户反馈 0.1.0.7（提交 `ef9da06`）之后：设置 → 通用 → 鸿蒙适配里「显示系统状态栏与底部手势条」

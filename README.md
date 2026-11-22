@@ -133,11 +133,13 @@ node scripts/build.mjs --clean
 `build-profile.json5` 已被 `.gitignore` 排除（含证书路径与口令），仓库只保留
 `build-profile.example.json5`；首次构建由模板生成。签名在本地 `signingConfigs` 中配置。
 
-`build.mjs` 在打包前会按本次真正放进 HAP 的引擎、npm 和原生库自动重算
-`runtime-manifest.json` 的 `version`，不需要手动改。`pack-native.sh` 末尾也调用同一个
-`scripts/runtime-manifest.mjs`，因此它现在要求构建机有 Node 18+。发布流水线建议加
+`build.mjs` 在打包前会按本次真正放进 HAP 的四个运行时归档（engine/npm/python-stdlib/vim）
+自动重算 `runtime-manifest.json` 的 `version`。哈希只在构建时临时计算、不落进清单，所以
+不需要手动改任何东西；原生库和壳层插件也不计入版本：`.so` 直接从 HAP 加载、启动器每次
+启动重写，插件随 rawfile 分发。`pack-native.sh` 末尾也调用同一个
+`scripts/runtime-manifest.mjs`，因此它要求构建机有 Node 18+。发布流水线建议加
 `--strict-runtime-manifest`，让清单与产物不一致时直接失败而不是写回；也可以单独运行
-`npm run runtime:check`。
+`npm run runtime:check`（归档不在的机器上会跳过并提示到打包机执行）。
 
 ### 3. 应用包（可选，仅将来上架时）
 
@@ -195,9 +197,11 @@ filesDir/
   harness-home/                DSH_HOME（profile、会话、设置、凭据）
 ```
 
-- 运行时目录名由 `scripts/runtime-manifest.mjs` 按内容摘要生成；`build.mjs` 每次构建前会自动
-  重算并写回 `runtime-manifest.json`，引擎、npm 或任一原生库变化都会换目录、重新解包，
-  成功后删除旧的 `runtime-*` 目录（约 500 MB/个）；
+- 运行时目录名由 `scripts/runtime-manifest.mjs` 按归档摘要生成；`build.mjs` 每次构建前会自动
+  重算并写回 `runtime-manifest.json`，引擎、npm、Python stdlib 或 Vim 运行时变化都会换目录、
+  重新解包，成功后删除旧的 `runtime-*` 目录（约 500 MB/个）；
+- 改原生库或壳层插件（`plugins/` + rawfile 副本）**不会**换运行时目录：`.so` 直接从 HAP 的
+  `libs/<abi>` 加载，插件每次启动重新同步进 profile；
 - 只改 ArkTS/UI 的覆盖升级不会换运行时；manifest 版本不变时复用旧目录，启动行为与普通
   冷启动完全一致，这是刻意设计，不是漏解包；
 - `.installed` 是 JSON：版本号必须等于当前 `manifest.version`，并记录关键文件

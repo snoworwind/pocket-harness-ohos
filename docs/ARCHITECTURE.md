@@ -63,8 +63,19 @@ filesDir/harness-home/          DSH_HOME：profile、会话 JSONL、设置、凭
 
 `scripts/runtime-manifest.mjs` 是唯一的摘要实现：
 
-- 输入：`engineVersion`、`nodeVersion`、按命令名排序的 `commands`、`official-engine.tar.gz`、`npm.tar.gz`、`entry/libs` 下所有 `*.so*` 的**内容**；
-- 输出：`<engineVersion>-<sha256 前 12 位>`，写回 `entry/src/main/resources/rawfile/tools/runtime-manifest.json` 的 `version`；
+- 输入：`engineVersion`、`nodeVersion`、按命令名排序的 `commands`，以及四个运行时归档
+  （+ 可选 ELF 启动桩）的字节——哈希在构建/打包时临时计算，不写进清单；
+- 输出：`<engineVersion>-<sha256 前 12 位>`，写回
+  `entry/src/main/resources/rawfile/tools/runtime-manifest.json` 的 `version`；
+- 摘要域只覆盖**会被解包进 `runtime-<version>/` 的东西**：
+  `official-engine.tar.gz`、`npm.tar.gz`、`python-stdlib.tar`、`vim-runtime.tar.gz`；
+- `entry/libs/<abi>/*.so` 不计入：`.so` 直接从 HAP 的 `libs` 加载，启动器每次
+  `ensure()` 都按 `commands` 重写，原生库变化不需要换运行时目录；而且 hvigor
+  打包会 strip 它们，构建树里的字节本来就不是设备字节；
+- 壳层插件（`plugins/harmony-compat`、终端插件）不计入：随 rawfile 分发、每次启动
+  重新同步，`pack-native.sh` 也不再把它们打进引擎归档；
+- 校验只在有归档的机器上有意义（打包机 / 本地构建）；clean checkout 上 `check` 会跳过并
+  提示到打包机执行。发布时 `--strict-runtime-manifest` 会拒绝“清单与归档不一致”的包；
 - 不包含应用 `versionName`：只改 ArkTS/UI 时复用旧运行时；
 - 不包含绝对路径：换构建目录或构建机不会误换版本。
 

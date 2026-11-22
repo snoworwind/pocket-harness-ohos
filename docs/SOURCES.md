@@ -56,7 +56,7 @@
 引擎与 npm 归档的完整性：
 
 - `pack-native.sh` 打包 `official-engine.tar.gz` 时生成归档内 `ENGINE-MANIFEST.sha256`（逐文件 SHA-256；若 `official-engine/package-lock.json` 存在也一并归档），并在 `rawfile/tools/official-engine.sha256` 写入归档自身的 SHA-256。
-- `scripts/runtime-manifest.mjs` 在 `sync`/`check` 前核对 `official-engine.sha256` 与归档字节一致，不一致直接失败。
+- `scripts/runtime-manifest.mjs` 在归档存在时核对 `official-engine.sha256` 与归档字节一致，用四个运行时归档的摘要计算 `runtime-manifest.json` 的 `version`；哈希不写进清单，构建/打包时自动计算，不一致直接失败。干净 checkout 没有归档时跳过校验。
 - `npm.tar.gz` 改为构建产物：`.gitignore` 已忽略 `native/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz`；`pack-native.sh` 只接受本次 Node 构建产出的归档，缺失即失败，不再回退到旧副本（`--partial` 只对缺失的原生库生效）。
 - 旧的跟踪项已在本次改动中从索引移除（`git rm --cached native/iec/platform/ohos/har/src/main/resources/rawfile/tools/npm.tar.gz`，工作区文件保留并被忽略）；提交时需带上这条删除记录。
 
@@ -108,7 +108,7 @@
 | `npm.tar.gz` | Node.js v24.22.1 源码树里的 `deps/npm`（npm 11.19.1） | `build_node.sh` 打包；**构建产物，不进入版本库**。`pack-native.sh` 缺少本次构建产物时直接失败，不再复用仓库旧副本；审计脚本校验与构建产物一致 |
 | `node_modules/@vscode/ripgrep` | 本工程自写的兼容包（MIT） | 上游包只做「找到 rg 路径」这一件事，且会 require 平台预编译包；这里换成把 `rgPath` 指向 `<sysroot>/bin/rg` 的 8 行模块 |
 | `assets/cacert.pem` | Mozilla CA 根证书集 | 纯数据，编译进 `libiec_server.so` |
-| `node_modules/@deepseek-ai/dsh-harmony-compat` | 本仓库 `plugins/harmony-compat`（MIT） | 内容与 `entry/src/main/resources/rawfile/tools/harmony-compat/` 一致：随 HAP rawfile 分发、启动时优先同步进 profile（引擎归档里的副本只当兜底），避免归档未重打时装进旧插件；`scripts/pack-native.sh` 仍会把同一份覆盖进引擎归档 |
+| `node_modules/@deepseek-ai/dsh-harmony-compat` | 本仓库 `plugins/harmony-compat`（MIT） | 内容与 `entry/src/main/resources/rawfile/tools/harmony-compat/` 一致：随 HAP rawfile 分发、启动时优先同步进 profile（旧引擎归档里的副本只当兜底，仅用于兼容旧包）。`scripts/pack-native.sh` 已不再把插件复制进引擎归档，避免插件改动改变归档字节、进而换运行时版本 |
 | `node_modules/@local/dsh-harmony-terminal` | 本仓库 `plugins/dsh-harmony-terminal`（MIT） | 原生终端 tab 插件，随 HAP rawfile 分发、启动时同步进 profile |
 | `entry/src/main/resources/rawfile/harmony/extra-ca.pem` | 用户自行提供，**不随仓库分发** | 可选附加 CA，用于会拦截 HTTPS 的开发环境；公开构建保持缺省 |
 

@@ -113,11 +113,15 @@ node scripts/build.mjs --deveco-home "<DevEco install dir>"
 node scripts/build.mjs --clean   # after changing native libs
 ```
 
-Before packaging, `build.mjs` recomputes `runtime-manifest.json`'s `version` from the exact engine,
-npm and native libraries that will ship, so no manual bump is needed. `pack-native.sh` also calls the
-same `scripts/runtime-manifest.mjs`, which means it now requires Node 18+ on the build host. Release
-pipelines should add `--strict-runtime-manifest` to fail on a stale manifest instead of writing it
-back; `npm run runtime:check` runs the same gate standalone.
+Before packaging, `build.mjs` recomputes `runtime-manifest.json`'s `version` from the four runtime
+archives that ship (engine / npm / python-stdlib / vim). The hashes are computed at build time only and
+never stored in the manifest, so there is nothing to bump by hand. Native libraries and shell plugins
+are not part of the version: `.so` files load from the HAP, and plugins are shipped via rawfile and
+re-synced on every start. `pack-native.sh` also calls the same `scripts/runtime-manifest.mjs`, which
+means it requires Node 18+ on the build host. Release pipelines should add
+`--strict-runtime-manifest` to fail on a mismatched manifest instead of writing it back;
+`npm run runtime:check` runs the same gate standalone (on hosts without archives it skips with a
+notice and asks you to run it on the packaging machine).
 
 `build-profile.json5` is gitignored (it contains signing paths and passwords); only
 `build-profile.example.json5` is committed. Signing is configured locally.
@@ -171,10 +175,13 @@ filesDir/
   harness-home/                DSH_HOME (profiles, sessions, settings, credentials)
 ```
 
-- The runtime directory name comes from the content digest computed by
-  `scripts/runtime-manifest.mjs`; `build.mjs` recomputes and writes it before every build, so
-  changing the engine, npm or any native library triggers a fresh unpack. Stale `runtime-*`
-  directories are removed after a successful start (~450 MB each).
+- The runtime directory name comes from the archive digest computed by
+  `scripts/runtime-manifest.mjs`; `build.mjs` recomputes and writes `runtime-manifest.json` before
+  every build, so changing the engine, npm, Python stdlib or Vim runtime triggers a fresh unpack.
+  Stale `runtime-*` directories are removed after a successful start (~450 MB each).
+- Changing native libraries or shell plugins (`plugins/` plus the rawfile copy) does **not** change
+  the runtime directory: `.so` files load straight from the HAP and plugins are re-synced into the
+  profile on every start.
 - An OTA update that only changes ArkTS/UI keeps the same runtime and reuses the old directory.
   Its startup then behaves exactly like a normal cold start; no unpack prompt is expected.
 - `.installed` must contain the current `manifest.version`, otherwise the whole runtime is rebuilt.
