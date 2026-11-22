@@ -161,6 +161,7 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 - **真机调试**需要 `com.snoworwind.phoh` 的 debug Profile（含设备 UDID），在 DevEco
   Project Structure → Signing Configs 里自动生成；
 - **GitHub Release** 只提供**未签名**的 arm64 HAP 与 arm64 预编译原生库，使用者需自行签名；x86_64 从 0.1.0.3 起不再提供预编译包，按 `docs/X86_64-BUILD.md` 自行构建；
+- Release 里的 HAP 按 **debug 构建模式**编译（`BuildProfile.DEBUG = true`），**有意保留 ArkWeb 远程调试能力**：这个渠道面向开发者自签安装与排查，不是面向应用市场的正式包。只有“开发者模式 + USB”才能连上调试端口；将来若要做正式分发，再走 release 模式 + release 签名（`DEBUG=false`）；
 - 本项目**不计划上架华为应用市场**；如果自行上架，才需要发布证书 + release Profile 签名的
   `.app`，并自行承担商店审核、备案、商标与 AI 服务合规等责任；
 - **release 签名的 HAP 不能 `hdc install`**（会报 `9568322 not trusted app source`），
@@ -169,7 +170,7 @@ DEVECO_SDK_HOME="<DevEco>/sdk" JAVA_HOME="<DevEco>/jbr" \
 ## 测试与校验
 
 ```bash
-node scripts/test.cjs                  # 宿主侧 57 项（会话协议、SSE、路径沙箱、附件钩子、桥脚本顺序与门禁规则）
+node scripts/test.cjs                  # 宿主侧 71 项（会话协议、SSE、路径沙箱、附件钩子、桥脚本顺序与门禁规则）
 node scripts/test-fetch-polyfill.cjs   # fetch 补丁 19 项（JSON/SSE/重定向/FormData/abort/undici 覆盖…）
 node tests/fetch-redirect.cjs          # 重定向安全 12 项（跨源剥离认证头、HTTPS→HTTP 降级、非 http(s) 目标）
 bash scripts/audit-sources.sh          # 解包 HAP，核对二进制集合、npm.tar.gz 与 ELF 加固标志

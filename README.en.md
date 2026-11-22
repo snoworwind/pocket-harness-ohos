@@ -147,6 +147,10 @@ Output: `build/outputs/default/*.app`; the single HAP is at
   device UDID (generate it in DevEco → Project Structure → Signing Configs).
 - **GitHub Releases** ship an **unsigned** HAP and native libraries; sign them yourself before
   installing.
+- The released HAP is built in **debug build mode** (`BuildProfile.DEBUG = true`) and deliberately
+  keeps ArkWeb remote debugging enabled: this channel targets developers who self-sign and debug,
+  not an app-store release. The debugging port still requires developer mode plus USB. A formal
+  distribution would use release mode + release signing (`DEBUG=false`).
 - This project is **not intended for Huawei AppGallery**; if you publish it yourself, you need a
   release certificate/profile and you are responsible for store review, filings, trademark and
   AI-service compliance.
@@ -156,7 +160,7 @@ Output: `build/outputs/default/*.app`; the single HAP is at
 ## Tests
 
 ```bash
-node scripts/test.cjs                  # 57 host-side tests (session protocol, SSE, path sandbox, upload hook, image patch)
+node scripts/test.cjs                  # 71 host-side tests (session protocol, SSE, path sandbox, upload hook, image patch)
 node scripts/test-fetch-polyfill.cjs   # 19 fetch-polyfill tests (JSON/SSE/redirect/FormData/abort)
 bash scripts/audit-sources.sh          # unpack the HAP, verify binaries and npm.tar.gz
 bash scripts/check-engine-web.sh       # web profile: 291 plugins, empty stderr

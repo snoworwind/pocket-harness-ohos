@@ -156,7 +156,7 @@ gitignore 的构建产物，本机算 `2283e9c24fa0`、仓库里是 `74c42676208
 
 | 报告项 | 修复 | 本轮验证 |
 | --- | --- | --- |
-| H-01 生产包开启 WebView 调试 | `EntryAbility` 改用 `BuildProfile.DEBUG`：debug 开、release 显式关；删除 `pages/KbTest`、`kbtest.html` 与 `main_pages.json` 注册 | 本机 hvigor 生成的 `BuildProfile.ets` 有 `DEBUG` 字段，SDK `@ohos.web.webview.d.ts` 有 `setWebDebuggingAccess(boolean)`；release 产物的 `DEBUG=false` 未构建验证 |
+| H-01 生产包开启 WebView 调试 | `EntryAbility` 改用 `BuildProfile.DEBUG`：debug 开、release 显式关；删除 `pages/KbTest`、`kbtest.html` 与 `main_pages.json` 注册 | 本机 hvigor 生成的 `BuildProfile.ets` 有 `DEBUG` 字段，SDK `@ohos.web.webview.d.ts` 有 `setWebDebuggingAccess(boolean)`。**2026-11-22 复核并按分发模型确认**：GitHub Release 只发未签名 HAP、由开发者自签，构建走 hvigor 默认 debug 模式（`BUILD_MODE_NAME='debug'`、`DEBUG=true`），**有意保留 ArkWeb 调试能力**，不作为待修项；将来若上架/正式分发，需另做 release 模式构建并验证 `DEBUG=false` |
 | H-02 定位权限用于保活 | **按用户决定保持现状，未改**；接受风险写入 [SECURITY.md](SECURITY.md) 与 README | — |
 | M-01 WebView 跨源桥/注入/console | `javaScriptProxy.permission` 限定 `http://127.0.0.1:<port>`；`scriptRules` 只给本地 origin；终端/下载桥加每次启动随机 nonce（终端插件与 rawfile 副本同步）；console 校验 `getSourceId()` 来源；下载分片限 256 KiB、单任务 256 MiB、8 个任务、5 分钟超时；`fileAccess`/`databaseAccess` 关闭；主框架导航按 `url.URL.origin` 收口 | `node scripts/test.cjs` 桥脚本顺序测试通过；nonce/配额逻辑在 Node 侧做过临时验证（未入库）；ArkWeb 的 permission/scriptRules/getSourceId 真机行为未验证 |
 | M-02 fetch 跨源重定向泄漏认证头 + HTTPS→HTTP 降级 | 跨 origin 剥离 `authorization`/`proxy-authorization`/`cookie`/`cookie2`/`host`；303 与 301/302 POST→GET 清理请求体头；拒绝 HTTPS→HTTP 与非 http(s) 目标 | `node scripts/test-fetch-polyfill.cjs` 16 项通过；新增 `node tests/fetch-redirect.cjs` 12 项通过（含自签证书端到端降级用例） |
