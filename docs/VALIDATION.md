@@ -1,6 +1,25 @@
 # 验证说明
 
-记录截至 2026-11-21 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+记录截至 2026-11-22 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+
+## 2026-11-22 issue #6 重开（0.1.0.7）：上下沉浸、重启回新对话与设置复位
+
+用户重新打开 #6，反馈 0.1.0.6 还有三类问题：打开「显示系统状态栏与底部手势条」后上下不再沉浸；
+关闭时摄像头附近仍有遮挡；重启应用直接进入新对话，部分设置开关重启后恢复。
+
+| 现象 | 根因 | 修复 | 本轮验证 |
+| --- | --- | --- | --- |
+| 打开系统栏开关后上下没有沉浸效果，栏区与页面割裂 | `EntryAbility.immersive()` / `Index.applySystemBars()` 在开关打开时调用 `setWindowLayoutFullScreen(false)`，窗口退回系统安全区，栏区不再由应用背景覆盖；设备又把系统栏刷成默认白底 | 两种模式都保持 `setWindowLayoutFullScreen(true)`，只切换 `setWindowSystemBarEnable`；`setWindowSystemBarProperties` 的 `statusBarColor`/`navigationBarColor` 改为透明，栏区露出按页面主题同步的窗口背景 | ArkTS 编译通过（hvigor `CompileArkTS`，BUILD SUCCESSFUL）；**未真机验收** |
+| 关闭系统栏时摄像头附近仍有遮挡 | 避让区只在 `applyBars()` 里采样一次；布局切换、旋转后 `getWindowAvoidArea()` 可能先返回 0，旧的 `insetTop` 就停在不足的值；系统栏可见分支还把 inset 直接清零 | `updateInsets()` 在两种模式下都用 `TYPE_SYSTEM`/`TYPE_CUTOUT`/`TYPE_NAVIGATION_INDICATOR` 的最大值留边；`syncInsets()` 跟着 2 秒栏色轮询重采样，布局晚一帧也能补上 | ArkTS 编译通过；**未真机验收** |
+| 重启应用回到新对话，部分设置复位 | Web 服务用 `--port 0` 启动，每次重启端口不同。ArkWeb 的 localStorage 按 origin（含端口）隔离，客户端持久化的 `dsh.sessions.current`（上次会话）、`dsh.workspace.view.v5`（侧栏分组/排序）和 `dsh.conversation`（草稿/视图）因此落在不同 origin，等于每次都是新环境 | `NativeRuntime` 把实际端口写入 `harness-home/web-port`，下次启动优先复用；占用时从固定基址 `17431` 顺延，最后才退回 0。端口候选与 URL 解析抽成纯函数 `core/WebOrigin.ts`，只有 `EADDRINUSE` 一类监听失败才换端口重试 | `node scripts/test.cjs` 62 项（61 pass / 1 skip，新增 5 项端口候选/URL/占用判定）；ArkTS 编译通过；**未真机验收** |
+
+说明：
+
+- 升级到本版后的**第一次**启动仍会换到一个新 origin（旧版本每次都是随机端口，旧 localStorage
+  本来就没法跨启动保留），这次启动后的会话与设置会开始稳定；第二次启动起恢复上次会话。
+- 端口文件与插件写的 `harmony-native.json` 分开，避免壳层和 harmony-compat 互相覆盖。
+- 系统栏打开时栏区仍是「透明覆盖 + 内容让边」，Web 组件本身不铺到栏下；要真正让网页内容
+  滚到栏下还需要在页面内注入安全区 CSS，本轮没有做，避免在无法真机验证时改坏页面布局。
 
 ## 2026-11-21 GitHub issue 修复（#2–#6、终端回车）
 

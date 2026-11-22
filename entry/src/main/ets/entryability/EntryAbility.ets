@@ -4,16 +4,14 @@ import { webview } from '@kit.ArkWeb';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import BuildProfile from 'BuildProfile';
 
-// 沉浸式：全屏布局 + 隐藏系统栏。
+// 沉浸式：始终全屏布局（内容铺到状态栏/手势条下方），系统栏按设置显示或隐藏。
 //
-// 这台设备上 setWindowSystemBarProperties 的 statusBarColor/navigationBarColor
-// 不生效（栏区始终是系统默认白底），改色、透明栏 + 页面留白都试过，栏区仍然白。
-// 于是默认采用官方「方式一」：直接不显示状态栏和导航栏，让 Web 内容占满整屏，
-// 页面自己给挖孔和底部手势条让位。
+// 早期版本在「显示系统状态栏与底部手势条」打开时把 setWindowLayoutFullScreen
+// 关掉，结果系统栏占据独立的一条，页面背景与栏区割裂，上下失去沉浸感；而且
+// 部分设备上栏底色被系统刷成白色。现在两种模式都保持全屏布局，打开的只是
+// 系统栏本身的可见性：栏区透明地盖在应用背景上，Index 再按避让区给内容留边。
 //
-// 设置 → 通用 → 鸿蒙适配 里可以打开「显示系统状态栏与底部手势条」：
-// 那时恢复系统栏、取消全屏布局，内容回到安全区内。开关镜像在
-// harness-home/harmony-native.json，这里启动时先按它决定初始状态，
+// 开关镜像在 harness-home/harmony-native.json，这里启动时先按它决定初始状态，
 // 之后由 Index 轮询应用变化（避免先全屏再跳一下）。
 export default class EntryAbility extends UIAbility {
   private win?: window.Window;
@@ -28,7 +26,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   private immersive(win: window.Window, showBars: boolean): void {
-    try { win.setWindowLayoutFullScreen(!showBars); } catch (error) { /* 忽略 */ }
+    // 两种模式都全屏：显示系统栏时栏区覆盖在应用背景上，不再单独占一条。
+    try { win.setWindowLayoutFullScreen(true); } catch (error) { /* 忽略 */ }
     try {
       if (showBars) {
         win.setWindowSystemBarEnable(['status', 'navigation']);
@@ -36,17 +35,18 @@ export default class EntryAbility extends UIAbility {
         win.setWindowSystemBarEnable([]);
       }
     } catch (error) { /* 忽略 */ }
-    if (showBars) { this.applySystemBarColors(win); }
+    this.applySystemBarColors(win);
   }
 
-  // 系统栏可见时把它刷成和页面同色；内容色跟随深浅模式，避免深色主题下
-  // 状态栏文字还是黑的。
+  // 栏区透明，露出下面 Index 同步成页面主题色的窗口背景；图标/文字颜色跟随
+  // 深浅模式。部分设备会忽略 color 只保留透明，这也是显示系统栏时仍要全屏的
+  // 原因：透明栏盖在应用背景上，不会出现一条系统白底。
   private applySystemBarColors(win: window.Window): void {
     const dark = this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
     try {
       win.setWindowSystemBarProperties({
-        statusBarColor: dark ? '#101113' : '#F7F7F0',
-        navigationBarColor: dark ? '#101113' : '#F7F7F0',
+        statusBarColor: '#00000000',
+        navigationBarColor: '#00000000',
         statusBarContentColor: dark ? '#FFFFFF' : '#000000',
         navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
       });

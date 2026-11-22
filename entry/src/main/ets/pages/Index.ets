@@ -349,8 +349,8 @@ struct Index {
     }
   }
 
-  // 系统栏开关（同一个镜像文件）：打开时恢复状态栏/导航栏并取消全屏布局，
-  // 关闭时回到沉浸式。首次也会应用一次，避免「先全屏再跳一下」。
+  // 系统栏开关（同一个镜像文件）：只切换系统栏的可见性，布局始终全屏。
+  // 与 EntryAbility 的初始设置走同一套语义，避免「开栏即退出沉浸」。
   private applySystemBars(): void {
     const runtime = this.runtime;
     const context = this.context;
@@ -360,7 +360,7 @@ struct Index {
     this.systemBarsApplied = true;
     this.systemBarsOn = want;
     window.getLastWindow(context).then((win: window.Window) => {
-      try { win.setWindowLayoutFullScreen(!want); } catch (error) { /* 忽略 */ }
+      try { win.setWindowLayoutFullScreen(true); } catch (error) { /* 忽略 */ }
       try {
         if (want) {
           win.setWindowSystemBarEnable(['status', 'navigation']);
@@ -368,7 +368,7 @@ struct Index {
           win.setWindowSystemBarEnable([]);
         }
       } catch (error) { /* 忽略 */ }
-      // 布局模式变了，重新取避让区并同步栏色。
+      // 可见性变了，重新取避让区并同步栏色。
       this.applyBars(this.barDark, this.barBg);
     }).catch(() => {});
   }
@@ -695,43 +695,44 @@ struct Index {
     const context = this.context;
     if (!context) { return; }
     window.getLastWindow(context).then((win: window.Window) => {
-      // 沉浸式（EntryAbility 里已设全屏 + 透明栏）：这里只同步栏区图标颜色、
-      // 页面背景色，并把内容按避让区让开；栏区露出的就是页面背景。
-      // 系统栏可见时要连同底色一起刷，否则默认白底会和深色页面割裂。
+      // 始终全屏布局：系统栏透明地盖在应用背景上，栏区露出的就是主题色；
+      // 显示系统栏时也只改图标颜色，不再把内容压回系统安全区。
       try {
-        if (this.systemBarsOn) {
-          win.setWindowSystemBarProperties({
-            statusBarColor: this.barBg,
-            navigationBarColor: this.barBg,
-            statusBarContentColor: dark ? '#FFFFFF' : '#000000',
-            navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
-          });
-        } else {
-          win.setWindowSystemBarProperties({
-            statusBarContentColor: dark ? '#FFFFFF' : '#000000',
-            navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
-          });
-        }
+        win.setWindowSystemBarProperties({
+          statusBarColor: '#00000000',
+          navigationBarColor: '#00000000',
+          statusBarContentColor: dark ? '#FFFFFF' : '#000000',
+          navigationBarContentColor: dark ? '#FFFFFF' : '#000000'
+        });
       } catch (error) { /* 忽略 */ }
       try { win.setWindowBackgroundColor(this.barBg); } catch (error) {
         hilog.warn(0, 'DSH_THEME', 'window background failed: %{public}s %{public}s', this.barBg, (error as Error).message);
       }
-      try {
-        if (this.systemBarsOn) {
-          // 系统栏可见：内容回到安全区，额外让位交给系统布局。
-          this.insetTop = 0;
-          this.insetBottom = 0;
-        } else {
-          const system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-          const cutout = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
-          const navigation = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
-          // 系统栏已隐藏，但状态栏/挖孔/手势条在系统侧仍有高度；取较大值让
-          // 顶部 UI 让开前摄，底部输入框让开手势条。
-          this.insetTop = px2vp(Math.max(system.topRect.height, cutout.topRect.height));
-          this.insetBottom = px2vp(Math.max(system.bottomRect.height, navigation.bottomRect.height));
-        }
-      } catch (error) { /* 拿不到避让区就不留边 */ }
+      this.updateInsets(win);
     }).catch(() => {});
+  }
+
+  // 避让区在布局切换后会晚一帧才更新，而且横竖屏切换也要重算：轮询里周期性
+  // 采样，避免只在启动时取到 0 导致内容压到前摄/手势条下面。
+  private syncInsets(): void {
+    const context = this.context;
+    if (!context) { return; }
+    window.getLastWindow(context).then((win: window.Window) => {
+      this.updateInsets(win);
+    }).catch(() => {});
+  }
+  private updateInsets(win: window.Window): void {
+    try {
+      const system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      const cutout = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
+      const navigation = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+      // 无论系统栏显示与否都按同一套避让区留边：全屏布局下状态栏/挖孔/手势条
+      // 都盖在内容上，内容必须让开；栏区本身露出外层背景。
+      const top = px2vp(Math.max(system.topRect.height, cutout.topRect.height));
+      const bottom = px2vp(Math.max(system.bottomRect.height, navigation.bottomRect.height));
+      if (Number.isFinite(top) && Math.abs(top - this.insetTop) > 0.5) { this.insetTop = top; }
+      if (Number.isFinite(bottom) && Math.abs(bottom - this.insetBottom) > 0.5) { this.insetBottom = bottom; }
+    } catch (error) { /* 拿不到避让区就不留边 */ }
   }
 
   private boot(): void {
@@ -887,7 +888,7 @@ struct Index {
       // onPageEnd 不一定每次都触发；启动后先同步一次并挂上轮询，避免背景色一直停在启动回退色。
       this.syncBarsFromPage();
       if (this.barTimer < 0) {
-        this.barTimer = setInterval(() => { this.syncBarsFromPage(); }, 2000);
+        this.barTimer = setInterval(() => { this.syncBarsFromPage(); this.syncInsets(); }, 2000);
       }
       // 界面就绪后再处理保活，避免权限弹窗挡住首屏；之后每 3 秒跟一次插件设置。
       this.applyKeepAlive();
@@ -1027,7 +1028,7 @@ struct Index {
             this.syncBarsFromPage();
             this.installPopupBridge();
             if (this.barTimer < 0) {
-              this.barTimer = setInterval(() => { this.syncBarsFromPage(); }, 2000);
+              this.barTimer = setInterval(() => { this.syncBarsFromPage(); this.syncInsets(); }, 2000);
             }
           })
           // 页面里的终端插件用 console.log('DSH_TERM:<nonce>:' + json) 上报 tab 的状态。
@@ -1215,11 +1216,11 @@ struct Index {
     }
     .width('100%')
     .height('100%')
-    // 状态栏/导航栏隐藏时，这两条留白由外层背景补上，颜色跟 Web 主题同步；
-    // 系统栏可见时不再扩安全区，内容交给系统布局避让。
+    // 两种模式都全屏：系统栏区域由外层背景铺满，颜色跟 Web 主题同步；
+    // 内容自己的留白由 insetTop/insetBottom 负责，不能用安全区再挤一次。
     .backgroundColor(this.barBg)
     .expandSafeArea(
-      this.systemBarsOn ? [] : [SafeAreaType.SYSTEM, SafeAreaType.KEYBOARD],
-      this.systemBarsOn ? [] : [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+      [SafeAreaType.SYSTEM, SafeAreaType.KEYBOARD],
+      [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

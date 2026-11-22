@@ -6,6 +6,7 @@ import { execStart, execPoll, execWrite, execCloseStdin, execTerminate, execRele
   writeSoLauncher, writeTxtFile } from 'iec';
 import { EngineHooks, EnginePipe, OfficialRpc } from '../core/OfficialRpc';
 import { Settings } from '../core/Types';
+import { isUsableWebPort, isWebPortInUse, webPortCandidates, webPortFromUrl } from '../core/WebOrigin';
 
 interface NativeCommand { name: string; library: string; entry: string; arity?: number }
 interface RuntimeManifest { version: string; engineVersion: string; nodeVersion: string; commands: NativeCommand[] }
@@ -32,6 +33,12 @@ const INTEGRITY_FILES: string[] = [
 const INSTALLED_SCHEMA = 2;
 const LOG_ROTATE_BYTES = 4 * 1024 * 1024;
 const LOG_BACKUP_COUNT = 2;
+// Web 服务端口必须跨启动稳定。ArkWeb 的 localStorage 按 origin（含端口）隔离，
+// 端口每次随机会让「恢复上次会话」和客户端设置（dsh.sessions.current、
+// dsh.workspace.view.v5 等）落到不同 origin，表现为重启后回到新对话、部分设置
+// 复位。这里持久化第一次选中的端口；被占用时顺延，最后才退回内核随机分配。
+const WEB_PORT_DEFAULT = 17431;
+const WEB_PORT_ATTEMPTS = 8;
 // 旧运行时目录切片删除时，目录的第二次访问用这个不可见后缀标记。
 const PRUNE_REVISIT = '\u0000';
 
@@ -579,13 +586,65 @@ export class NativeRuntime {
       timer = setTimeout(() => { process.close(); reject(new Error('原生命令探测超时')); }, 15000);
     });
   }
+  // 端口文件只给应用壳层用，和插件写的 harmony-native.json 分开，避免互相覆盖。
+  private webPortFile(): string { return this.context.filesDir + '/harness-home/web-port'; }
+  private readWebPort(): number {
+    try {
+      const file = this.webPortFile();
+      if (!fs.accessSync(file)) { return 0; }
+      const text = fs.readTextSync(file).trim();
+      if (!/^[0-9]{4,5}$/.test(text)) { return 0; }
+      const port = Number(text);
+      return isUsableWebPort(port) ? port : 0;
+    } catch (error) { return 0; }
+  }
+  private writeWebPort(port: number): void {
+    if (!isUsableWebPort(port)) { return; }
+    try {
+      const dir = this.context.filesDir + '/harness-home';
+      this.ensureDir(dir);
+      const file = dir + '/web-port';
+      const temporary = file + '.tmp';
+      const out = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(out.fd, port.toString() + '\n');
+      } finally {
+        fs.closeSync(out);
+      }
+      fs.renameSync(temporary, file);
+    } catch (error) { /* 写不进只影响下次能不能复用端口 */ }
+  }
+  // 候选顺序：上次成功的端口 → 固定基址起顺延的端口 → 0（内核随机）。
+  private webPortPlan(): number[] {
+    return webPortCandidates(this.readWebPort(), WEB_PORT_DEFAULT, WEB_PORT_ATTEMPTS);
+  }
   // 官方 Web 界面：设备内起的就是 `dsh --profile web`，界面原样加载它打印的
-  // http://127.0.0.1:<port>。端口用 0 让内核挑，避免和别的进程抢固定端口。
+  // http://127.0.0.1:<port>。端口要跨启动复用（见 WEB_PORT_DEFAULT）：换端口就是
+  // 换 origin，localStorage 里的上次会话与客户端设置会一起丢。
   async startWebUI(onLog: (text: string) => void,
     onInstalling?: (active: boolean) => void): Promise<string> {
     await this.ensure(onInstalling);
     if (this.webUrl) { return this.webUrl; }
     const env: Record<string, string> = this.buildEnv();
+    const candidates: number[] = this.webPortPlan();
+    let last = new Error('官方 Web 服务启动失败');
+    for (let index = 0; index < candidates.length; index++) {
+      try {
+        const url = await this.startWebAttempt(candidates[index], env, onLog);
+        const port = webPortFromUrl(url);
+        if (port > 0) { this.writeWebPort(port); }
+        return url;
+      } catch (error) {
+        last = error as Error;
+        if (index === candidates.length - 1 || !isWebPortInUse(last.message)) { throw last; }
+        onLog('\n[Web 端口 ' + candidates[index].toString() + ' 不可用，改用下一个端口]\n');
+        this.web = undefined;
+      }
+    }
+    throw last;
+  }
+  private startWebAttempt(port: number, env: Record<string, string>,
+    onLog: (text: string) => void): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       let seen = '';
       let settled = false;
@@ -597,7 +656,7 @@ export class NativeRuntime {
       const binary = this.root + '/engine/node_modules/@deepseek-ai/dsh/lib/bin.js';
       // 鸿蒙适配插件以 profile bundle 的形式登记（见 installHarmonyPlugin），
       // 不再用 --patch：通过 --patch 插入的行在设置表单里是只读的，开关点不动。
-      const args: string[] = [binary, '--profile', 'web', '--port', '0', '--no-open'];
+      const args: string[] = [binary, '--profile', 'web', '--port', port.toString(), '--no-open'];
       this.web = new NativeProcess(this.root + '/bin/node',
         args, this.context.filesDir, env,
         (text: string) => {
@@ -617,6 +676,7 @@ export class NativeRuntime {
         (code: number, error: string) => {
           if (settled) { return; }
           settled = true; clearTimeout(timer);
+          this.web = undefined;
           // 引擎的 stderr 可能有几百行，界面只放得下开头几行；完整内容落到文件里，
           // 真机排查时用 hdc 直接取（files/logs/web-error.log）。
           this.writeLog('web-error.log', 'exit=' + code.toString() + '\n' + error + '\n\n--- stdout ---\n' + seen);
