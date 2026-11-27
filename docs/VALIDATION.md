@@ -2,6 +2,63 @@
 
 记录截至 2026-11-27 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
 
+## 2026-11-27 浏览器输入、按键与下拉（宿主侧）
+
+`browser_fill`、`browser_type`、`browser_press`、`browser_select` 已实现，**均未在真机上验收**。
+
+| 变更 | 位置 |
+| --- | --- |
+| 输入走原生 value 描述符 setter 并派发 `input`/`change`，`fill` 先清空、`type` 追加；文本以 base64 传输，授权面板只显示元素标签与字节长度 | `plugins/dsh-harmony-browser/observe.js` |
+| 输入前拒绝只读、禁用、非文本控件与自定义富文本；返回固定状态词 `entered`/`stale`/`disabled`/`read_only`/`not_text`/`rewritten`/`truncated` | 同上 |
+| `browser_press` 只接受 13 个白名单键；Enter 在属于表单的控件上额外调用 `requestSubmit()` | 同上 |
+| `browser_select` 按 value 或精确可见 label 匹配，歧义返回 `ambiguous`，不支持自定义 ARIA 下拉 | 同上 |
+| 点击/输入前做视口（`offscreen`）与遮挡（`covered`）检查，失败而不是假成功 | 同上 |
+| 四层帧校验与逐次授权：ArkTS、中继、客户端、Bridge 都要求 `exactKeys` 与 `ref` 格式 | `BrowserRelay.ets`、`relay.cjs`、`client-relay.js`、`BrowserBridge.ets` |
+
+验证：`node scripts/test.cjs` 通过（`tests/harmony-browser-actions.cjs` 10 项：输入脚本的拒绝矩阵、状态词白名单、四层源码分支、rawfile 字节一致）。
+
+未验收：真机 ArkWeb 上受控组件能否收到 `input`（React/Vue 的 value tracker 行为）、`maxlength` 截断、IME 组合输入、`requestSubmit` 的实际提交效果。
+
+## 2026-11-27 三态审批策略层
+
+新增 `policy.js`，把每个操作归为 `allow`/`prompt`/`forbid` 三态，**未在真机上验收**。
+
+| 变更 | 位置 |
+| --- | --- |
+| 只读操作（`observe`/`text`/`scroll`）为 `allow`；改表单状态、点击、悬停、导航为 `prompt`；非 HTTP(S)、带凭据 URL、非法参数为 `forbid` | `plugins/dsh-harmony-browser/policy.js` |
+| `forbid` 在**获取凭据之前**抛出，任何权限预设都无法把它变成静默放行 | `plugins/dsh-harmony-browser/index.js` |
+| 预设映射：`auto`/`danger-full-access` 跳过浏览器自己的确认面板，其余预设一律要求原生确认；预设只从 `permissionPresets.current(agent.session)` 读取 | 同上 |
+
+验证：`plugins/dsh-harmony-browser/test.mjs` 覆盖三态判定、预设映射与拒绝原因。
+
+未验收：与 DSH 真实 `permissionPresets` 的联动、`custom` 预设行为、`tools/pre-execute` 审查叠加时的最终结果。
+
+## 2026-11-27 browser_hover 与快照截断可见化
+
+**未在真机上验收**。
+
+| 变更 | 位置 |
+| --- | --- |
+| `browser_hover` 在元素中心派发 `mouseover`/`mouseenter`/`mousemove`，复用引用校验、可见性与遮挡检查，状态词 `hovered`/`stale`/`hidden`/`offscreen`/`covered` | `plugins/dsh-harmony-browser/observe.js`、`Browser.ets` |
+| 快照触达元素（80）/节点（4000）/JSON（24 KB）任一上限时返回 `truncated: true` 并附提示，不再静默截断 | `plugins/dsh-harmony-browser/observe.js` |
+| `BrowserObserveScript.ets` 改为从 `observe.js` 生成，消除手工副本漂移 | `entry/src/main/ets/pages/BrowserObserveScript.ets` |
+
+未验收：合成 hover 是否触发常见前端框架的悬停菜单（不移动真实光标）；真机快照的真实截断分布。
+
+## 2026-11-27 正文提取与审计留痕
+
+`browser_text` 与 `browser-audit.jsonl` 已实现，**未在真机上验收**。
+
+| 变更 | 位置 |
+| --- | --- |
+| `browser_text` 按文档顺序提取可见正文，`offset`/`limit` 翻页（默认 0/4000，上限 8000），返回 `total` 与 `truncated`；与快照共用可见性判断，不含表单值与可编辑子树 | `plugins/dsh-harmony-browser/observe.js`、`index.js` |
+| 审计：每次请求一行 JSONL 写入 `$DSH_HOME/browser-audit.jsonl`（目录 0700、文件 0600），记录操作、决策、原因、结果；URL 只留 scheme 与 hostname；绝不记录页面内容、输入文本与凭据；`DSH_BROWSER_AUDIT=0` 可关 | `plugins/dsh-harmony-browser/audit.js` |
+| `browser_click` 在元素位于视口外时先 `scrollIntoView` 再重测位置与遮挡 | `plugins/dsh-harmony-browser/observe.js` |
+
+验证：`node scripts/test.cjs` **217 项全部通过**（新增 `browser_text` 端到端、审计字段白名单与关闭开关、URL 脱敏）。
+
+未验收：真机长文翻页的字符边界、审计文件在设备上的实际权限与轮转策略（当前无轮转）。
+
 ## 2026-11-27 浏览器元素引用与 browser_click（宿主侧）
 
 `browser_click` 与快照元素引用链路已实现，**未在真机上验收**（ArkWeb `runJavaScript` 行为、

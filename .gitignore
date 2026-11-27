@@ -47,6 +47,9 @@ signing.config.json5
 *.keystore
 
 # ---- 原生预编译产物与第三方包 ----
+# 本地 clone 的第三方源码树（含各自的 .git），不是本仓库的构建输入。
+native/iec/thirdparty/sh/
+native/iec/thirdparty/yq/
 native/iec/build/
 native/iec/thirdparty/*.tar.gz
 native/iec/thirdparty/*.tar.xz
