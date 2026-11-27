@@ -11,6 +11,7 @@ export interface BrowserBridgeApproval {
   pageUrl: string;
   targetUrl: string;
   direction: string;
+  ref: string;
 }
 
 export interface BrowserBridgeHost {
@@ -30,6 +31,7 @@ interface SnapshotItem {
   text?: string;
   tag?: string;
   label?: string;
+  ref?: string;
 }
 
 interface SnapshotData {
@@ -44,6 +46,7 @@ interface ApprovedRequest {
   operation: string;
   targetUrl: string;
   direction: string;
+  ref: string;
   pageTitle: string;
   pageUrl: string;
 }
@@ -85,6 +88,7 @@ export class BrowserBridge {
         open: (target: string): Promise<string> => this.open(target),
         observe: (): Promise<string> => this.observe(),
         scroll: (direction: string): Promise<string> => this.scroll(direction),
+        click: (ref: string): Promise<string> => this.click(ref),
         onClosed: (): void => this.closed()
       });
     if (this.stopped) { this.relay.close(); }
@@ -145,9 +149,11 @@ export class BrowserBridge {
       (page.url === 'about:blank' && request.operation !== 'open')) { return false; }
     const target = request.url || '';
     const direction = request.direction || '';
+    const ref = request.ref || '';
     if (request.operation === 'scroll' && direction !== 'up' && direction !== 'down') { return false; }
+    if (request.operation === 'click' && !isValidRef(ref)) { return false; }
     const details: BrowserBridgeApproval = { operation: request.operation, sessionId: request.sessionId,
-      pageTitle: page.title, pageUrl: page.url, targetUrl: target, direction: direction };
+      pageTitle: page.title, pageUrl: page.url, targetUrl: target, direction: direction, ref: ref };
     if (automatic) {
       // The calling Session's live preset already covers this call; skip only
       // the human dialog. Every page/session binding check below still applies.
@@ -158,14 +164,16 @@ export class BrowserBridge {
     }
     if (!this.samePage(generation, request.sessionId, page.title, page.url)) { return false; }
     this.approved = { generation: generation, sessionId: request.sessionId,
-      operation: request.operation, targetUrl: target, direction: direction, pageTitle: page.title, pageUrl: page.url };
+      operation: request.operation, targetUrl: target, direction: direction, ref: ref,
+      pageTitle: page.title, pageUrl: page.url };
     return true;
   }
 
-  private take(operation: string, target: string, direction: string = ''): ApprovedRequest {
+  private take(operation: string, target: string, direction: string = '', ref: string = ''): ApprovedRequest {
     const approval = this.approved;
     this.approved = undefined;
-    if (!approval || approval.operation !== operation || approval.targetUrl !== target || approval.direction !== direction ||
+    if (!approval || approval.operation !== operation || approval.targetUrl !== target ||
+      approval.direction !== direction || approval.ref !== ref ||
       !this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
       throw new Error('Browser binding changed');
     }
@@ -188,6 +196,22 @@ export class BrowserBridge {
     const approval = this.take('scroll', '', direction);
     this.control.scroll(approval.generation, direction);
     return 'Scroll call submitted; actual movement and page stability are not confirmed.';
+  }
+
+  private async click(ref: string): Promise<string> {
+    const approval = this.take('click', '', '', ref);
+    // Checks bracket the asynchronous ArkWeb execution. A click may navigate or
+    // mutate the page; the returned status only attests that it was dispatched.
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    const raw = await this.control.click(approval.generation, ref);
+    if (this.stopped || this.host.visibleSessionId() !== approval.sessionId) {
+      throw new Error('Browser binding changed');
+    }
+    const status = decodeClickStatus(raw);
+    if (status !== 'clicked') { throw new Error('Browser click not dispatched: ' + status); }
+    return 'Click dispatched; page reaction, navigation and stability are not confirmed.';
   }
 
   private async observe(): Promise<string> {
@@ -219,9 +243,11 @@ export class BrowserBridge {
         items.push({ type: 'text', text: item.text });
       } else if (item.type === 'element' && typeof item.tag === 'string' &&
         ['a', 'button', 'input', 'textarea', 'select'].includes(item.tag) &&
-        (item.label === undefined || (typeof item.label === 'string' && item.label.length <= 300))) {
+        (item.label === undefined || (typeof item.label === 'string' && item.label.length <= 300)) &&
+        (item.ref === undefined || (typeof item.ref === 'string' && /^e\d{1,3}$/.test(item.ref)))) {
         const safe: SnapshotItem = { type: 'element', tag: item.tag };
         if (item.label !== undefined) { safe.label = item.label; }
+        if (item.ref !== undefined) { safe.ref = item.ref; }
         items.push(safe);
       } else { throw new Error('Invalid snapshot'); }
     }
@@ -240,4 +266,23 @@ export class BrowserBridge {
     }
     return output;
   }
+}
+
+// Element references are bounded, opaque indices produced by the snapshot.
+// They are not authorization: the native approval is still per-request.
+export function isValidRef(ref: string): boolean {
+  if (typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref)) { return false; }
+  const index = Number(ref.slice(1));
+  return Number.isSafeInteger(index) && index >= 0 && index < 80;
+}
+
+// ArkWeb may hand back the script result as a JSON-encoded string. Only the
+// fixed set of status words is accepted; anything else fails closed.
+export function decodeClickStatus(raw: string): string {
+  if (typeof raw !== 'string' || raw.length > 64) { return 'invalid'; }
+  let value: string = raw;
+  if (raw.startsWith('"')) {
+    try { value = JSON.parse(raw) as string; } catch (_error) { return 'invalid'; }
+  }
+  return ['clicked', 'stale', 'disabled', 'hidden', 'error'].includes(value) ? value : 'invalid';
 }

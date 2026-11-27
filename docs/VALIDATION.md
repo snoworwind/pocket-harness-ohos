@@ -1,6 +1,30 @@
 # 验证说明
 
-记录截至 2026-11-22 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+记录截至 2026-11-27 的验证范围。凡是没在真机上跑过的条目都明确标为「未验收」，不写成已通过。测试设备为一台 HarmonyOS 6.1（API 26）手机与 x86_64 模拟器。
+
+## 2026-11-27 浏览器元素引用与 browser_click（宿主侧）
+
+`browser_click` 与快照元素引用链路已实现，**未在真机上验收**（ArkWeb `runJavaScript` 行为、
+原生授权面板与真机点击效果均未验证）。
+
+| 变更 | 位置 |
+| --- | --- |
+| 快照为带盒子的可交互元素分配有界引用 `e0`–`e79`，引用数组存在页面 `globalThis.__phBrowserRefs`，仅对产生它的那次快照有效 | `plugins/dsh-harmony-browser/observe.js` |
+| 点击程序固定，只代入校验过的整数下标；拒绝越界、非规范格式（`E1`、`e01a`、`e1;x`、`e80`） | `buildClickScript` / `buildClickScriptTemplate` |
+| 脚本执行前检查 `isConnected`、`disabled`、`getClientRects()` 与 computed style，返回固定状态词 `clicked`/`stale`/`disabled`/`hidden`/`error` | `BROWSER_CLICK_SCRIPT_TEMPLATE`（生成到 `BrowserObserveScript.ets`） |
+| 授权面板 `BrowserBridgeApproval` 增加 `ref`；`take('click', '', '', ref)` 逐次比对，页面/会话/代数仍须一致 | `BrowserBridge.ets` |
+| 中继帧校验在 ArkTS 与 Node 两侧都要求 `exactKeys([type,id,sessionId,operation,ref])` 且 `ref` 匹配 `^e\d{1,3}$`、下标 < 80 | `BrowserRelay.ets`、`relay.cjs`、`client-relay.js` |
+| 工具注册、参数校验与返回文本（`Click dispatched; ...`，不承诺页面反应） | `index.js` |
+
+验证：`node scripts/test.cjs` **197 项全部通过**（新增 `tests/harmony-browser-click.cjs` 9 项：
+引用分配只给带盒子的可交互元素、register 抛错/返回垃圾不影响快照、点击程序拒绝全部非规范引用、
+点击派发与五种失败状态、observe 脚本注入引用存储、`BrowserControl.click` 的代数与引用守卫、
+`decodeClickStatus` 白名单、四层源码都带 click 分支、rawfile 与 plugins 字节一致）。
+`node plugins/dsh-harmony-browser/test.mjs` 与各插件测试、`scripts/test-browser-bridge.cjs`、
+`scripts/test-browser-control.cjs` 均通过。
+
+未验收：HAP 构建、真机 ArkWeb 点击效果、`__phBrowserRefs` 在页面导航/SPA 变化后的失效时序、
+跨域 iframe 与 shadow DOM 内的元素（本就不遍历）。
 
 ## 2026-11-22 运行时摘要收窄（0.1.0.7 构建产物）
 

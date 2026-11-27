@@ -35,8 +35,8 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
         if (active) return Promise.reject(failure('busy', 'A request is already outstanding'));
         if (count >= 10000) return Promise.reject(failure('exhausted', 'Relay request limit reached'));
         if (!options || typeof options !== 'object' || Array.isArray(options)) return Promise.reject(failure('invalid_request', 'Invalid options'));
-        const { url, direction, signal: requestSignal, getAutoPermission } = options;
-        const allowed = operation === 'open' ? ['url', 'signal', 'getAutoPermission'] : operation === 'scroll' ? ['direction', 'signal', 'getAutoPermission'] : operation === 'observe' ? ['signal', 'getAutoPermission'] : [];
+        const { url, direction, ref, signal: requestSignal, getAutoPermission } = options;
+        const allowed = operation === 'open' ? ['url', 'signal', 'getAutoPermission'] : operation === 'scroll' ? ['direction', 'signal', 'getAutoPermission'] : operation === 'click' ? ['ref', 'signal', 'getAutoPermission'] : operation === 'observe' ? ['signal', 'getAutoPermission'] : [];
         if (!allowed.length || Object.keys(options).some(key => !allowed.includes(key))) return Promise.reject(failure('invalid_request', 'Invalid operation or options'));
         if (getAutoPermission !== undefined && typeof getAutoPermission !== 'function') return Promise.reject(failure('invalid_request', 'Invalid automatic-approval resolver'));
         if (operation === 'open') {
@@ -44,9 +44,10 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
           if (valid) { try { const u = new URL(url); valid = ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password; } catch { valid = false; } }
           if (!valid) return Promise.reject(failure('invalid_request', 'Invalid URL'));
         } else if (operation === 'scroll' && (!Object.hasOwn(options, 'direction') || !['up', 'down'].includes(direction))) return Promise.reject(failure('invalid_request', 'Invalid direction'));
+        else if (operation === 'click' && (!Object.hasOwn(options, 'ref') || typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref) || Number(ref.slice(1)) >= 80)) return Promise.reject(failure('invalid_request', 'Invalid element reference'));
         if (requestSignal?.aborted) return Promise.reject(failure('aborted', 'Request aborted before dispatch'));
         const id = `${prefix}_${++count}`;
-        const frame = operation === 'open' ? { type: 'request', id, sessionId, operation, url } : operation === 'scroll' ? { type: 'request', id, sessionId, operation, direction } : { type: 'request', id, sessionId, operation };
+        const frame = operation === 'open' ? { type: 'request', id, sessionId, operation, url } : operation === 'scroll' ? { type: 'request', id, sessionId, operation, direction } : operation === 'click' ? { type: 'request', id, sessionId, operation, ref } : { type: 'request', id, sessionId, operation };
         if (bytes(JSON.stringify(frame)) > 8192) return Promise.reject(failure('invalid_request', 'Request frame too large'));
         return new Promise((resolveRequest, rejectRequest) => {
           const abort = () => { if (active?.id === id) { try { send({ type: 'cancel', id }); } finally { terminate('unknown', 'Request aborted'); } } };

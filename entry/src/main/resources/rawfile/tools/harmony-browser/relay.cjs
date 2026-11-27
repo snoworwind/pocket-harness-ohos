@@ -249,6 +249,7 @@ const server = net.createServer(socket => {
     let valid = validId(obj?.id) && obj.type === 'request' && typeof obj.sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(obj.sessionId);
     if (valid && obj.operation === 'observe') valid = exact(obj, ['type','id','sessionId','operation']);
     else if (valid && obj.operation === 'scroll') valid = exact(obj, ['type','id','sessionId','operation','direction']) && (obj.direction === 'up' || obj.direction === 'down');
+    else if (valid && obj.operation === 'click') valid = exact(obj, ['type','id','sessionId','operation','ref']) && typeof obj.ref === 'string' && /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80;
     else if (valid && obj.operation === 'open') {
       valid = exact(obj, ['type','id','sessionId','operation','url']) && typeof obj.url === 'string' && size(obj.url) <= 4096 && !/[\u0000-\u0020\u007f]/.test(obj.url);
       if (valid) { try { const u = new URL(obj.url); valid = ['http:','https:'].includes(u.protocol) && !u.username && !u.password; } catch { valid = false; } }

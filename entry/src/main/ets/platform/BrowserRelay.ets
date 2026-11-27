@@ -28,6 +28,7 @@ export interface BrowserRelayRequest {
   operation: string;
   url?: string;
   direction?: string;
+  ref?: string;
 }
 
 export interface BrowserRelayCallbacks {
@@ -39,6 +40,7 @@ export interface BrowserRelayCallbacks {
   open: (url: string) => Promise<string>;
   observe: () => Promise<string>;
   scroll: (direction: string) => Promise<string>;
+  click: (ref: string) => Promise<string>;
   onClosed?: () => void;
 }
 
@@ -56,6 +58,7 @@ interface RelayFrame {
   operation?: string;
   url?: string;
   direction?: string;
+  ref?: string;
   // Present on the relay's reply to a policy-check frame.
   automatic?: boolean;
 }
@@ -256,6 +259,10 @@ export class BrowserRelay {
     } else if (frame.operation === 'scroll') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'direction']) ||
         (frame.direction !== 'up' && frame.direction !== 'down')) { this.close(); return; }
+    } else if (frame.operation === 'click') {
+      if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'ref']) ||
+        typeof frame.ref !== 'string' || !/^e\d{1,3}$/.test(frame.ref) ||
+        Number(frame.ref.slice(1)) >= 80) { this.close(); return; }
     } else if (frame.operation === 'open') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'url']) || typeof frame.url !== 'string' ||
         utf8Size(frame.url) < 0 || utf8Size(frame.url) > 4096 || /[\u0000-\u0020\u007f]/.test(frame.url) ||
@@ -272,7 +279,7 @@ export class BrowserRelay {
     this.busy = true;
     this.arm(29000);
     const request: BrowserRelayRequest = { id: frame.id, sessionId: frame.sessionId,
-      operation: frame.operation, url: frame.url, direction: frame.direction };
+      operation: frame.operation, url: frame.url, direction: frame.direction, ref: frame.ref };
     this.execute(request).catch(() => this.close());
   }
 
@@ -295,6 +302,7 @@ export class BrowserRelay {
       else {
         value = request.operation === 'open' ? await this.callbacks.open(request.url as string) :
           request.operation === 'scroll' ? await this.callbacks.scroll(request.direction as string) :
+          request.operation === 'click' ? await this.callbacks.click(request.ref as string) :
           await this.callbacks.observe();
         ok = true;
       }

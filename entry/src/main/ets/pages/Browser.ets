@@ -1,6 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { url } from '@kit.ArkTS';
-import { BROWSER_OBSERVE_SCRIPT } from './BrowserObserveScript';
+import { BROWSER_CLICK_INDEX_PLACEHOLDER, BROWSER_CLICK_SCRIPT_TEMPLATE, BROWSER_OBSERVE_SCRIPT } from './BrowserObserveScript';
 
 // 仅供宿主持有；调用者负责先完成用户授权。代数随实例、可见性和导航变化失效。
 export interface BrowserObservation {
@@ -21,11 +21,13 @@ export class BrowserControl {
   private readPage: () => BrowserObservation | null = () => null;
   private runSnapshot: () => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private scrollPage: (offset: number) => void = () => { throw new Error('Browser unavailable'); };
+  private runClick: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
 
   attach(isHostVisible: () => boolean, openPage: (target: string) => boolean,
     readPage: () => BrowserObservation | null,
     runSnapshot: () => Promise<string> = async () => { throw new Error('Browser unavailable'); },
-    scrollPage: (offset: number) => void = () => { throw new Error('Browser unavailable'); }): void {
+    scrollPage: (offset: number) => void = () => { throw new Error('Browser unavailable'); },
+    runClick: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); }): void {
     this.generation++;
     this.pendingNavigation = false;
     this.beginUrl = '';
@@ -37,6 +39,7 @@ export class BrowserControl {
     this.readPage = readPage;
     this.runSnapshot = runSnapshot;
     this.scrollPage = scrollPage;
+    this.runClick = runClick;
   }
 
   detach(): void {
@@ -51,6 +54,7 @@ export class BrowserControl {
     this.readPage = () => null;
     this.runSnapshot = async () => { throw new Error('Browser unavailable'); };
     this.scrollPage = () => { throw new Error('Browser unavailable'); };
+    this.runClick = async () => { throw new Error('Browser unavailable'); };
   }
 
   setVisible(visible: boolean): void {
@@ -137,6 +141,20 @@ export class BrowserControl {
     if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
     return result;
   }
+
+  // A reference is only meaningful for the snapshot that produced it and may be
+  // stale. The program is fixed; only a bounded integer index is substituted.
+  // A returned 'clicked' means the click was dispatched, not that the page
+  // reacted, navigated or stayed stable.
+  async click(generation: number, ref: string): Promise<string> {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    if (typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref)) { throw new Error('Invalid element reference'); }
+    const index = Number(ref.slice(1));
+    if (!Number.isSafeInteger(index) || index < 0 || index >= 80) { throw new Error('Invalid element reference'); }
+    const result = await this.runClick(ref);
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    return result;
+  }
 }
 
 // 独立 Web 实例：不注册 DSH 的 javascriptProxy、文档脚本或 console 桥。
@@ -160,7 +178,12 @@ export struct BrowserView {
     this.control.attach(this.isHostVisible, (target: string): boolean => this.openAuthorized(target),
       (): BrowserObservation | null => this.observePage(),
       (): Promise<string> => this.controller.runJavaScript(BROWSER_OBSERVE_SCRIPT),
-      (offset: number): void => { this.controller.scrollBy(0, offset); });
+      (offset: number): void => { this.controller.scrollBy(0, offset); },
+      (ref: string): Promise<string> => {
+        const index = Number(ref.slice(1));
+        const script = BROWSER_CLICK_SCRIPT_TEMPLATE.replace(BROWSER_CLICK_INDEX_PLACEHOLDER, String(index));
+        return this.controller.runJavaScript(script);
+      });
     this.control.setVisible(this.visible);
   }
 

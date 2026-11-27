@@ -89,8 +89,13 @@ async function request(s, id, operation = 'observe', sessionId = 'session1', url
   control.consumeRebind(); control.detach();
   const { buildObserveScript } = await import('../plugins/dsh-harmony-browser/observe.js');
   const resource = fs.readFileSync('entry/src/main/ets/pages/BrowserObserveScript.ets', 'utf8');
-  const generated = resource.match(/export const BROWSER_OBSERVE_SCRIPT: string = (".*");\s*$/);
+  const generated = resource.match(/export const BROWSER_OBSERVE_SCRIPT: string = (".*");/);
   assert(generated); assert.strictEqual(JSON.parse(generated[1]), buildObserveScript());
+  const { buildClickScriptTemplate, CLICK_INDEX_PLACEHOLDER } = await import('../plugins/dsh-harmony-browser/observe.js');
+  const clickTemplate = resource.match(/export const BROWSER_CLICK_SCRIPT_TEMPLATE: string = (".*");/);
+  assert(clickTemplate); assert.strictEqual(JSON.parse(clickTemplate[1]), buildClickScriptTemplate());
+  const clickPlaceholder = resource.match(/export const BROWSER_CLICK_INDEX_PLACEHOLDER: string = (".*");/);
+  assert(clickPlaceholder); assert.strictEqual(JSON.parse(clickPlaceholder[1]), CLICK_INDEX_PLACEHOLDER);
   const text = value => ({ nodeType: 3, nodeValue: value });
   const element = (tag, children = [], attrs = {}, editable = false) => ({
     nodeType: 1, tagName: tag, childNodes: children, isContentEditable: editable,
@@ -111,7 +116,7 @@ async function request(s, id, operation = 'observe', sessionId = 'session1', url
   assert.strictEqual(s.ready.credential, ready.credential);
   await request(s, 'a');
   assert.deepStrictEqual(JSON.parse(s.results[0].value), { untrusted: true, title: 'Title', url: 'https://page.test/', items: [{ type: 'text', text: 'Hello' }] });
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.requests[0])), { operation: 'observe', sessionId: 'session1', pageTitle: 'Title', pageUrl: 'https://page.test/', targetUrl: '', direction: '' });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.requests[0])), { operation: 'observe', sessionId: 'session1', pageTitle: 'Title', pageUrl: 'https://page.test/', targetUrl: '', direction: '', ref: '' });
   await request(s, 'b', 'open', 'session1', 'https://target.test/');
   assert.strictEqual(s.opens.length, 1);
   assert.match(s.results[1].value, /submitted.*not confirmed/i);
