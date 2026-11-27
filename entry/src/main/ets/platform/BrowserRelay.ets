@@ -74,6 +74,8 @@ interface RelayFrame {
   text?: string;
   key?: string;
   action?: string;
+  offset?: number;
+  limit?: number;
   // Present on the relay's reply to a policy-check frame.
   automatic?: boolean;
 }

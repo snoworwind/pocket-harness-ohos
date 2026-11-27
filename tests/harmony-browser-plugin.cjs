@@ -6,18 +6,21 @@ const source = fs.readFileSync('plugins/dsh-harmony-terminal/client.js', 'utf8')
 assert.equal(source, fs.readFileSync('entry/src/main/resources/rawfile/tools/harmony-terminal/client.js', 'utf8'));
 function run({ nonce = 'test-nonce', child = false } = {}) {
   const messages = [], effects = [], registrations = [], bodies = {}, closers = {};
-  let interval;
+  let interval, pendingInterval, sidebarOpen = false, opened = 0;
   const element = { getBoundingClientRect: () => ({ left: 10, top: 20, width: 300, height: 400, right: 310, bottom: 420 }) };
   const React = {
     createElement: (type, props) => { if (props.ref) props.ref.current = element; return { type, props }; },
     useRef: value => ({ current: value }), useEffect: fn => effects.push(fn),
   };
   const document = { sessionId: 'session-a', visibilityState: 'visible', addEventListener() {}, removeEventListener() {},
-    querySelector() { return { getAttribute: () => document.sessionId }; } };
+    querySelector(selector) {
+      if (selector === '[aria-label="收起右侧边栏"]') return sidebarOpen ? element : null;
+      return { getAttribute: () => document.sessionId };
+    } };
   const window = {
     __dshNonce: nonce, innerWidth: 800, innerHeight: 600,
     addEventListener() {}, removeEventListener() {},
-    setInterval(fn) { interval = fn; return 1; }, clearInterval() {},
+    setInterval(fn) { if (!pendingInterval) pendingInterval = fn; else interval = fn; return 1; }, clearInterval() {},
     requestAnimationFrame() { return 2; }, cancelAnimationFrame() {},
   };
   window.top = child ? {} : window;
@@ -25,20 +28,25 @@ function run({ nonce = 'test-nonce', child = false } = {}) {
     const plugin = module.factory(name => { assert.equal(name, 'react'); return React; });
     plugin.apply({ effect(fn) { fn(); },
       sidebarRightTabs: { register(value) { registrations.push(value); } },
-      sidebarRight: { registerCloseHandler(kind, fn) { closers[kind] = fn; } },
+      sidebarRight: { registerCloseHandler(kind, fn) { closers[kind] = fn; }, openTabIn() { opened++; } },
       slots: { inject(name, fn) { fn(); }, register(options, component) { bodies[options.key] = component; } },
     });
   } };
-  vm.runInNewContext(source, { window, document, console: { log: text => messages.push(text) } });
+  vm.runInNewContext(source, { window, document, getComputedStyle: () => ({ visibility: 'visible' }), console: { log: text => messages.push(text) } });
   const browser = registrations.find(value => value.kind === 'browser-harmony');
   assert.ok(browser); assert.equal(browser.multiple, false); assert.equal(browser.keepMounted, false);
   let closed = 0;
   bodies['harmony-native-browser']({ useTabInfo: () => ({ tab: { actions: { close() { closed++; } } } }) });
   const cleanup = effects.pop()();
-  return { messages, closers, cleanup, tick: () => interval(), document, window, closed: () => closed };
+  return { messages, closers, cleanup, tick: () => interval(), pendingTick: () => pendingInterval(),
+    openSidebar: () => { sidebarOpen = true; }, opened: () => opened, document, window, closed: () => closed };
 }
 function decoded(messages) { return messages.map(text => JSON.parse(text.slice('DSH_TERM:test-nonce:'.length))); }
 const instance = run();
+assert.equal(instance.window.__dshOpenAgentBrowser('other-session'), false);
+assert.equal(instance.window.__dshOpenAgentBrowser('session-a'), true);
+instance.pendingTick(); assert.equal(instance.opened(), 0);
+instance.openSidebar(); instance.pendingTick(); assert.equal(instance.opened(), 1);
 assert.deepEqual(decoded(instance.messages), [
   { op: 'browserOpen' },
   { op: 'browserBounds', left: 10, top: 20, width: 300, height: 400, visible: true, sessionId: 'session-a' },

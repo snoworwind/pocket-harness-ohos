@@ -24,7 +24,8 @@ export class BrowserConsentControl {
       return Promise.resolve(false);
     }
     const copy: BrowserBridgeApproval = { operation: details.operation, sessionId: details.sessionId,
-      pageTitle: details.pageTitle, pageUrl: details.pageUrl, targetUrl: details.targetUrl, direction: details.direction };
+      pageTitle: details.pageTitle, pageUrl: details.pageUrl, targetUrl: details.targetUrl, direction: details.direction,
+      ref: details.ref, key: details.key, action: details.action, textLength: details.textLength };
     const token = ++this.serial;
     return new Promise<boolean>((resolve: (allowed: boolean) => void) => {
       this.pending = resolve;

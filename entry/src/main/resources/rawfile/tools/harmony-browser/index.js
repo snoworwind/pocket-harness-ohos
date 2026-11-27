@@ -4,6 +4,7 @@ import { encodeText, validateKey, validateRef } from './observe.js';
 import { BrowserDecision, classifyOperation } from './policy.js';
 import { encodedTextLength, recordAudit, urlAuditFields } from './audit.js';
 import { randomBytes } from 'node:crypto';
+import { requestBrowserLaunch } from './launch.js';
 
 export const inject = ['tools', 'agents'];
 
@@ -50,11 +51,11 @@ export async function apply(ctx, config = {}) {
   const { defineTool } = await import('@deepseek-ai/dsh-tools');
   // tools.register() attaches each registration to this Cordis context's lifecycle.
   // An async apply must resolve to undefined (not the array of disposers).
-  registerRelayTools(ctx, defineTool, connectRelay, createCredentialProvider(ctx));
+  registerRelayTools(ctx, defineTool, connectRelay, createCredentialProvider(ctx), requestBrowserLaunch);
 }
 
 /** Explicit integration seam: getCredentials is a trusted host capability, not user configuration. */
-export function registerRelayTools(ctx, defineTool, connect = connectRelay, capability = ctx?.harmonyBrowserRelay) {
+export function registerRelayTools(ctx, defineTool, connect = connectRelay, capability = ctx?.harmonyBrowserRelay, launch) {
   if (typeof capability?.getCredentials !== 'function') throw new TypeError('Trusted relay credential capability required');
   const live = (agent, signal) => {
     if (!agent || typeof agent.id !== 'string' || ctx.agents.get(agent.id) !== agent) throw new Error('Browser tools require a live agent Session');
@@ -141,7 +142,9 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
     let outcome = 'ok';
     let outcomeCode;
     try {
-      const credentials = await capability.getCredentials({ agent, signal });
+      let credentials;
+      try { credentials = await capability.getCredentials({ agent, signal }); }
+      catch (error) { if (!launch) throw error; credentials = await launch(capability, { agent, signal }); }
       live(agent, signal);
       client = await connect({ host: credentials?.host, port: credentials?.port, credential: credentials?.credential, sessionId: agent.id, signal });
       live(agent, signal);

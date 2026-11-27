@@ -139,31 +139,43 @@ struct Index {
   // 不可信的主 GUI 标签，不是会话认证凭据。
   private browserSessionId: string = '';
   private browserAgentEpoch: number = 0;
+  private browserLaunchId: string = '';
+  private browserLaunchSession: string = '';
+  private browserLaunchDeadline: number = 0;
+  private browserHostForeground: boolean = true;
   @State private browserAgentMessage: string = '';
+  @State private browserAgentConnected: boolean = false;
   private stopBrowserAgent(message: string): void {
     this.browserAgentEpoch++;
     this.browserConsent.cancel();
     const bridge = this.browserBridge;
     this.browserBridge = undefined;
     try { bridge?.stop(); } catch (_error) {}
+    this.browserAgentConnected = false;
     this.browserAgentMessage = message;
   }
 
-  // 唯一入口是原生按钮；凭据由 relay --publish-ready 安全发布，绝不交给网页。
+  // 原生按钮或当前会话的工具请求可启动；凭据由 relay 私有发布，绝不交给网页。
   private startBrowserAgent(): void {
     this.stopBrowserAgent('');
     const runtime = this.runtime;
-    if (!runtime || !this.browserActuallyVisible() || this.browserControl.currentGeneration() === null ||
+    if (!runtime || !this.browserAvailable() || this.browserControl.currentGeneration() === null ||
       this.browserSessionId === '') { this.browserAgentMessage = '浏览器或当前会话不可用'; return; }
     const epoch = ++this.browserAgentEpoch;
     const visibleSessionId = (): string | null => this.browserSessionId !== '' ? this.browserSessionId : null;
     const host: BrowserBridgeHost = {
-      visibleSessionId: (): string | null => epoch === this.browserAgentEpoch && this.browserActuallyVisible()
+      visibleSessionId: (): string | null => epoch === this.browserAgentEpoch && this.browserAvailable()
         ? visibleSessionId() : null,
       authorize: async (details: BrowserBridgeApproval): Promise<boolean> => {
-        if (epoch !== this.browserAgentEpoch || !this.browserActuallyVisible()) { return false; }
+        if (epoch !== this.browserAgentEpoch || !this.browserAvailable()) { return false; }
+        if (epoch === this.browserAgentEpoch) {
+          this.browserAgentMessage = 'Agent 请求：' + details.operation + '，等待确认。';
+        }
         const allowed = await this.browserConsent.request(details);
-        return allowed && epoch === this.browserAgentEpoch && this.browserActuallyVisible();
+        if (allowed && epoch === this.browserAgentEpoch && this.browserAvailable()) {
+          this.browserAgentMessage = '已允许：' + details.operation + '。';
+        }
+        return allowed && epoch === this.browserAgentEpoch && this.browserAvailable();
       },
       automaticApproved: (details: BrowserBridgeApproval): void => {
         // Only a notice; the decision was made by the session's live preset.
@@ -171,7 +183,7 @@ struct Index {
         this.browserAgentMessage = '已按当前会话权限自动放行：' + details.operation + '。';
       },
       deliverReady: async (ready: BrowserRelayReady): Promise<void> => {
-        if (epoch !== this.browserAgentEpoch || !this.browserActuallyVisible()) { throw new Error('Browser stopped'); }
+        if (epoch !== this.browserAgentEpoch || !this.browserAvailable()) { throw new Error('Browser stopped'); }
         // relay 已发布凭据；这里只确认桥仍属于可见浏览器，不读取或写入凭据。
       },
       onClosed: (): void => {
@@ -179,6 +191,7 @@ struct Index {
           this.browserConsent.cancel();
           this.browserAgentEpoch++;
           this.browserBridge = undefined;
+          this.browserAgentConnected = false;
           this.browserAgentMessage = '浏览器 Agent 已关闭或发生错误；授权已取消。';
         }
       }
@@ -188,7 +201,8 @@ struct Index {
       this.browserBridge = bridge;
       bridge.start();
       if (epoch === this.browserAgentEpoch) {
-        this.browserAgentMessage = '浏览器 Agent 正在启动；请启用 browserAgent 插件。只读/工作区修改模式每次操作需原生同意，自动审查/完全权限模式自动放行。';
+        this.browserAgentConnected = true;
+        this.browserAgentMessage = '浏览器 Agent 已连接；受限模式下每次操作仍需确认。';
       }
     } catch (_error) { this.stopBrowserAgent('浏览器 Agent 启动失败，授权已取消。'); }
   }
@@ -310,17 +324,24 @@ struct Index {
       "var menu=!!document.querySelector('[role=menu]');" +
       "var rb=document.querySelector('[aria-label=\"收起右侧边栏\"]');" +
       "var right=!!rb&&getComputedStyle(rb).visibility!=='hidden'&&rb.getBoundingClientRect().width>0;" +
-      "return JSON.stringify({nav:nav,dialog:!!other,menu:menu,right:right,ready:ready,home:home});" +
+      "return JSON.stringify({nav:nav,dialog:!!other,menu:menu,right:right,ready:ready,home:home,session:s?s.getAttribute('data-conversation-session'):''});" +
       "}catch(e){return '{}';}})()";
     this.uiTimer = setInterval(() => {
       if (this.url === '') { return; }
+      this.pollBrowserLaunch();
       try {
         this.controller.runJavaScript(script).then((result: string) => {
           try {
             this.uiAliveAt = Date.now();
             let text = String(result);
             if (text.startsWith('"')) { text = JSON.parse(text) as string; }
-            const state = JSON.parse(text) as Record<string, boolean>;
+            const state = JSON.parse(text) as Record<string, Object>;
+            const session = typeof state['session'] === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(state['session'] as string)
+              ? state['session'] as string : '';
+            if (session !== this.browserSessionId) {
+              this.browserSessionId = session;
+              if (this.browserBridge) { this.stopBrowserAgent('当前会话已变化，浏览器 Agent 已停止。'); }
+            }
             if (state['ready'] === true) { this.markWebReady(); }
             else if (state['home'] === true) { this.armReadyFallback(); }
             this.webNav = state['nav'] === true;
@@ -331,6 +352,43 @@ struct Index {
         }).catch(() => {});
       } catch (error) { /* Web 未挂载 */ }
     }, 500);
+  }
+
+  // Same-UID request carries only a session label; it never authorizes an
+  // operation. The GUI must still show that session and the normal bridge
+  // performs its per-operation page, session and approval checks.
+  private pollBrowserLaunch(): void {
+    try {
+      if (!this.context || !this.browserHostForeground) { return; }
+      const file = this.context.filesDir + '/browser-managed/launch-request.json';
+      if (!fs.accessSync(file)) { this.browserLaunchSession = ''; return; }
+      const stat = fs.lstatSync(file);
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 1024) { return; }
+      const request = JSON.parse(fs.readTextSync(file)) as Record<string, Object>;
+      const id = request['id'];
+      const session = request['sessionId'];
+      const deadline = Number(request['deadline']);
+      if (request['version'] !== 1 || typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id) ||
+        typeof session !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(session) ||
+        !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 20000) { return; }
+      if (id !== this.browserLaunchId) {
+        this.browserLaunchId = id;
+        this.browserLaunchSession = session;
+        this.browserLaunchDeadline = deadline;
+        const script = '(function(){return typeof window.__dshOpenAgentBrowser === "function" && ' +
+          'window.__dshOpenAgentBrowser(' + JSON.stringify(session) + ');})()';
+        this.controller.runJavaScript(script).then((result: string) => {
+          if (String(result) === 'true' && this.browserLaunchId === id) {
+            this.showBrowser = true;
+          } else if (this.browserLaunchId === id) { this.browserLaunchId = ''; }
+        }).catch(() => { if (this.browserLaunchId === id) { this.browserLaunchId = ''; } });
+      }
+      if (this.browserLaunchSession === this.browserSessionId && Date.now() < this.browserLaunchDeadline &&
+        this.browserAvailable() && this.browserControl.currentGeneration() !== null && !this.browserBridge) {
+        this.browserLaunchSession = '';
+        this.startBrowserAgent();
+      }
+    } catch (_error) { /* absent, incomplete, or untrusted request */ }
   }
 
   private pressEscape(): void {
@@ -363,7 +421,8 @@ struct Index {
     } catch (error) { /* Web 未挂载 */ }
   }
 
-  onPageHide(): void { this.stopBrowserAgent('应用已进入后台，浏览器 Agent 已停止。'); }
+  onPageShow(): void { this.browserHostForeground = true; }
+  onPageHide(): void { this.browserHostForeground = false; this.browserLaunchSession = ''; this.stopBrowserAgent('应用已进入后台，浏览器 Agent 已停止。'); }
 
   aboutToDisappear(): void {
     this.stopBrowserAgent('页面已销毁，浏览器 Agent 已停止。');
@@ -498,13 +557,15 @@ struct Index {
       // 依次试 body、html、DSH 的 CSS 变量：任何一个是实色就用它，
       // 这样系统栏和页面背景是同一个颜色，不会出现「深色主题下栏更浅」。
       const script =
-        "(function(){var d=document.documentElement,b=document.body;" +
+        "(function(){var d=document.documentElement,b=document.body;if(!d||!b)return '{}';" +
         "var pick=function(c){return c&&c!=='transparent'&&c.indexOf('rgba(0, 0, 0, 0)')<0&&c.indexOf('rgba(0,0,0,0)')<0;};" +
         "var cands=[getComputedStyle(b).backgroundColor,getComputedStyle(d).backgroundColor," +
         "getComputedStyle(d).getPropertyValue('--dsw-alias-bg-base').trim()," +
         "getComputedStyle(d).getPropertyValue('--dsw-alias-bg-l1').trim()];" +
         "var bg='';for(var i=0;i<cands.length;i++){if(pick(cands[i])){bg=cands[i];break;}}" +
-        "return JSON.stringify({dark:window.matchMedia('(prefers-color-scheme: dark)').matches,bg:bg});})()";
+        "var scheme=d.style.colorScheme||getComputedStyle(d).colorScheme;" +
+        "var dark=scheme==='dark'||(scheme!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);" +
+        "return JSON.stringify({dark:dark,bg:bg});})()";
       this.controller.runJavaScript(script).then((result: string) => {
         try {
           // ArkWeb 的 runJavaScript 有时把字符串结果再 JSON 编码一层（外层带引号），
@@ -739,6 +800,9 @@ struct Index {
     return this.webReady && this.showBrowser && this.browserVisible &&
       !(this.showTerminal && this.termVisible) && this.browserClipWidth() > 1 && this.browserClipHeight() > 1;
   }
+  private browserAvailable(): boolean {
+    return this.browserHostForeground && this.webReady && this.showBrowser && this.browserSessionId !== '';
+  }
 
   private closeBrowser(): void {
     this.stopBrowserAgent('浏览器已关闭，浏览器 Agent 已停止。');
@@ -764,6 +828,7 @@ struct Index {
         // 页面只能请求展示空面板，不能指定原生浏览器的初始地址。
         this.showBrowser = true;
         this.browserVisible = false;
+        if (!this.browserAgentConnected) { this.browserAgentMessage = ''; }
       } else if (op === 'browserBounds') {
         const label = message['sessionId'];
         const sessionId = typeof label === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(label) ? label : '';
@@ -842,10 +907,7 @@ struct Index {
         this.termOwner = '';
       }
     } catch (error) { /* 不是桥消息，忽略 */ }
-    this.browserControl.setVisible(this.browserActuallyVisible());
-    if (!this.browserActuallyVisible() && this.browserBridge) {
-      this.stopBrowserAgent('浏览器不再可见，浏览器 Agent 已停止。');
-    }
+    this.browserControl.setVisible(this.browserAvailable());
   }
 
   private applyBars(dark: boolean, background: string): void {
@@ -1374,17 +1436,20 @@ struct Index {
         .padding({ left: 16, right: 16 })
         .position({ x: 0, y: this.insetTop + 10 })
       }
-      if (this.showBrowser && this.browserWidth > 0 && this.browserHeight > 0) {
+      if (this.showBrowser) {
         BrowserView({
           control: this.browserControl,
-          isHostVisible: () => this.browserActuallyVisible(),
+          dark: this.barDark,
+          isHostVisible: () => this.browserAvailable(),
           stageLeft: this.browserClipLeft(),
           // 与终端相同：页面坐标以 Web 内容区为原点，沉浸式时 Web 被顶部避让区
           // 下推了 insetTop，浏览器浮层要跟着加同样的偏移。
           stageTop: this.browserClipTop() + this.insetTop,
-          stageWidth: this.browserClipWidth(),
-          stageHeight: this.browserClipHeight(),
+          stageWidth: this.browserActuallyVisible() ? this.browserClipWidth() : 400,
+          stageHeight: this.browserActuallyVisible() ? this.browserClipHeight() : 600,
           visible: this.browserActuallyVisible(),
+          active: this.browserAvailable(),
+          agentConnected: this.browserAgentConnected,
           agentMessage: this.browserAgentMessage,
           onStartAgent: () => { this.startBrowserAgent(); },
           onStopAgent: () => { this.stopBrowserAgent('浏览器 Agent 已停止。'); },
@@ -1424,10 +1489,7 @@ struct Index {
       const height = Number(area.height);
       this.stageWidth = Number.isFinite(width) ? Math.max(0, width) : 0;
       this.stageHeight = Number.isFinite(height) ? Math.max(0, height) : 0;
-      this.browserControl.setVisible(this.browserActuallyVisible());
-      if (!this.browserActuallyVisible() && this.browserBridge) {
-        this.stopBrowserAgent('浏览器不再可见，浏览器 Agent 已停止。');
-      }
+      this.browserControl.setVisible(this.browserAvailable());
     })
     // 两种模式都全屏：系统栏区域由外层背景铺满，颜色跟 Web 主题同步；
     // 内容自己的留白由 insetTop/insetBottom 负责，不能用安全区再挤一次。

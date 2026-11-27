@@ -19,7 +19,7 @@ test('disabled plugin does not touch its context', async () => {
 test('enabled async apply registers tools without returning an invalid effect', async () => {
   // Substitute only module imports so this test also runs without the installed DSH runtime.
   let source = await readFile(new URL('./index.js', import.meta.url), 'utf8');
-  for (const name of ['client-relay.js', 'credential-provider.js', 'observe.js', 'policy.js', 'audit.js']) {
+  for (const name of ['client-relay.js', 'credential-provider.js', 'observe.js', 'policy.js', 'audit.js', 'launch.js']) {
     source = source.replace(`'./${name}'`, JSON.stringify(new URL(name, import.meta.url).href));
   }
   const stub = 'data:text/javascript,' + encodeURIComponent('export const defineTool = definition => definition');
@@ -75,6 +75,34 @@ test('page output uses fresh randomized boundaries and bounded escaped data', ()
 test('credential errors are not exposed', async () => {
   const { ctx, defs, agent, connect } = setup(); ctx.harmonyBrowserRelay.getCredentials = async () => { throw Error('secret credential'); }; registerRelayTools(ctx, d => d, connect);
   await assert.rejects(defs[1].execute({}, { agent, signal: new AbortController().signal }), e => !e.message.includes('secret'));
+});
+
+test('a missing relay asks the host to launch the browser, then connects with the credentials it publishes', async () => {
+  const { ctx, defs, agent, calls, connect } = setup();
+  ctx.harmonyBrowserRelay.getCredentials = async () => { throw Error('no relay'); };
+  const launches = [];
+  const launch = async (capability, options) => {
+    assert.equal(capability, ctx.harmonyBrowserRelay);
+    launches.push(options);
+    return { host: '127.0.0.1', port: 1234, credential: 'b'.repeat(64) };
+  };
+  registerRelayTools(ctx, d => d, connect, ctx.harmonyBrowserRelay, launch);
+  const result = await defs[0].execute({ url: 'https://example.com' }, { agent, signal: new AbortController().signal });
+  assert.equal(result, 'page');
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].agent, agent);
+  assert.equal(calls.find(c => c[0] === 'connect')[1].credential, 'b'.repeat(64));
+});
+
+test('an aborted request never asks the host to launch a browser', async () => {
+  const { ctx, defs, agent } = setup();
+  ctx.harmonyBrowserRelay.getCredentials = async () => { throw Error('no relay'); };
+  let launched = false;
+  registerRelayTools(ctx, d => d, undefined, ctx.harmonyBrowserRelay, async () => { launched = true; throw Error('should not launch'); });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(defs[1].execute({}, { agent, signal: controller.signal }), { code: 'unknown' });
+  assert.equal(launched, false);
 });
 
  test('scroll requires exactly one direction and reports only submission', async () => {

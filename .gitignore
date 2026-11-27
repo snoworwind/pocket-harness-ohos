@@ -94,3 +94,6 @@ desktop.ini
 build-profile.json5
 entry/src/main/resources/rawfile/harmony/extra-ca.pem
 .local/
+
+# 本地临时对比/模拟器构建目录，不进入版本库
+.codex-*/

@@ -857,7 +857,7 @@ export class NativeRuntime {
       }
     } catch (error) { /* 插件没装上只是没有侧栏终端入口 */ }
   }
-  // browserAgent 必须在 harmony-native.json 中显式为布尔 true。目录 mkdir 是唯一
+  // browserAgent 默认为启用，harmony-native.json 可用 false 显式关闭。目录 mkdir 是唯一
   // 的独占创建操作：平台没有 EXCL/硬链接，绝不能用 access + open 来认领已有文件。
   // 同 UID 是信任边界；已有目录只有标记和全部字节均匹配时才复用，任何修改或
   // 版本变化均拒绝自动升级，保留用户内容。中断后残留目录也必须由用户手动处理。
@@ -892,17 +892,21 @@ export class NativeRuntime {
   private installBrowserPlugin(): void {
     const profile = this.context.filesDir + '/harness-home/profiles/web';
     const patch = profile + '/cordis.patch.yml';
-    const name = '@local/dsh-harmony-browser';
+    const name = '@local/dsh-harmony-browser-v3';
     const dest = profile + '/node_modules/' + name;
-    const marker = '.pocket-harness-browser-v1';
-    const files: string[] = ['package.json', 'index.js', 'client-relay.js', 'relay.cjs', 'credential-provider.js'];
+    const marker = '.pocket-harness-browser-v3';
+    const files: string[] = ['package.json', 'index.js', 'client-relay.js', 'relay.cjs', 'credential-provider.js',
+      'observe.js', 'policy.js', 'audit.js', 'launch.js'];
     const row = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '" + name + "'\n      config:\n        enabled: true\n# pocket-harness-browser end\n";
-    const oldRow = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '" + name + "'\n# pocket-harness-browser end\n";
+    const oldRow = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '@local/dsh-harmony-browser'\n      config:\n        enabled: true\n# pocket-harness-browser end\n";
+    const legacyRow = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '@local/dsh-harmony-browser'\n# pocket-harness-browser end\n";
+    const v2Row = "# pocket-harness-browser begin\n- insert:\n    - id: harmony-native-browser\n      name: '@local/dsh-harmony-browser-v2'\n      config:\n        enabled: true\n# pocket-harness-browser end\n";
     try {
       // 只删除完整且独有的本程序标记块，不规范化或修改其它 patch。
       if (fs.accessSync(patch) && !fs.lstatSync(patch).isFile()) { return; }
       let text = fs.accessSync(patch) ? fs.readTextSync(patch) : '';
-      const existingRow = text.indexOf(row) >= 0 ? row : oldRow;
+      const existingRow = text.indexOf(row) >= 0 ? row : (text.indexOf(v2Row) >= 0 ? v2Row :
+        (text.indexOf(oldRow) >= 0 ? oldRow : legacyRow));
       const first = text.indexOf(existingRow);
       if (first >= 0) {
         if (text.indexOf(existingRow, first + existingRow.length) >= 0) { return; }
@@ -911,8 +915,8 @@ export class NativeRuntime {
         this.writeBrowserPatch(patch, text);
       }
       const config = this.context.filesDir + '/harness-home/harmony-native.json';
-      if (!fs.accessSync(config) ||
-        (JSON.parse(fs.readTextSync(config)) as Record<string, boolean>).browserAgent !== true) { return; }
+      if (fs.accessSync(config) &&
+        (JSON.parse(fs.readTextSync(config)) as Record<string, boolean>).browserAgent === false) { return; }
       // 有相似但不完全相同的用户配置/标记时，不尝试修复或重复登记。
       if (text.indexOf(name) >= 0 || text.indexOf('harmony-native-browser') >= 0 ||
         text.indexOf('pocket-harness-browser') >= 0) { return; }
@@ -930,7 +934,7 @@ export class NativeRuntime {
           try { this.writeBrowserBytes(out.fd, contents[i]); } finally { fs.closeSync(out); }
         }
         const out = fs.openSync(dest + '/' + marker, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
-        try { this.writeBrowserBytes(out.fd, 'pocket-harness-browser-v1\n'); } finally { fs.closeSync(out); }
+        try { this.writeBrowserBytes(out.fd, 'pocket-harness-browser-v3\n'); } finally { fs.closeSync(out); }
       }
       const directoryStat = fs.lstatSync(dest);
       if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) { return; }
@@ -938,7 +942,7 @@ export class NativeRuntime {
       if (entries.length !== files.length + 1 || entries.indexOf(marker) < 0) { return; }
       const markerStat = fs.lstatSync(dest + '/' + marker);
       if (markerStat.isSymbolicLink() || !markerStat.isFile() ||
-        fs.readTextSync(dest + '/' + marker) !== 'pocket-harness-browser-v1\n') { return; }
+        fs.readTextSync(dest + '/' + marker) !== 'pocket-harness-browser-v3\n') { return; }
       for (let i = 0; i < files.length; i++) {
         if (entries.indexOf(files[i]) < 0) { return; }
         const stat = fs.lstatSync(dest + '/' + files[i]);

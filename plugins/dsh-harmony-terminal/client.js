@@ -299,6 +299,24 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'sidebarRight', 'sidebarRightTabs'],
       apply(ctx) {
         window.__dshHarmonyTerminalApply = true;
+        // A request only selects the tab for the already visible session. It
+        // cannot navigate or authorize a browser operation.
+        window.__dshOpenAgentBrowser = function (sessionId) {
+          if (typeof sessionId !== 'string' || sessionId !== activeSessionId()) return false;
+          // Remember the request without expanding the sidebar. When the user
+          // opens it, select the existing native browser instance.
+          window.__dshPendingAgentBrowser = sessionId;
+          return true;
+        };
+        const revealPendingBrowser = window.setInterval(function () {
+          const sessionId = window.__dshPendingAgentBrowser;
+          if (!sessionId || sessionId !== activeSessionId()) return;
+          const toggle = document.querySelector('[aria-label="收起右侧边栏"]');
+          if (!toggle || getComputedStyle(toggle).visibility === 'hidden' || !toggle.getBoundingClientRect().width) return;
+          delete window.__dshPendingAgentBrowser;
+          ctx.sidebarRight.openTabIn(sessionId, 'browser-harmony');
+        }, 300);
+        ctx.effect(function () { return function () { window.clearInterval(revealPendingBrowser); }; }, 'harmony-browser.pending');
         try {
         ctx.effect(function () {
           return ctx.sidebarRightTabs.register({

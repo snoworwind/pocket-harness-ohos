@@ -474,3 +474,18 @@ bash native/iec/scripts/test_iec_native_host.sh   # 45 + 15 项，含 sidecar/�
 - 修复：`harmony/fetch-polyfill.cjs` 在 `Module._load` 返回 CJS 导出之前把 `undici.fetch` 换成补丁实现（ESM 命名空间是加载时快照，import 后再改 exports 不生效）；只改 `fetch`，`Agent`/`Pool`/`ProxyAgent` 保持原样，避免破坏 `dsh-http-proxy`。
 - 回归：`scripts/test-fetch-polyfill.cjs` 新增“假 undici 模块 + 真实请求”用例（16 项 ALL PASS）；`scripts/test.cjs` 51 项通过；`runtime-manifest.mjs check` 不变（`rawfile/harmony` 不计入清单）。
 - 验证：设备内 agent 用同一补丁确认 `web_fetch https://example.com/` 通过；本仓库 HAP 待重装复核。
+# 2026-11-28 x86_64 模拟器启动验证
+
+- 已验证：HarmonyOS 6.1.1 模拟器安装并启动当前源码的隔离 x86 测试包；运行时归档解包完成，Web GUI 显示登录或添加 API Key 页面，日志出现 `DSH_TERM`。
+- 未验收：该测试包复用了 WSL 中的旧 x86 产物，缺少 Python、Git 等多个命令库，不能证明完整命令链路可用；浏览器 Agent 功能和真机 arm64 包未测试。
+- 观察到 ArkWeb 控制台一次 `getComputedStyle` 参数类型错误；尚未定位。
+
+# 2026-11-28 浏览器界面、深色模式与自动唤起
+
+- 界面：浏览器面板增加地址栏进度、页面标题、安全/普通来源图标、Agent 连接状态、连接/断开与确认按钮，以及新标签页空状态；工具栏和页面背景跟随应用明暗主题。深色模式下对未自带深色样式的网页启用 ArkWeb 强制深色，`https://example.com/` 实测页面与面板均为深色。
+- 深色根因：原实现只读系统 `prefers-color-scheme`，手动切换主题时不会跟随；现改为读页面 `color-scheme`，并给 Web 组件设置背景色与 `forceDarkAccess`。模拟器实测通过，浅色主题未在本轮切换验证。
+- 导航：在模拟器中输入 `https://example.com/`，页面加载、标题更新、地址回填和面板配色正常；未验证登录态网页、下载、弹窗与真机。
+- Agent 唤起：新增同 UID `launch-request.json` 协议。壳层只校验版本、随机 id、会话标签、文件类型/大小和 20 秒期限；创建隐藏实例并启动中继，不展开右侧栏。用户打开侧栏后由页面插件选中已有 tab。`launch.test.mjs`、工具“凭据不可用 → 尝试唤起”回退、静态路径检查均通过；**因模拟器没有可用的 API Key/会话，Agent 自动唤起的设备端端到端流程未验收**。
+- 修复：插件安装漏打包 `observe.js`/`policy.js`/`audit.js` 的问题保持修复；`harmony-compat` rawfile 与插件源恢复逐字节一致。
+- 测试：WSL 下 `node scripts/test.cjs` 270 项全部通过；`test-fetch-polyfill`、`fetch-redirect`、浏览器桥/控制/隔离/打包静态检查、`runtime-manifest check`、全仓库与历史敏感扫描均通过。
+- 产物：arm64 签名 HAP 构建成功；x86 隔离测试包构建并在模拟器安装。x86 仍缺 `libpython`、`libgit`、`libcurlcmd`、`libjqcmd`、`libghcmd` 等 18 个命令库，构建脚本包含 aarch64 汇编/硬编码，本轮未完成 x86 移植；该限制不影响 arm64 发布包，也不影响本轮浏览器验证。

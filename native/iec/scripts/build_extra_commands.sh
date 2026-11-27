@@ -23,7 +23,7 @@ source "$IEC_ROOT/scripts/lib/common.sh"
 [ -d "$SYSROOT" ] || iec_err "OHOS sysroot not found: $SYSROOT（检查 scripts/env.sh 的 OHOS_SDK）"
 
 BUILD="$IEC_ROOT/build/extra-cmds"
-OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/arm64-v8a"
+OUT_DIR="$IEC_ROOT/platform/ohos/har/libs/$NATIVE_ARCH"
 CC_TARGET="$CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld"
 
 rm -rf "$BUILD"

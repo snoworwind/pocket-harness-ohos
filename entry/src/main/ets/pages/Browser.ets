@@ -264,7 +264,9 @@ export struct BrowserView {
   @Prop stageTop: number = 0;
   @Prop stageWidth: number = 0;
   @Prop stageHeight: number = 0;
-  @Watch('visibilityChanged') @Prop visible: boolean = false;
+  @Prop dark: boolean = false;
+  @Prop visible: boolean = false;
+  @Watch('visibilityChanged') @Prop active: boolean = false;
   control: BrowserControl = new BrowserControl();
   isHostVisible: () => boolean = () => false;
   onClose: () => void = () => {};
@@ -273,6 +275,7 @@ export struct BrowserView {
   onConfirmPage: () => void = () => {};
   onNavigationFailure: () => void = () => {};
   @Prop agentMessage: string = '';
+  @Prop agentConnected: boolean = false;
 
   aboutToAppear(): void {
     this.control.attach(this.isHostVisible, (target: string): boolean => this.openAuthorized(target),
@@ -326,17 +329,23 @@ export struct BrowserView {
           return true;
         } catch (error) { return false; }
       });
-    this.control.setVisible(this.visible);
+    this.control.setVisible(this.active);
   }
 
   aboutToDisappear(): void { this.control.detach(); }
-  private visibilityChanged(): void { this.control.setVisible(this.visible); }
+  private visibilityChanged(): void { this.control.setVisible(this.active); }
 
   private openAuthorized(target: string): boolean {
     const normalized = target.trim();
     if (!this.allowed(normalized)) { return false; }
     this.control.navigationChanged();
-    try { this.controller.loadUrl(normalized); return true; } catch (error) { return false; }
+    try {
+      this.currentUrl = normalized;
+      this.loading = true;
+      this.progress = 5;
+      this.controller.loadUrl(normalized);
+      return true;
+    } catch (error) { return false; }
   }
 
   private observePage(): BrowserObservation | null {
@@ -349,7 +358,29 @@ export struct BrowserView {
   }
   @State private address: string = '';
   @State private error: string = '';
+  @State private title: string = '';
+  @State private currentUrl: string = 'about:blank';
+  @State private loading: boolean = false;
+  @State private progress: number = 0;
   private controller: webview.WebviewController = new webview.WebviewController();
+
+  private hasPage(): boolean {
+    return this.currentUrl !== '' && this.currentUrl !== 'about:blank';
+  }
+
+  private displayHost(): string {
+    try {
+      const parsed = new url.URL(this.currentUrl);
+      return parsed.hostname !== '' ? parsed.hostname : '新标签页';
+    } catch (error) { return '新标签页'; }
+  }
+
+  private mutedColor(): string { return this.dark ? '#9AA0A6' : '#697078'; }
+  private surfaceColor(): string { return this.dark ? '#26282C' : '#F7F8FA'; }
+  private pageColor(): string { return this.dark ? '#1E1F22' : '#FFFFFF'; }
+  private lineColor(): string { return this.dark ? '#3A3D42' : '#E3E6EA'; }
+  private textColor(): string { return this.dark ? '#E8EAED' : '#1F2328'; }
+  private accentColor(): string { return this.dark ? '#7FB0FF' : '#2563EB'; }
 
   private allowed(target: string): boolean {
     try {
@@ -375,55 +406,153 @@ export struct BrowserView {
     }
     this.error = '';
     this.manualNavigation();
-    try { this.controller.loadUrl(target); } catch (error) { this.error = '无法打开地址'; }
+    this.currentUrl = target;
+    this.loading = true;
+    this.progress = 5;
+    this.title = '';
+    try { this.controller.loadUrl(target); } catch (error) { this.error = '无法打开地址'; this.loading = false; }
+  }
+
+  @Builder
+  private emptyState() {
+    Column({ space: 10 }) {
+      Stack() {
+        Circle().width(58).height(58).fill(this.dark ? '#2C3648' : '#E8F0FE')
+        Text('🌐').fontSize(26)
+      }.width(58).height(58)
+      Text('浏览器已就绪').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+      Text('Agent 可以在这里打开网页；你也可以直接输入地址。')
+        .fontSize(12).fontColor(this.mutedColor()).textAlign(TextAlign.Center)
+        .maxLines(2).padding({ left: 28, right: 28 })
+      Row({ space: 8 }) {
+        Button(this.agentConnected ? '断开 Agent' : '连接 Agent')
+          .fontSize(12).height(32).backgroundColor(this.accentColor()).fontColor('#FFFFFF')
+          .onClick(() => {
+            if (this.agentConnected) { this.onStopAgent(); } else { this.onStartAgent(); }
+          })
+        Button('确认当前页面').fontSize(12).height(32)
+          .backgroundColor(this.dark ? '#303238' : '#ECEEF1').fontColor(this.textColor())
+          .onClick(() => { this.onConfirmPage(); })
+      }
+    }
+    .width('100%').height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(this.pageColor())
   }
 
   build() {
     Column() {
-      Row({ space: 4 }) {
-        Button('‹').width(36).onClick(() => {
-          try {
-            if (this.controller.accessBackward()) {
-              this.manualNavigation();
-              this.controller.backward();
-            }
-          } catch (error) {}
-        })
-        Button('›').width(36).onClick(() => {
-          try {
-            if (this.controller.accessForward()) {
-              this.manualNavigation();
-              this.controller.forward();
-            }
-          } catch (error) {}
-        })
-        TextInput({ text: this.address, placeholder: 'https://…' })
+      // 地址栏：与侧栏其余内容共用同一套明暗配色，避免深色主题下出现白块。
+      Row({ space: 2 }) {
+        Button('‹').width(34).height(32).fontSize(22).fontColor(this.textColor())
+          .backgroundColor(Color.Transparent).borderRadius(8)
+          .onClick(() => {
+            try {
+              if (this.controller.accessBackward()) {
+                this.manualNavigation();
+                this.controller.backward();
+              }
+            } catch (error) {}
+          })
+        Button('›').width(34).height(32).fontSize(22).fontColor(this.textColor())
+          .backgroundColor(Color.Transparent).borderRadius(8)
+          .onClick(() => {
+            try {
+              if (this.controller.accessForward()) {
+                this.manualNavigation();
+                this.controller.forward();
+              }
+            } catch (error) {}
+          })
+        Text(this.currentUrl.indexOf('https://') === 0 ? '🔒' : '🌐')
+          .fontSize(12).width(18).textAlign(TextAlign.Center).fontColor(this.mutedColor())
+        TextInput({ text: this.address, placeholder: '输入网址或搜索' })
           .layoutWeight(1)
+          .height(32).fontSize(12).borderRadius(16)
+          .padding({ left: 12, right: 12 })
+          .fontColor(this.textColor())
+          .placeholderColor(this.mutedColor())
+          .backgroundColor(this.dark ? '#303238' : '#ECEEF1')
           .onChange((value: string) => { this.address = value; })
           .onSubmit(() => { this.navigate(); })
-        Button('↵').width(36).onClick(() => { this.navigate(); })
-        Button('↻').width(36).onClick(() => {
-          this.manualNavigation();
-          try { this.controller.refresh(); } catch (error) {}
-        })
-        Button('×').width(36).onClick(() => { this.onClose(); })
-      }.width('100%')
-      Row({ space: 8 }) {
-        Button('启动浏览器 Agent').onClick(() => { this.onStartAgent(); })
-        Button('停止 Agent').onClick(() => { this.onStopAgent(); })
-        Button('确认当前页面并恢复').onClick(() => { this.onConfirmPage(); })
-      }.width('100%')
-      Text('需启用 browserAgent 插件。会话 ID 是不可信标签，不是鉴权；只读/工作区修改模式每次操作需同意，自动审查/完全权限模式自动放行。页面结束不代表网络稳定；同 URL 旧事件和后续 SPA 变化无法排除。').fontSize(12).width('100%')
-      if (this.agentMessage !== '') { Text(this.agentMessage).fontColor('#B3261E').fontSize(12).width('100%') }
-      if (this.error !== '') { Text(this.error).fontColor('#B3261E').fontSize(12) }
-      Web({ src: 'about:blank', controller: this.controller })
+        Button('刷新').width(52).height(32).fontSize(11).fontColor(this.textColor())
+          .padding(0).backgroundColor(Color.Transparent).borderRadius(8)
+          .onClick(() => {
+            this.manualNavigation();
+            this.loading = true;
+            this.progress = 5;
+            try { this.controller.refresh(); } catch (error) {}
+          })
+        Button('关闭').width(52).height(32).fontSize(11).fontColor(this.textColor())
+          .padding(0).backgroundColor(Color.Transparent).borderRadius(8)
+          .onClick(() => { this.onClose(); })
+      }
+      .width('100%').height(46)
+      .padding({ left: 4, right: 4, top: 7, bottom: 7 })
+      .backgroundColor(this.surfaceColor())
+
+      // 细进度条：加载时显示，不额外占用高度。
+      Stack({ alignContent: Alignment.Start }) {
+        Row().width('100%').height(2).backgroundColor(this.lineColor())
+        Row().width(this.loading ? Math.max(4, this.progress) + '%' : '0%')
+          .height(2).backgroundColor(this.accentColor())
+      }.width('100%').height(2)
+
+      // 页面身份与 Agent 状态：一眼能看出当前网页和 Agent 是否接通。
+      Row({ space: 6 }) {
+        Text(this.hasPage() ? (this.title !== '' ? this.title : this.displayHost()) : '新标签页')
+          .fontSize(11).fontColor(this.mutedColor()).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+        Circle().width(6).height(6)
+          .fill(this.agentConnected ? '#34A853' : (this.dark ? '#5F6368' : '#A8AEB6'))
+        Text(this.agentConnected ? 'Agent 已连接' : 'Agent 未连接')
+          .fontSize(10).fontColor(this.agentConnected ? this.textColor() : this.mutedColor())
+        Button(this.agentConnected ? '断开' : '连接')
+          .fontSize(10).height(24).borderRadius(12)
+          .backgroundColor(this.dark ? '#303238' : '#ECEEF1').fontColor(this.textColor())
+          .onClick(() => { if (this.agentConnected) { this.onStopAgent(); } else { this.onStartAgent(); } })
+        Button('确认')
+          .fontSize(10).height(24).borderRadius(12)
+          .backgroundColor(this.dark ? '#303238' : '#ECEEF1').fontColor(this.textColor())
+          .onClick(() => { this.onConfirmPage(); })
+      }
+      .width('100%').height(30).padding({ left: 12, right: 8 })
+      .backgroundColor(this.surfaceColor())
+
+      if (this.agentMessage !== '') {
+        Text(this.agentMessage)
+          .fontColor(this.agentConnected ? this.mutedColor() : (this.dark ? '#F0B8B3' : '#8A4B45'))
+          .fontSize(10).width('100%').maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+          .backgroundColor(this.surfaceColor())
+      }
+      if (this.error !== '') {
+        Text(this.error).fontColor('#D9534F').fontSize(11).width('100%')
+          .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+          .backgroundColor(this.surfaceColor())
+      }
+
+      Stack({ alignContent: Alignment.TopStart }) {
+        Web({ src: 'about:blank', controller: this.controller })
         .javaScriptAccess(true)
         .domStorageAccess(true)
         .fileAccess(false)
         .databaseAccess(false)
+        .darkMode(this.dark ? WebDarkMode.On : WebDarkMode.Off)
+        .forceDarkAccess(this.dark)
+        .backgroundColor(this.dark ? '#202124' : '#FFFFFF')
         .multiWindowAccess(false)
         .width('100%')
-        .layoutWeight(1)
+        .height('100%')
+        .onProgressChange((event) => {
+          const value = Number(event?.newProgress);
+          if (Number.isFinite(value)) {
+            this.progress = value;
+            this.loading = value < 100;
+          }
+        })
+        .onTitleReceive((event) => { this.title = event?.title || ''; })
         .onLoadIntercept((event: OnLoadInterceptEvent) => {
           try {
             if (!event.data.isMainFrame()) { return false; }
@@ -445,20 +574,38 @@ export struct BrowserView {
           try { if (!event || event.request.isMainFrame()) { this.control.consumeRebind(); this.onNavigationFailure(); } }
           catch (_error) { this.control.consumeRebind(); this.onNavigationFailure(); }
         })
-        .onPageBegin((event) => { this.control.pageBegin(event?.url || ''); })
+        .onPageBegin((event) => {
+          this.loading = true;
+          this.progress = Math.max(this.progress, 5);
+          if (event?.url) { this.currentUrl = event.url; }
+          this.control.pageBegin(event?.url || '');
+        })
         .onPageEnd((event) => {
+          this.loading = false;
+          this.progress = 100;
           this.control.pageEnd(event?.url || '');
           try {
             const current = this.controller.getUrl();
-            if (this.allowed(current)) { this.address = current; this.error = ''; }
+            if (this.allowed(current)) {
+              this.address = current;
+              this.currentUrl = current;
+              this.error = '';
+            }
+            const pageTitle = this.controller.getTitle();
+            if (pageTitle !== '') { this.title = pageTitle; }
           } catch (error) {}
         })
+        if (!this.hasPage()) { this.emptyState() }
+      }
+      .width('100%').layoutWeight(1)
     }
     .width(this.stageWidth)
     .height(this.stageHeight)
     .position({ x: this.stageLeft, y: this.stageTop })
     .visibility(this.visible ? Visibility.Visible : Visibility.Hidden)
     .clip(true)
-    .backgroundColor('#FFFFFF')
+    .borderRadius(12)
+    .border({ width: 1, color: this.lineColor() })
+    .backgroundColor(this.pageColor())
   }
 }
