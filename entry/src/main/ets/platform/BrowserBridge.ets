@@ -1,6 +1,7 @@
 import { BrowserControl, BrowserObservation } from '../pages/Browser';
 import { NativeRuntime } from './NativeRuntime';
 import { BrowserRelay, BrowserRelayReady, BrowserRelayRequest } from './BrowserRelay';
+import { BROWSER_ACTION_STATUSES, BROWSER_ALLOWED_KEYS } from '../pages/BrowserObserveScript';
 
 // The host supplies the actual visible session source. This equality check is
 // binding to a host assertion, NOT independent authentication of the session.
@@ -12,6 +13,11 @@ export interface BrowserBridgeApproval {
   targetUrl: string;
   direction: string;
   ref: string;
+  key: string;
+  action: string;
+  // Only the length is surfaced for text entry: the approval UI must not log or
+  // leak field content, which may be a password or other secret.
+  textLength: number;
 }
 
 export interface BrowserBridgeHost {
@@ -32,6 +38,7 @@ interface SnapshotItem {
   tag?: string;
   label?: string;
   ref?: string;
+  caption?: string;
 }
 
 interface SnapshotData {
@@ -43,10 +50,7 @@ interface SnapshotData {
 interface ApprovedRequest {
   generation: number;
   sessionId: string;
-  operation: string;
-  targetUrl: string;
-  direction: string;
-  ref: string;
+  signature: string;
   pageTitle: string;
   pageUrl: string;
 }
@@ -89,6 +93,10 @@ export class BrowserBridge {
         observe: (): Promise<string> => this.observe(),
         scroll: (direction: string): Promise<string> => this.scroll(direction),
         click: (ref: string): Promise<string> => this.click(ref),
+        input: (ref: string, text: string, mode: string): Promise<string> => this.input(ref, text, mode),
+        press: (key: string): Promise<string> => this.press(key),
+        select: (ref: string, text: string): Promise<string> => this.select(ref, text),
+        navigate: (action: string): Promise<string> => this.navigate(action),
         onClosed: (): void => this.closed()
       });
     if (this.stopped) { this.relay.close(); }
@@ -150,10 +158,18 @@ export class BrowserBridge {
     const target = request.url || '';
     const direction = request.direction || '';
     const ref = request.ref || '';
+    const text = request.text || '';
+    const key = request.key || '';
+    const action = request.action || '';
     if (request.operation === 'scroll' && direction !== 'up' && direction !== 'down') { return false; }
     if (request.operation === 'click' && !isValidRef(ref)) { return false; }
+    if ((request.operation === 'fill' || request.operation === 'type' || request.operation === 'select') &&
+      (!isValidRef(ref) || !isValidEncodedText(text))) { return false; }
+    if (request.operation === 'press' && BROWSER_ALLOWED_KEYS.indexOf(key) < 0) { return false; }
+    if (request.operation === 'navigate' && action !== 'back' && action !== 'forward' && action !== 'refresh') { return false; }
     const details: BrowserBridgeApproval = { operation: request.operation, sessionId: request.sessionId,
-      pageTitle: page.title, pageUrl: page.url, targetUrl: target, direction: direction, ref: ref };
+      pageTitle: page.title, pageUrl: page.url, targetUrl: target, direction: direction, ref: ref,
+      key: key, action: action, textLength: textLengthOf(text) };
     if (automatic) {
       // The calling Session's live preset already covers this call; skip only
       // the human dialog. Every page/session binding check below still applies.
@@ -164,16 +180,15 @@ export class BrowserBridge {
     }
     if (!this.samePage(generation, request.sessionId, page.title, page.url)) { return false; }
     this.approved = { generation: generation, sessionId: request.sessionId,
-      operation: request.operation, targetUrl: target, direction: direction, ref: ref,
+      signature: signatureOf(request.operation, target, direction, ref, text, key, action),
       pageTitle: page.title, pageUrl: page.url };
     return true;
   }
 
-  private take(operation: string, target: string, direction: string = '', ref: string = ''): ApprovedRequest {
+  private take(signature: string): ApprovedRequest {
     const approval = this.approved;
     this.approved = undefined;
-    if (!approval || approval.operation !== operation || approval.targetUrl !== target ||
-      approval.direction !== direction || approval.ref !== ref ||
+    if (!approval || approval.signature !== signature ||
       !this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
       throw new Error('Browser binding changed');
     }
@@ -181,7 +196,7 @@ export class BrowserBridge {
   }
 
   private async open(target: string): Promise<string> {
-    const approval = this.take('open', target);
+    const approval = this.take(signatureOf('open', target));
     // A page-end event is only a prerequisite for native confirmation, not a
     // completion or stability guarantee. Arm before loadUrl to catch sync events.
     this.navigationSubmitted = true;
@@ -193,29 +208,72 @@ export class BrowserBridge {
   }
 
   private async scroll(direction: string): Promise<string> {
-    const approval = this.take('scroll', '', direction);
+    const approval = this.take(signatureOf('scroll', '', direction));
     this.control.scroll(approval.generation, direction);
     return 'Scroll call submitted; actual movement and page stability are not confirmed.';
   }
 
   private async click(ref: string): Promise<string> {
-    const approval = this.take('click', '', '', ref);
+    const approval = this.take(signatureOf('click', '', '', ref));
     // Checks bracket the asynchronous ArkWeb execution. A click may navigate or
     // mutate the page; the returned status only attests that it was dispatched.
     if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
       throw new Error('Browser binding changed');
     }
     const raw = await this.control.click(approval.generation, ref);
-    if (this.stopped || this.host.visibleSessionId() !== approval.sessionId) {
-      throw new Error('Browser binding changed');
-    }
-    const status = decodeClickStatus(raw);
+    const status = decodeActionStatus(raw);
     if (status !== 'clicked') { throw new Error('Browser click not dispatched: ' + status); }
     return 'Click dispatched; page reaction, navigation and stability are not confirmed.';
   }
 
+  private async input(ref: string, text: string, mode: string): Promise<string> {
+    if (mode !== 'fill' && mode !== 'type') { throw new Error('Invalid input mode'); }
+    const approval = this.take(signatureOf(mode, '', '', ref, text));
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    const raw = await this.control.input(approval.generation, ref, text, mode);
+    const status = decodeActionStatus(raw);
+    // A filled/typed result only means the field held the requested value at
+    // read-back; the page may still rewrite it later or navigate away.
+    if (status === 'filled') { return 'Field filled; value matched at read-back. Later page rewrites are not excluded.'; }
+    if (status === 'typed') { return 'Text appended; value matched at read-back. Later page rewrites are not excluded.'; }
+    if (status === 'truncated') { return 'Text was truncated by the field (for example maxlength); value length is not reported.'; }
+    if (status === 'rewritten') { return 'The page rewrote the value after entry; field content is not reported.'; }
+    throw new Error('Browser input not applied: ' + status);
+  }
+
+  private async press(key: string): Promise<string> {
+    const approval = this.take(signatureOf('press', '', '', '', '', key));
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    const raw = await this.control.press(approval.generation, key);
+    const status = decodeActionStatus(raw);
+    if (status === 'pressed') { return 'Key events dispatched; native default actions are not guaranteed.'; }
+    if (status === 'submitted') { return 'Key events dispatched and form submission was requested; resulting navigation is not confirmed.'; }
+    throw new Error('Browser key press not applied: ' + status);
+  }
+
+  private async select(ref: string, text: string): Promise<string> {
+    const approval = this.take(signatureOf('select', '', '', ref, text));
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    const raw = await this.control.select(approval.generation, ref, text);
+    const status = decodeActionStatus(raw);
+    if (status === 'selected') { return 'Option selected and change events dispatched; page reaction is not confirmed.'; }
+    throw new Error('Browser select not applied: ' + status);
+  }
+
+  private async navigate(action: string): Promise<string> {
+    const approval = this.take(signatureOf('navigate', '', '', '', '', '', action));
+    this.control.navigate(approval.generation, action);
+    return 'Navigation submitted; the new document is not loaded or confirmed. Take a fresh snapshot before acting.';
+  }
+
   private async observe(): Promise<string> {
-    const approval = this.take('observe', '');
+    const approval = this.take(signatureOf('observe'));
     // Checks bracket the asynchronous ArkWeb execution. URL/title checks cannot
     // detect all SPA changes, including changes that revert before completion.
     if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
@@ -244,10 +302,12 @@ export class BrowserBridge {
       } else if (item.type === 'element' && typeof item.tag === 'string' &&
         ['a', 'button', 'input', 'textarea', 'select'].includes(item.tag) &&
         (item.label === undefined || (typeof item.label === 'string' && item.label.length <= 300)) &&
-        (item.ref === undefined || (typeof item.ref === 'string' && /^e\d{1,3}$/.test(item.ref)))) {
+        (item.caption === undefined || (typeof item.caption === 'string' && item.caption.length <= 80)) &&
+        (item.ref === undefined || (typeof item.ref === 'string' && isValidRef(item.ref)))) {
         const safe: SnapshotItem = { type: 'element', tag: item.tag };
         if (item.label !== undefined) { safe.label = item.label; }
         if (item.ref !== undefined) { safe.ref = item.ref; }
+        if (item.caption !== undefined) { safe.caption = item.caption; }
         items.push(safe);
       } else { throw new Error('Invalid snapshot'); }
     }
@@ -276,13 +336,32 @@ export function isValidRef(ref: string): boolean {
   return Number.isSafeInteger(index) && index >= 0 && index < 80;
 }
 
+// Text never travels as source code: it is base64 and only decoded inside the
+// fixed page program. This also bounds the relay frame size.
+export function isValidEncodedText(text: string): boolean {
+  return typeof text === 'string' && /^[A-Za-z0-9+/]*={0,2}$/.test(text) && text.length <= 1536;
+}
+
+export function textLengthOf(text: string): number {
+  if (!isValidEncodedText(text)) { return 0; }
+  const padding = text.endsWith('==') ? 2 : (text.endsWith('=') ? 1 : 0);
+  return Math.max(0, Math.floor(text.length * 3 / 4) - padding);
+}
+
+// The approval signature binds the exact arguments the user approved to the
+// arguments later executed. Any mismatch invalidates the approval.
+export function signatureOf(operation: string, url: string = '', direction: string = '', ref: string = '',
+  text: string = '', key: string = '', action: string = ''): string {
+  return [operation, url, direction, ref, text, key, action].join('\u0001');
+}
+
 // ArkWeb may hand back the script result as a JSON-encoded string. Only the
 // fixed set of status words is accepted; anything else fails closed.
-export function decodeClickStatus(raw: string): string {
+export function decodeActionStatus(raw: string): string {
   if (typeof raw !== 'string' || raw.length > 64) { return 'invalid'; }
   let value: string = raw;
   if (raw.startsWith('"')) {
     try { value = JSON.parse(raw) as string; } catch (_error) { return 'invalid'; }
   }
-  return ['clicked', 'stale', 'disabled', 'hidden', 'error'].includes(value) ? value : 'invalid';
+  return BROWSER_ACTION_STATUSES.indexOf(value) >= 0 ? value : 'invalid';
 }

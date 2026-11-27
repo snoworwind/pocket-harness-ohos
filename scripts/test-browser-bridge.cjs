@@ -14,8 +14,9 @@ function load(path, imports) {
   }, setTimeout, clearTimeout, URL, console }, { filename: path });
   return module.exports;
 }
-const { BrowserRelay } = load('entry/src/main/ets/platform/BrowserRelay.ets', { '@kit.ArkTS': { url: { URL } } });
-const { BrowserBridge } = load('entry/src/main/ets/platform/BrowserBridge.ets', { './BrowserRelay': { BrowserRelay } });
+const browserScripts = load('entry/src/main/ets/pages/BrowserObserveScript.ets', {});
+const { BrowserRelay } = load('entry/src/main/ets/platform/BrowserRelay.ets', { '@kit.ArkTS': { url: { URL } }, '../pages/BrowserObserveScript': browserScripts });
+const { BrowserBridge } = load('entry/src/main/ets/platform/BrowserBridge.ets', { './BrowserRelay': { BrowserRelay }, '../pages/BrowserObserveScript': browserScripts });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const ready = { type: 'ready', version: 1, host: '127.0.0.1', port: 1234, credential: 'a'.repeat(64) };
 function setup(authorize = async () => true) {
@@ -30,7 +31,12 @@ function setup(authorize = async () => true) {
     rebindPage: () => state.rebindReady && state.visible ? { generation: state.generation, title: state.title, url: state.url } : null,
     consumeRebind: () => { state.rebindReady = false; },
     scroll: (generation, direction) => { if (!state.visible || generation !== state.generation) throw Error('binding'); (state.scrolls ||= []).push(direction); },
-    open: (generation, target) => { if (!state.visible || generation !== state.generation) return false; state.opens.push(target); state.generation++; return true; }
+    open: (generation, target) => { if (!state.visible || generation !== state.generation) return false; state.opens.push(target); state.generation++; return true; },
+    click: async (generation, ref) => { if (!state.visible || generation !== state.generation) throw Error('binding'); (state.clicks ||= []).push(ref); return state.clickStatus || 'clicked'; },
+    input: async (generation, ref, text, mode) => { if (!state.visible || generation !== state.generation) throw Error('binding'); (state.inputs ||= []).push({ ref, text, mode }); return state.inputStatus || (mode === 'fill' ? 'filled' : 'typed'); },
+    press: async (generation, key) => { if (!state.visible || generation !== state.generation) throw Error('binding'); (state.presses ||= []).push(key); return 'pressed'; },
+    select: async (generation, ref, text) => { if (!state.visible || generation !== state.generation) throw Error('binding'); (state.selects ||= []).push({ ref, text }); return 'selected'; },
+    navigate: (generation, action) => { if (!state.visible || generation !== state.generation) throw Error('binding'); (state.navigations ||= []).push(action); }
   };
   const runtime = { startBrowserRelay(output, exit) { state.output = output; state.exit = exit; return {
     close() { state.closed = true; },
@@ -116,7 +122,7 @@ async function request(s, id, operation = 'observe', sessionId = 'session1', url
   assert.strictEqual(s.ready.credential, ready.credential);
   await request(s, 'a');
   assert.deepStrictEqual(JSON.parse(s.results[0].value), { untrusted: true, title: 'Title', url: 'https://page.test/', items: [{ type: 'text', text: 'Hello' }] });
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.requests[0])), { operation: 'observe', sessionId: 'session1', pageTitle: 'Title', pageUrl: 'https://page.test/', targetUrl: '', direction: '', ref: '' });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.requests[0])), { operation: 'observe', sessionId: 'session1', pageTitle: 'Title', pageUrl: 'https://page.test/', targetUrl: '', direction: '', ref: '', key: '', action: '', textLength: 0 });
   await request(s, 'b', 'open', 'session1', 'https://target.test/');
   assert.strictEqual(s.opens.length, 1);
   assert.match(s.results[1].value, /submitted.*not confirmed/i);
@@ -230,5 +236,54 @@ async function request(s, id, operation = 'observe', sessionId = 'session1', url
   s = setup(async () => false); s.automatic = false; await start(s); await request(s, 'a');
   assert.strictEqual(s.requests.length, 1); assert.strictEqual(s.policyChecks, 1);
   assert.strictEqual(s.results[0].ok, false, 'manual denial unchanged');
+  // --- fill / type / press / select / navigate -------------------------------
+  const sendAction = async (state, frame) => { state.send(frame); for (let i = 0; i < 10; i++) await tick(); };
+  const b64 = value => Buffer.from(value, 'utf8').toString('base64');
+
+  s = setup(); await start(s);
+  await sendAction(s, { type: 'request', id: 'f1', sessionId: 'session1', operation: 'fill', ref: 'e2', text: b64('hello') });
+  assert.strictEqual(s.inputs.length, 1);
+  assert.strictEqual(s.inputs[0].ref, 'e2');
+  assert.strictEqual(s.inputs[0].mode, 'fill');
+  assert.strictEqual(Buffer.from(s.inputs[0].text, 'base64').toString('utf8'), 'hello');
+  assert.match(s.results[0].value, /Field filled/);
+  assert.strictEqual(s.requests[0].textLength, 5, 'approval carries length, not content');
+  assert.strictEqual(JSON.stringify(s.requests[0]).includes('hello'), false, 'text never reaches the approval payload');
+  s.bridge.stop();
+
+  s = setup(); s.inputStatus = 'truncated'; await start(s);
+  await sendAction(s, { type: 'request', id: 't1', sessionId: 'session1', operation: 'type', ref: 'e1', text: b64('abcdef') });
+  assert.strictEqual(s.inputs[0].mode, 'type');
+  assert.match(s.results[0].value, /truncated/);
+  s.bridge.stop();
+
+  s = setup(); s.inputStatus = 'not_editable'; await start(s);
+  await sendAction(s, { type: 'request', id: 'n1', sessionId: 'session1', operation: 'fill', ref: 'e1', text: b64('x') });
+  assert.strictEqual(s.closed, true, 'a refused field fails closed');
+  s.bridge.stop();
+
+  s = setup(); await start(s);
+  await sendAction(s, { type: 'request', id: 'p1', sessionId: 'session1', operation: 'press', key: 'Enter' });
+  assert.deepStrictEqual(s.presses, ['Enter']);
+  await sendAction(s, { type: 'request', id: 's1', sessionId: 'session1', operation: 'select', ref: 'e4', text: b64('cn') });
+  assert.strictEqual(s.selects[0].ref, 'e4');
+  await sendAction(s, { type: 'request', id: 'n2', sessionId: 'session1', operation: 'navigate', action: 'back' });
+  assert.deepStrictEqual(s.navigations, ['back']);
+  assert.match(s.results[s.results.length - 1].value, /fresh snapshot/);
+  s.bridge.stop();
+
+  for (const frame of [
+    { type: 'request', id: 'x1', sessionId: 'session1', operation: 'press', key: 'F12' },
+    { type: 'request', id: 'x2', sessionId: 'session1', operation: 'fill', ref: 'e80', text: b64('x') },
+    { type: 'request', id: 'x3', sessionId: 'session1', operation: 'fill', ref: 'e1', text: '";alert(1)//' },
+    { type: 'request', id: 'x4', sessionId: 'session1', operation: 'navigate', action: 'eval' },
+    { type: 'request', id: 'x5', sessionId: 'session1', operation: 'fill', ref: 'e1', text: b64('x'), extra: 1 }
+  ]) {
+    s = setup(); await start(s); await sendAction(s, frame);
+    assert.strictEqual(s.closed, true, 'invalid frame must close the relay');
+    assert.strictEqual(s.requests.length, 0, 'no authorization for invalid frames');
+    s.bridge.stop();
+  }
+
   console.log('BrowserBridge host simulation passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

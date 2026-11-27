@@ -8,8 +8,14 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const source = fs.readFileSync(path.join(__dirname, '../entry/src/main/ets/platform/BrowserRelay.ets'), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
+const scriptsSource = fs.readFileSync(path.join(__dirname, '../entry/src/main/ets/pages/BrowserObserveScript.ets'), 'utf8');
+const allowedKeys = JSON.parse(scriptsSource.match(/export const BROWSER_ALLOWED_KEYS: string\[\] = (\[[^\]]*\]);/)[1]);
 const sandbox = { exports: {}, Date, JSON, Object, Array, Number, String, Error, Promise, Set, URL,
-  setTimeout, clearTimeout, require: name => { if (name === '@kit.ArkTS') return { url: { URL } }; throw Error('unexpected module ' + name); } };
+  setTimeout, clearTimeout, require: name => {
+    if (name === '@kit.ArkTS') return { url: { URL } };
+    if (name === '../pages/BrowserObserveScript') return { BROWSER_ALLOWED_KEYS: allowedKeys };
+    throw Error('unexpected module ' + name);
+  } };
 vm.runInNewContext(js, sandbox);
 const { BrowserRelay } = sandbox.exports;
 const tick = () => new Promise(resolve => setImmediate(resolve));

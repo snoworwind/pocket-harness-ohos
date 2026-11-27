@@ -19,7 +19,7 @@ test('disabled plugin does not touch its context', async () => {
 test('enabled async apply registers tools without returning an invalid effect', async () => {
   // Substitute only module imports so this test also runs without the installed DSH runtime.
   let source = await readFile(new URL('./index.js', import.meta.url), 'utf8');
-  for (const name of ['client-relay.js', 'credential-provider.js']) {
+  for (const name of ['client-relay.js', 'credential-provider.js', 'observe.js']) {
     source = source.replace(`'./${name}'`, JSON.stringify(new URL(name, import.meta.url).href));
   }
   const stub = 'data:text/javascript,' + encodeURIComponent('export const defineTool = definition => definition');
@@ -33,18 +33,21 @@ test('enabled async apply registers tools without returning an invalid effect', 
     return dispose;
   } } };
   assert.equal(await plugin.apply(ctx, { enabled: true }), undefined);
-  assert.deepEqual([...active.keys()], ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click']);
+  assert.deepEqual([...active.keys()], ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
   for (const dispose of disposers) dispose();
   assert.equal(active.size, 0);
 });
 test('live agent and signal required, session propagated, response untrusted', async () => {
   const { ctx, defs, agent, calls, connect } = setup(); registerRelayTools(ctx, d => d, connect);
-  assert.deepEqual(defs.map(d => d.name), ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click']);
+  assert.deepEqual(defs.map(d => d.name), ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
   assert.throws(() => defs[0].execute({ url: 'https://example.com' }, { agent: { id: agent.id } }), /live agent/);
   await assert.rejects(defs[1].execute({}, { agent }), /signal/);
   const signal = new AbortController().signal;
   const result = await defs[0].execute({ url: 'https://example.com' }, { agent, signal });
-  assert.match(result, /UNTRUSTED/); assert.match(result, /approval is not verified/);
+  // Non-observation operations return bounded native status sentences.
+  assert.equal(result, 'page');
+  const observed = await defs[1].execute({}, { agent, signal });
+  assert.match(observed, /UNTRUSTED/); assert.match(observed, /approval is not verified/);
   assert.equal(calls[1][1].sessionId, agent.id); assert.equal(calls[2][2].url, 'https://example.com/'); assert.equal(calls[2][2].signal, signal);
 });
 test('cancellation is UNKNOWN and never retries; stale agent is not dispatched', async () => {

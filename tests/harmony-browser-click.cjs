@@ -21,14 +21,18 @@ function fakeElement({ connected = true, disabled = false, box = true, display =
     disabled,
     clicks: 0,
     click() { this.clicks++; },
-    getClientRects() { return box ? [{ width: 10, height: 10 }] : []; }
+    getClientRects() { return box ? [{ width: 10, height: 10 }] : []; },
+    getBoundingClientRect() { return box ? { left: 10, top: 10, width: 20, height: 20 } : { left: 0, top: 0, width: 0, height: 0 }; },
+    contains() { return false; }
   };
   return el;
 }
 
 function runClick(script, refs, style) {
-  const context = { __phBrowserRefs: refs };
+  const context = { __phBrowserRefs: refs, innerWidth: 800, innerHeight: 600 };
   context.getComputedStyle = () => (style || { display: 'block', visibility: 'visible' });
+  // Default: the element itself is the hit target, i.e. nothing covers it.
+  context.document = { elementFromPoint: () => refs[0] };
   return vm.runInNewContext(script, context);
 }
 
@@ -149,26 +153,28 @@ test('ArkTS BrowserControl guards click by generation and reference', async () =
   assert.deepEqual(seen, ['e3']);
 });
 
-test('ArkTS click status decoding accepts only fixed words', () => {
+test('ArkTS action status decoding accepts only fixed words', () => {
   const source = fs.readFileSync(path.join(root, 'entry/src/main/ets/platform/BrowserBridge.ets'), 'utf8');
   const begin = source.indexOf('export function isValidRef');
   assert.ok(begin >= 0);
   const js = ts.transpileModule(source.slice(begin),
     { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
   const sandbox = { exports: {} };
+  const scriptsSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/BrowserObserveScript.ets'), 'utf8');
+  sandbox.BROWSER_ACTION_STATUSES = JSON.parse(scriptsSource.match(/export const BROWSER_ACTION_STATUSES: string\[\] = (\[[^\]]*\]);/)[1]);
   vm.runInNewContext(js, sandbox);
-  const { isValidRef, decodeClickStatus } = sandbox.exports;
+  const { isValidRef, decodeActionStatus } = sandbox.exports;
   assert.equal(isValidRef('e0'), true);
   assert.equal(isValidRef('e79'), true);
   assert.equal(isValidRef('e80'), false);
   assert.equal(isValidRef('E0'), false);
   assert.equal(isValidRef('e0 '), false);
-  assert.equal(decodeClickStatus('clicked'), 'clicked');
-  assert.equal(decodeClickStatus('"clicked"'), 'clicked');
-  assert.equal(decodeClickStatus('stale'), 'stale');
-  assert.equal(decodeClickStatus('"<script>"'), 'invalid');
-  assert.equal(decodeClickStatus('x'.repeat(65)), 'invalid');
-  assert.equal(decodeClickStatus(null), 'invalid');
+  assert.equal(decodeActionStatus('clicked'), 'clicked');
+  assert.equal(decodeActionStatus('"clicked"'), 'clicked');
+  assert.equal(decodeActionStatus('stale'), 'stale');
+  assert.equal(decodeActionStatus('"<script>"'), 'invalid');
+  assert.equal(decodeActionStatus('x'.repeat(65)), 'invalid');
+  assert.equal(decodeActionStatus(null), 'invalid');
 });
 
 test('relay and bridge sources carry the click operation at every layer', () => {
@@ -179,7 +185,7 @@ test('relay and bridge sources carry the click operation at every layer', () => 
   const index = fs.readFileSync(path.join(plugin, 'index.js'), 'utf8');
   for (const text of [relay, bridge]) assert.match(text, /click/);
   assert.match(relay, /frame\.operation === 'click'/);
-  assert.match(bridge, /take\('click'/);
+  assert.match(bridge, /signatureOf\('click'/);
   assert.match(client, /operation === 'click'/);
   assert.match(server, /obj\.operation === 'click'/);
   assert.match(index, /name: 'browser_click'/);

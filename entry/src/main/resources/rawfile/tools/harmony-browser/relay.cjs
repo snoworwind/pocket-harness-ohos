@@ -250,6 +250,16 @@ const server = net.createServer(socket => {
     if (valid && obj.operation === 'observe') valid = exact(obj, ['type','id','sessionId','operation']);
     else if (valid && obj.operation === 'scroll') valid = exact(obj, ['type','id','sessionId','operation','direction']) && (obj.direction === 'up' || obj.direction === 'down');
     else if (valid && obj.operation === 'click') valid = exact(obj, ['type','id','sessionId','operation','ref']) && typeof obj.ref === 'string' && /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80;
+    else if (valid && (obj.operation === 'fill' || obj.operation === 'type' || obj.operation === 'select')) {
+      valid = exact(obj, ['type','id','sessionId','operation','ref','text']) && typeof obj.ref === 'string' &&
+        /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80 && typeof obj.text === 'string' &&
+        /^[A-Za-z0-9+/]*={0,2}$/.test(obj.text) && obj.text.length <= 1536;
+    } else if (valid && obj.operation === 'press') {
+      valid = exact(obj, ['type','id','sessionId','operation','key']) && typeof obj.key === 'string' &&
+        ['Enter','Tab','Escape','Backspace','Delete','Home','End','PageUp','PageDown','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(obj.key);
+    } else if (valid && obj.operation === 'navigate') {
+      valid = exact(obj, ['type','id','sessionId','operation','action']) && ['back','forward','refresh'].includes(obj.action);
+    }
     else if (valid && obj.operation === 'open') {
       valid = exact(obj, ['type','id','sessionId','operation','url']) && typeof obj.url === 'string' && size(obj.url) <= 4096 && !/[\u0000-\u0020\u007f]/.test(obj.url);
       if (valid) { try { const u = new URL(obj.url); valid = ['http:','https:'].includes(u.protocol) && !u.username && !u.password; } catch { valid = false; } }

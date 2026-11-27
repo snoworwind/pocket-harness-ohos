@@ -1,5 +1,6 @@
 import { NativeProcess } from './NativeRuntime';
 import { url } from '@kit.ArkTS';
+import { BROWSER_ALLOWED_KEYS } from '../pages/BrowserObserveScript';
 
 /*
  * Private relay adapter only: it neither starts a browser nor enables tools.
@@ -29,6 +30,9 @@ export interface BrowserRelayRequest {
   url?: string;
   direction?: string;
   ref?: string;
+  text?: string;
+  key?: string;
+  action?: string;
 }
 
 export interface BrowserRelayCallbacks {
@@ -41,6 +45,10 @@ export interface BrowserRelayCallbacks {
   observe: () => Promise<string>;
   scroll: (direction: string) => Promise<string>;
   click: (ref: string) => Promise<string>;
+  input: (ref: string, text: string, mode: string) => Promise<string>;
+  press: (key: string) => Promise<string>;
+  select: (ref: string, text: string) => Promise<string>;
+  navigate: (action: string) => Promise<string>;
   onClosed?: () => void;
 }
 
@@ -59,6 +67,9 @@ interface RelayFrame {
   url?: string;
   direction?: string;
   ref?: string;
+  text?: string;
+  key?: string;
+  action?: string;
   // Present on the relay's reply to a policy-check frame.
   automatic?: boolean;
 }
@@ -263,6 +274,17 @@ export class BrowserRelay {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'ref']) ||
         typeof frame.ref !== 'string' || !/^e\d{1,3}$/.test(frame.ref) ||
         Number(frame.ref.slice(1)) >= 80) { this.close(); return; }
+    } else if (frame.operation === 'fill' || frame.operation === 'type' || frame.operation === 'select') {
+      if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'ref', 'text']) ||
+        typeof frame.ref !== 'string' || !/^e\d{1,3}$/.test(frame.ref) || Number(frame.ref.slice(1)) >= 80 ||
+        typeof frame.text !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(frame.text) ||
+        frame.text.length > 1536) { this.close(); return; }
+    } else if (frame.operation === 'press') {
+      if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'key']) ||
+        typeof frame.key !== 'string' || BROWSER_ALLOWED_KEYS.indexOf(frame.key) < 0) { this.close(); return; }
+    } else if (frame.operation === 'navigate') {
+      if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'action']) ||
+        (frame.action !== 'back' && frame.action !== 'forward' && frame.action !== 'refresh')) { this.close(); return; }
     } else if (frame.operation === 'open') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'url']) || typeof frame.url !== 'string' ||
         utf8Size(frame.url) < 0 || utf8Size(frame.url) > 4096 || /[\u0000-\u0020\u007f]/.test(frame.url) ||
@@ -279,7 +301,8 @@ export class BrowserRelay {
     this.busy = true;
     this.arm(29000);
     const request: BrowserRelayRequest = { id: frame.id, sessionId: frame.sessionId,
-      operation: frame.operation, url: frame.url, direction: frame.direction, ref: frame.ref };
+      operation: frame.operation, url: frame.url, direction: frame.direction, ref: frame.ref,
+      text: frame.text, key: frame.key, action: frame.action };
     this.execute(request).catch(() => this.close());
   }
 
@@ -303,6 +326,11 @@ export class BrowserRelay {
         value = request.operation === 'open' ? await this.callbacks.open(request.url as string) :
           request.operation === 'scroll' ? await this.callbacks.scroll(request.direction as string) :
           request.operation === 'click' ? await this.callbacks.click(request.ref as string) :
+          (request.operation === 'fill' || request.operation === 'type') ?
+            await this.callbacks.input(request.ref as string, request.text as string, request.operation) :
+          request.operation === 'press' ? await this.callbacks.press(request.key as string) :
+          request.operation === 'select' ? await this.callbacks.select(request.ref as string, request.text as string) :
+          request.operation === 'navigate' ? await this.callbacks.navigate(request.action as string) :
           await this.callbacks.observe();
         ok = true;
       }

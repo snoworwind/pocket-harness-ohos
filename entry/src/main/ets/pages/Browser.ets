@@ -1,6 +1,9 @@
 import { webview } from '@kit.ArkWeb';
 import { url } from '@kit.ArkTS';
-import { BROWSER_CLICK_INDEX_PLACEHOLDER, BROWSER_CLICK_SCRIPT_TEMPLATE, BROWSER_OBSERVE_SCRIPT } from './BrowserObserveScript';
+import { BROWSER_CLICK_INDEX_PLACEHOLDER, BROWSER_CLICK_SCRIPT_TEMPLATE, BROWSER_INDEX_PLACEHOLDER,
+  BROWSER_INPUT_SCRIPT_TEMPLATE, BROWSER_KEY_PLACEHOLDER, BROWSER_MODE_PLACEHOLDER,
+  BROWSER_OBSERVE_SCRIPT, BROWSER_PRESS_SCRIPT_TEMPLATE, BROWSER_SELECT_SCRIPT_TEMPLATE,
+  BROWSER_TEXT_PLACEHOLDER, BROWSER_ALLOWED_KEYS } from './BrowserObserveScript';
 
 // 仅供宿主持有；调用者负责先完成用户授权。代数随实例、可见性和导航变化失效。
 export interface BrowserObservation {
@@ -22,12 +25,20 @@ export class BrowserControl {
   private runSnapshot: () => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private scrollPage: (offset: number) => void = () => { throw new Error('Browser unavailable'); };
   private runClick: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
+  private runInput: (ref: string, base64: string, mode: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
+  private runPress: (key: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
+  private runSelect: (ref: string, base64: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
+  private navigatePage: (action: string) => boolean = () => false;
 
   attach(isHostVisible: () => boolean, openPage: (target: string) => boolean,
     readPage: () => BrowserObservation | null,
     runSnapshot: () => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     scrollPage: (offset: number) => void = () => { throw new Error('Browser unavailable'); },
-    runClick: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); }): void {
+    runClick: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
+    runInput: (ref: string, base64: string, mode: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
+    runPress: (key: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
+    runSelect: (ref: string, base64: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
+    navigatePage: (action: string) => boolean = () => false): void {
     this.generation++;
     this.pendingNavigation = false;
     this.beginUrl = '';
@@ -40,6 +51,10 @@ export class BrowserControl {
     this.runSnapshot = runSnapshot;
     this.scrollPage = scrollPage;
     this.runClick = runClick;
+    this.runInput = runInput;
+    this.runPress = runPress;
+    this.runSelect = runSelect;
+    this.navigatePage = navigatePage;
   }
 
   detach(): void {
@@ -55,6 +70,10 @@ export class BrowserControl {
     this.runSnapshot = async () => { throw new Error('Browser unavailable'); };
     this.scrollPage = () => { throw new Error('Browser unavailable'); };
     this.runClick = async () => { throw new Error('Browser unavailable'); };
+    this.runInput = async () => { throw new Error('Browser unavailable'); };
+    this.runPress = async () => { throw new Error('Browser unavailable'); };
+    this.runSelect = async () => { throw new Error('Browser unavailable'); };
+    this.navigatePage = () => false;
   }
 
   setVisible(visible: boolean): void {
@@ -148,12 +167,62 @@ export class BrowserControl {
   // reacted, navigated or stayed stable.
   async click(generation: number, ref: string): Promise<string> {
     if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
-    if (typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref)) { throw new Error('Invalid element reference'); }
-    const index = Number(ref.slice(1));
-    if (!Number.isSafeInteger(index) || index < 0 || index >= 80) { throw new Error('Invalid element reference'); }
+    this.validRefIndex(ref);
     const result = await this.runClick(ref);
     if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
     return result;
+  }
+
+  private validRefIndex(ref: string): number {
+    if (typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref)) { throw new Error('Invalid element reference'); }
+    const index = Number(ref.slice(1));
+    if (!Number.isSafeInteger(index) || index < 0 || index >= 80) { throw new Error('Invalid element reference'); }
+    return index;
+  }
+
+  private validBase64(value: string): string {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length > 1536) {
+      throw new Error('Invalid encoded text');
+    }
+    return value;
+  }
+
+  // Text arrives base64-encoded; the page program decodes it. No agent or page
+  // text is ever concatenated into executable source.
+  async input(generation: number, ref: string, base64: string, mode: string): Promise<string> {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    this.validRefIndex(ref);
+    this.validBase64(base64);
+    if (mode !== 'fill' && mode !== 'type') { throw new Error('Invalid input mode'); }
+    const result = await this.runInput(ref, base64, mode);
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    return result;
+  }
+
+  async press(generation: number, key: string): Promise<string> {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    if (typeof key !== 'string' || BROWSER_ALLOWED_KEYS.indexOf(key) < 0) { throw new Error('Unsupported key'); }
+    const result = await this.runPress(key);
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    return result;
+  }
+
+  async select(generation: number, ref: string, base64: string): Promise<string> {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    this.validRefIndex(ref);
+    this.validBase64(base64);
+    const result = await this.runSelect(ref, base64);
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    return result;
+  }
+
+  // History navigation is native-only (no page script). It invalidates every
+  // outstanding reference because the document changes.
+  navigate(generation: number, action: string): void {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    if (action !== 'back' && action !== 'forward' && action !== 'refresh') { throw new Error('Invalid navigation action'); }
+    this.navigationChanged();
+    if (!this.navigatePage(action)) { throw new Error('Navigation unavailable'); }
   }
 }
 
@@ -183,6 +252,37 @@ export struct BrowserView {
         const index = Number(ref.slice(1));
         const script = BROWSER_CLICK_SCRIPT_TEMPLATE.replace(BROWSER_CLICK_INDEX_PLACEHOLDER, String(index));
         return this.controller.runJavaScript(script);
+      },
+      (ref: string, base64: string, mode: string): Promise<string> => {
+        const index = Number(ref.slice(1));
+        const script = BROWSER_INPUT_SCRIPT_TEMPLATE.replace(BROWSER_INDEX_PLACEHOLDER, String(index))
+          .replace(BROWSER_TEXT_PLACEHOLDER, base64).replace(BROWSER_MODE_PLACEHOLDER, mode);
+        return this.controller.runJavaScript(script);
+      },
+      (key: string): Promise<string> => {
+        return this.controller.runJavaScript(BROWSER_PRESS_SCRIPT_TEMPLATE.replace(BROWSER_KEY_PLACEHOLDER, key));
+      },
+      (ref: string, base64: string): Promise<string> => {
+        const index = Number(ref.slice(1));
+        const script = BROWSER_SELECT_SCRIPT_TEMPLATE.replace(BROWSER_INDEX_PLACEHOLDER, String(index))
+          .replace(BROWSER_TEXT_PLACEHOLDER, base64);
+        return this.controller.runJavaScript(script);
+      },
+      (action: string): boolean => {
+        try {
+          if (action === 'back') {
+            if (!this.controller.accessBackward()) { return false; }
+            this.controller.backward();
+            return true;
+          }
+          if (action === 'forward') {
+            if (!this.controller.accessForward()) { return false; }
+            this.controller.forward();
+            return true;
+          }
+          this.controller.refresh();
+          return true;
+        } catch (error) { return false; }
       });
     this.control.setVisible(this.visible);
   }
