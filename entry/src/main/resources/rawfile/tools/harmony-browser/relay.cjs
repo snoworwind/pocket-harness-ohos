@@ -249,7 +249,7 @@ const server = net.createServer(socket => {
     let valid = validId(obj?.id) && obj.type === 'request' && typeof obj.sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(obj.sessionId);
     if (valid && obj.operation === 'observe') valid = exact(obj, ['type','id','sessionId','operation']);
     else if (valid && obj.operation === 'scroll') valid = exact(obj, ['type','id','sessionId','operation','direction']) && (obj.direction === 'up' || obj.direction === 'down');
-    else if (valid && obj.operation === 'click') valid = exact(obj, ['type','id','sessionId','operation','ref']) && typeof obj.ref === 'string' && /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80;
+    else if (valid && (obj.operation === 'click' || obj.operation === 'hover')) valid = exact(obj, ['type','id','sessionId','operation','ref']) && typeof obj.ref === 'string' && /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80;
     else if (valid && (obj.operation === 'fill' || obj.operation === 'type' || obj.operation === 'select')) {
       valid = exact(obj, ['type','id','sessionId','operation','ref','text']) && typeof obj.ref === 'string' &&
         /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80 && typeof obj.text === 'string' &&

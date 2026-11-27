@@ -34,6 +34,7 @@ export const OPERATION_IMPACT = Object.freeze({
   select: 'mutate',
   // Enter on a form control may submit it; treat keys as externally visible.
   press: 'external',
+  hover: 'external',
   click: 'external',
   navigate: 'external',
   open: 'external',
@@ -64,7 +65,7 @@ export function detectDanger(operation, request) {
     if (typeof request.key !== 'string' || !request.key) return 'missing key';
     return null;
   }
-  if (operation === 'click') {
+  if (operation === 'click' || operation === 'hover') {
     if (typeof request.ref !== 'string' || !/^e\d{1,3}$/.test(request.ref)) return 'invalid element reference';
     return null;
   }

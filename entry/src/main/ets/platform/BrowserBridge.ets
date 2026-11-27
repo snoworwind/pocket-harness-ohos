@@ -96,6 +96,7 @@ export class BrowserBridge {
         input: (ref: string, text: string, mode: string): Promise<string> => this.input(ref, text, mode),
         press: (key: string): Promise<string> => this.press(key),
         select: (ref: string, text: string): Promise<string> => this.select(ref, text),
+        hover: (ref: string): Promise<string> => this.hover(ref),
         navigate: (action: string): Promise<string> => this.navigate(action),
         onClosed: (): void => this.closed()
       });
@@ -163,6 +164,7 @@ export class BrowserBridge {
     const action = request.action || '';
     if (request.operation === 'scroll' && direction !== 'up' && direction !== 'down') { return false; }
     if (request.operation === 'click' && !isValidRef(ref)) { return false; }
+    if (request.operation === 'hover' && !isValidRef(ref)) { return false; }
     if ((request.operation === 'fill' || request.operation === 'type' || request.operation === 'select') &&
       (!isValidRef(ref) || !isValidEncodedText(text))) { return false; }
     if (request.operation === 'press' && BROWSER_ALLOWED_KEYS.indexOf(key) < 0) { return false; }
@@ -224,6 +226,19 @@ export class BrowserBridge {
     const status = decodeActionStatus(raw);
     if (status !== 'clicked') { throw new Error('Browser click not dispatched: ' + status); }
     return 'Click dispatched; page reaction, navigation and stability are not confirmed.';
+  }
+
+  private async hover(ref: string): Promise<string> {
+    const approval = this.take(signatureOf('hover', '', '', ref));
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    const raw = await this.control.hover(approval.generation, ref);
+    const status = decodeActionStatus(raw);
+    if (status !== 'hovered') { throw new Error('Browser hover not dispatched: ' + status); }
+    // Hover only dispatches synthetic pointer events; it does not move the real
+    // cursor, so no menu or popover is guaranteed to have opened.
+    return 'Hover dispatched; menu or popover visibility is not confirmed.';
   }
 
   private async input(ref: string, text: string, mode: string): Promise<string> {

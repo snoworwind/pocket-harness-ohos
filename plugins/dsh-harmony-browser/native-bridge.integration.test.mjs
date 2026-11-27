@@ -169,6 +169,7 @@ test('real relay carries fill/press/select/navigate without leaking text to appr
     async input(generation, ref, text, mode) { actions.push(['input', ref, Buffer.from(text, 'base64').toString('utf8'), mode]); return mode === 'fill' ? 'filled' : 'typed'; },
     async press(generation, key) { actions.push(['press', key]); return 'pressed'; },
     async select(generation, ref, text) { actions.push(['select', ref, Buffer.from(text, 'base64').toString('utf8')]); return 'selected'; },
+    async hover(generation, ref) { actions.push(['hover', ref]); return 'hovered'; },
     navigate(generation, action) { actions.push(['navigate', action]); } };
   const bridge = new BrowserBridge(runtime, control, { visibleSessionId: () => agent.id,
     authorize: async details => { approvals.push(details); return true; },
@@ -187,6 +188,7 @@ test('real relay carries fill/press/select/navigate without leaking text to appr
   assert.match(await call('browser_type', { ref: 'e1', text: ' tail' }), /Text appended/);
   assert.match(await call('browser_press', { key: 'Enter' }), /Key events dispatched/);
   assert.match(await call('browser_select', { ref: 'e2', value: 'cn' }), /Option selected/);
+  assert.match(await call('browser_hover', { ref: 'e3' }), /Hover dispatched/);
   assert.match(await call('browser_navigate', { action: 'back' }), /fresh snapshot/);
 
   assert.deepEqual(actions, [
@@ -194,9 +196,10 @@ test('real relay carries fill/press/select/navigate without leaking text to appr
     ['input', 'e1', ' tail', 'type'],
     ['press', 'Enter'],
     ['select', 'e2', 'cn'],
+    ['hover', 'e3'],
     ['navigate', 'back']
   ]);
-  assert.equal(approvals.length, 5, 'every action required its own approval');
+  assert.equal(approvals.length, 6, 'every action required its own approval');
 
   // Invalid arguments are refused before any relay request is made.
   await assert.rejects(call('browser_press', { key: 'F12' }), /no automatic retry|Unsupported key/);

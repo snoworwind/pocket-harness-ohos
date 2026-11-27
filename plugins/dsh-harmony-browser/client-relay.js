@@ -38,7 +38,7 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
         const { url, direction, ref, text, key, action, signal: requestSignal, getAutoPermission } = options;
         const allowed = operation === 'open' ? ['url', 'signal', 'getAutoPermission'] :
           operation === 'scroll' ? ['direction', 'signal', 'getAutoPermission'] :
-          operation === 'click' ? ['ref', 'signal', 'getAutoPermission'] :
+          operation === 'click' || operation === 'hover' ? ['ref', 'signal', 'getAutoPermission'] :
           (operation === 'fill' || operation === 'type' || operation === 'select') ? ['ref', 'text', 'signal', 'getAutoPermission'] :
           operation === 'press' ? ['key', 'signal', 'getAutoPermission'] :
           operation === 'navigate' ? ['action', 'signal', 'getAutoPermission'] :
@@ -50,7 +50,7 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
           if (valid) { try { const u = new URL(url); valid = ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password; } catch { valid = false; } }
           if (!valid) return Promise.reject(failure('invalid_request', 'Invalid URL'));
         } else if (operation === 'scroll' && (!Object.hasOwn(options, 'direction') || !['up', 'down'].includes(direction))) return Promise.reject(failure('invalid_request', 'Invalid direction'));
-        else if (operation === 'click' && (!Object.hasOwn(options, 'ref') || typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref) || Number(ref.slice(1)) >= 80)) return Promise.reject(failure('invalid_request', 'Invalid element reference'));
+        else if ((operation === 'click' || operation === 'hover') && (!Object.hasOwn(options, 'ref') || typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref) || Number(ref.slice(1)) >= 80)) return Promise.reject(failure('invalid_request', 'Invalid element reference'));
         else if ((operation === 'fill' || operation === 'type' || operation === 'select') &&
           (typeof ref !== 'string' || !/^e\d{1,3}$/.test(ref) || Number(ref.slice(1)) >= 80 ||
             typeof text !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length > 1536)) return Promise.reject(failure('invalid_request', 'Invalid element reference or encoded text'));
@@ -60,7 +60,7 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
         const id = `${prefix}_${++count}`;
         const frame = operation === 'open' ? { type: 'request', id, sessionId, operation, url } :
           operation === 'scroll' ? { type: 'request', id, sessionId, operation, direction } :
-          operation === 'click' ? { type: 'request', id, sessionId, operation, ref } :
+          operation === 'click' || operation === 'hover' ? { type: 'request', id, sessionId, operation, ref } :
           (operation === 'fill' || operation === 'type' || operation === 'select') ? { type: 'request', id, sessionId, operation, ref, text } :
           operation === 'press' ? { type: 'request', id, sessionId, operation, key } :
           operation === 'navigate' ? { type: 'request', id, sessionId, operation, action } :

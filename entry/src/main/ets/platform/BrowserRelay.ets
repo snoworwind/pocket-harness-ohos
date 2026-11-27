@@ -48,6 +48,7 @@ export interface BrowserRelayCallbacks {
   input: (ref: string, text: string, mode: string) => Promise<string>;
   press: (key: string) => Promise<string>;
   select: (ref: string, text: string) => Promise<string>;
+  hover: (ref: string) => Promise<string>;
   navigate: (action: string) => Promise<string>;
   onClosed?: () => void;
 }
@@ -270,7 +271,7 @@ export class BrowserRelay {
     } else if (frame.operation === 'scroll') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'direction']) ||
         (frame.direction !== 'up' && frame.direction !== 'down')) { this.close(); return; }
-    } else if (frame.operation === 'click') {
+    } else if (frame.operation === 'click' || frame.operation === 'hover') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'ref']) ||
         typeof frame.ref !== 'string' || !/^e\d{1,3}$/.test(frame.ref) ||
         Number(frame.ref.slice(1)) >= 80) { this.close(); return; }
@@ -330,6 +331,7 @@ export class BrowserRelay {
             await this.callbacks.input(request.ref as string, request.text as string, request.operation) :
           request.operation === 'press' ? await this.callbacks.press(request.key as string) :
           request.operation === 'select' ? await this.callbacks.select(request.ref as string, request.text as string) :
+          request.operation === 'hover' ? await this.callbacks.hover(request.ref as string) :
           request.operation === 'navigate' ? await this.callbacks.navigate(request.action as string) :
           await this.callbacks.observe();
         ok = true;

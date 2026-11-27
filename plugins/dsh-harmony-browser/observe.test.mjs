@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observePage, buildObserveScript } from './observe.js';
+import { observePage, buildObserveScript, buildHoverScript, buildHoverScriptTemplate } from './observe.js';
 import vm from 'node:vm';
 
 const text = value => ({ nodeType: 3, nodeValue: value });
@@ -70,4 +70,24 @@ test('fixed script runs without module imports or interpolated page data', () =>
 test('node traversal is bounded under cycles', () => {
   const body = element('body'); body.childNodes.push(body);
   assert.deepEqual(observePage(documentFor(body), view).items, []);
+});
+
+test('a truncated snapshot is flagged, a complete one is not', () => {
+  const many = element('body', Array.from({ length: 120 }, () => element('button', [text('go')])));
+  const cut = observePage(documentFor(many), view);
+  assert.equal(cut.truncated, true);
+  assert.ok(cut.items.length <= 80);
+  const small = observePage(documentFor(element('body', [element('button', [text('go')])])), view);
+  assert.equal('truncated' in small, false);
+});
+
+test('hover script substitutes only a bounded index and never page data', () => {
+  const script = buildHoverScript('e7');
+  assert.match(script, /refs\[7\]/);
+  assert.match(script, /"hovered"/);
+  assert.match(script, /mouseenter/);
+  assert.match(script, /elementFromPoint/);
+  assert.equal(buildHoverScriptTemplate().includes('__PH_INDEX__'), true);
+  assert.throws(() => buildHoverScript('e80'), /Invalid element reference/);
+  assert.throws(() => buildHoverScript('x1'), /Invalid element reference/);
 });

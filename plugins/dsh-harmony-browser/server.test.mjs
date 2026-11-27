@@ -33,13 +33,13 @@ test('enabled async apply registers tools without returning an invalid effect', 
     return dispose;
   } } };
   assert.equal(await plugin.apply(ctx, { enabled: true }), undefined);
-  assert.deepEqual([...active.keys()], ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
+  assert.deepEqual([...active.keys()], ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_hover', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
   for (const dispose of disposers) dispose();
   assert.equal(active.size, 0);
 });
 test('live agent and signal required, session propagated, response untrusted', async () => {
   const { ctx, defs, agent, calls, connect } = setup(); registerRelayTools(ctx, d => d, connect);
-  assert.deepEqual(defs.map(d => d.name), ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
+  assert.deepEqual(defs.map(d => d.name), ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_hover', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
   assert.throws(() => defs[0].execute({ url: 'https://example.com' }, { agent: { id: agent.id } }), /live agent/);
   await assert.rejects(defs[1].execute({}, { agent }), /signal/);
   const signal = new AbortController().signal;

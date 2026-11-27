@@ -3,7 +3,7 @@ import { url } from '@kit.ArkTS';
 import { BROWSER_CLICK_INDEX_PLACEHOLDER, BROWSER_CLICK_SCRIPT_TEMPLATE, BROWSER_INDEX_PLACEHOLDER,
   BROWSER_INPUT_SCRIPT_TEMPLATE, BROWSER_KEY_PLACEHOLDER, BROWSER_MODE_PLACEHOLDER,
   BROWSER_OBSERVE_SCRIPT, BROWSER_PRESS_SCRIPT_TEMPLATE, BROWSER_SELECT_SCRIPT_TEMPLATE,
-  BROWSER_TEXT_PLACEHOLDER, BROWSER_ALLOWED_KEYS } from './BrowserObserveScript';
+  BROWSER_TEXT_PLACEHOLDER, BROWSER_ALLOWED_KEYS, BROWSER_HOVER_SCRIPT_TEMPLATE } from './BrowserObserveScript';
 
 // 仅供宿主持有；调用者负责先完成用户授权。代数随实例、可见性和导航变化失效。
 export interface BrowserObservation {
@@ -28,6 +28,7 @@ export class BrowserControl {
   private runInput: (ref: string, base64: string, mode: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private runPress: (key: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private runSelect: (ref: string, base64: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
+  private runHover: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private navigatePage: (action: string) => boolean = () => false;
 
   attach(isHostVisible: () => boolean, openPage: (target: string) => boolean,
@@ -38,6 +39,7 @@ export class BrowserControl {
     runInput: (ref: string, base64: string, mode: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     runPress: (key: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     runSelect: (ref: string, base64: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
+    runHover: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     navigatePage: (action: string) => boolean = () => false): void {
     this.generation++;
     this.pendingNavigation = false;
@@ -54,6 +56,7 @@ export class BrowserControl {
     this.runInput = runInput;
     this.runPress = runPress;
     this.runSelect = runSelect;
+    this.runHover = runHover;
     this.navigatePage = navigatePage;
   }
 
@@ -73,6 +76,7 @@ export class BrowserControl {
     this.runInput = async () => { throw new Error('Browser unavailable'); };
     this.runPress = async () => { throw new Error('Browser unavailable'); };
     this.runSelect = async () => { throw new Error('Browser unavailable'); };
+    this.runHover = async () => { throw new Error('Browser unavailable'); };
     this.navigatePage = () => false;
   }
 
@@ -216,6 +220,17 @@ export class BrowserControl {
     return result;
   }
 
+  // Hover dispatches pointer-hover events so menus that open on mouseenter can
+  // be observed. Synthetic hover does not move the real cursor; 'hovered' only
+  // attests dispatch, not that any menu actually opened.
+  async hover(generation: number, ref: string): Promise<string> {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    this.validRefIndex(ref);
+    const result = await this.runHover(ref);
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    return result;
+  }
+
   // History navigation is native-only (no page script). It invalidates every
   // outstanding reference because the document changes.
   navigate(generation: number, action: string): void {
@@ -266,6 +281,11 @@ export struct BrowserView {
         const index = Number(ref.slice(1));
         const script = BROWSER_SELECT_SCRIPT_TEMPLATE.replace(BROWSER_INDEX_PLACEHOLDER, String(index))
           .replace(BROWSER_TEXT_PLACEHOLDER, base64);
+        return this.controller.runJavaScript(script);
+      },
+      (ref: string): Promise<string> => {
+        const index = Number(ref.slice(1));
+        const script = BROWSER_HOVER_SCRIPT_TEMPLATE.replace(BROWSER_CLICK_INDEX_PLACEHOLDER, String(index));
         return this.controller.runJavaScript(script);
       },
       (action: string): boolean => {

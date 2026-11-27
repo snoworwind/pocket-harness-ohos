@@ -26,6 +26,7 @@
 | `browser_observe` | 无 | 只读快照：标题、地址、文本与带 `ref` 的控件 |
 | `browser_scroll` | `direction: up/down` | 原生滚动 400 vp |
 | `browser_click` | `ref` | 点击；被遮挡、不在视口、隐藏或禁用会失败而不是假成功 |
+| `browser_hover` | `ref` | 在元素中心派发 `mouseover`/`mouseenter`/`mousemove`，展开悬停菜单后需重新快照 |
 | `browser_fill` | `ref`, `text` | 清空后填入（原生 setter + `input`/`change` 事件） |
 | `browser_type` | `ref`, `text` | 追加输入，不清空原值 |
 | `browser_press` | `key` | 白名单按键；Enter 在表单控件上会额外请求提交 |
@@ -42,7 +43,11 @@
 
 `browser_press` 派发的是合成键盘事件，**不触发浏览器默认行为**；Enter 在属于表单的控件上会额外调用 `form.requestSubmit()`，可能提交表单并跳转，因此同样需要逐次授权。`browser_select` 只支持原生 `<select>`：自定义 ARIA 下拉（Radix、Headless UI 等）请先 `browser_click` 打开再点击选项。value 与 label 同时命中不同选项、或同一 label 对应多个选项时返回 `ambiguous`。
 
-截图、任意脚本执行、文件上传、拖拽与双击仍未实现。
+**快照截断**：一次快照最多 80 个可交互元素 / 4000 个节点 / 24 KB JSON。任一上限触及时返回 `truncated: true`，并在结果后附一句提示——避免把局部视图误当成整页。真实网页常常超过 80 个控件，此时应先滚动或缩小范围再观察。
+
+`browser_hover` 只派发合成指针事件，**不移动真实光标**：依赖真实 `mousemove` 坐标的页面（部分富文本编辑器、地图）只能部分生效；返回的 `Hover dispatched` 不代表菜单已展开，需要重新 `browser_observe` 确认。
+
+截图、按坐标点击、任意脚本执行、文件上传、拖拽与双击仍未实现。
 
 
 
@@ -69,7 +74,7 @@
 | --- | --- | --- |
 | `browser_observe`、`browser_scroll` | 只读 | `allow`（隔离实例内不改变页面或外部状态） |
 | `browser_fill`、`browser_type`、`browser_select` | 改变表单状态 | `prompt` |
-| `browser_click`、`browser_press`、`browser_navigate`、`browser_open` | 可能导航/提交/离开当前页 | `prompt` |
+| `browser_click`、`browser_hover`、`browser_press`、`browser_navigate`、`browser_open` | 可能导航/提交/触发页面脚本 | `prompt` |
 
 危险请求（非 `http(s)`、带凭据的 URL、缺失或畸形的编码文本/键/引用）**在任何预设下都不会被静默放行**：`danger-full-access` 最多降为 `prompt`，其余预设直接 `forbid` 并返回具体原因（例如 `scheme file: is not allowed (only http/https)`）。策略判定发生在取凭据和连接中继之前，拒绝不会产生任何网络或页面副作用。
 

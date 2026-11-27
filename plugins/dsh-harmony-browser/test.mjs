@@ -39,7 +39,7 @@ test('registration adapter registers nine definitions', async () => {
   const defs = []; const session = { id: 'session-a' }; const seen = [];
   const core = createBrowserCore({ authorize: async (r, options) => { seen.push(options.agent); return true; }, execute: async (r, options) => { seen.push(options.agent); return r.operation; } });
   registerBrowserTools({ tools: { register: d => defs.push(d) }, agents: { get: id => id === session.id ? session : undefined } }, d => d, core);
-  assert.deepEqual(defs.map(d => d.name), ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
+  assert.deepEqual(defs.map(d => d.name), ['browser_open', 'browser_observe', 'browser_scroll', 'browser_click', 'browser_hover', 'browser_fill', 'browser_type', 'browser_press', 'browser_select', 'browser_navigate']);
   assert.throws(() => defs[1].execute({}, { signal: new AbortController().signal }), /Session/);
   assert.throws(() => defs[1].execute({}, { agent: { id: 'session-a' } }), /live agent Session/);
   assert.equal(await defs[1].execute({}, { agent: session, signal: new AbortController().signal }), 'observe');

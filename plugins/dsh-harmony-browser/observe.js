@@ -98,6 +98,11 @@ export function observePage(doc, view, register) {
         for (let i = length - 1; i >= 0; i--) stack.push({ node: children[i], depth: depth + 1, textVisible: childTextVisible });
       } catch { /* inaccessible or poisoned node: omit its entire subtree */ }
     }
+    // Anything left unvisited means the snapshot stopped early (item cap, node
+    // cap or JSON budget). Flag it so the caller never mistakes a partial view
+    // for the whole page; the flag only appears when truncation actually
+    // happened, keeping a complete snapshot byte-for-byte unchanged.
+    if (stack.length) result.truncated = true;
   } catch { /* unavailable document */ }
   return result;
 }
@@ -293,6 +298,37 @@ export function buildSelectScript(ref, base64) {
 
 export function buildSelectScriptTemplate() {
   return selectScriptFor(INDEX_PLACEHOLDER, TEXT_PLACEHOLDER);
+}
+
+// Hover: dispatch pointer-hover events at the element centre so menus and
+// preview popovers that open on mouseenter become visible to a follow-up
+// observe. Synthetic hover does not move the real cursor, so pages that rely on
+// mousemove coordinates are only partially served; the fixed status word makes
+// that explicit rather than claiming success.
+export function buildHoverScript(ref) {
+  return hoverScriptFor(validateRef(ref));
+}
+
+export function buildHoverScriptTemplate() {
+  return hoverScriptFor(INDEX_PLACEHOLDER);
+}
+
+function hoverScriptFor(index) {
+  return '(function(){try{' +
+    'const refs=globalThis.' + REFS_KEY + ';const el=refs&&refs[' + index + '];' +
+    'if(!el||el.isConnected!==true)return "stale";' +
+    'const rects=el.getClientRects();if(!rects||rects.length===0)return "hidden";' +
+    'let style=null;try{style=globalThis.getComputedStyle?globalThis.getComputedStyle(el):null;}catch(e){style=null;}' +
+    'if(style&&(style.display==="none"||style.visibility==="hidden"||style.visibility==="collapse"))return "hidden";' +
+    'const rect=el.getBoundingClientRect();const x=rect.left+rect.width/2,y=rect.top+rect.height/2;' +
+    'if(x<0||y<0||x>globalThis.innerWidth||y>globalThis.innerHeight)return "offscreen";' +
+    'let top=null;try{top=document.elementFromPoint(x,y);}catch(e){top=null;}' +
+    'if(top&&top!==el&&!el.contains(top)&&!top.contains(el))return "covered";' +
+    'const opts={bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y};' +
+    'el.dispatchEvent(new MouseEvent("mouseover",opts));' +
+    'el.dispatchEvent(new MouseEvent("mouseenter",{bubbles:false,cancelable:false,composed:true,clientX:x,clientY:y}));' +
+    'el.dispatchEvent(new MouseEvent("mousemove",opts));' +
+    'return "hovered";}catch(e){return "error";}})()';
 }
 
 function selectScriptFor(index, base64) {
