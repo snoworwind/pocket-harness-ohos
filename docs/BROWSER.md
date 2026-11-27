@@ -24,8 +24,9 @@
 | --- | --- | --- |
 | `browser_open` | `url` | 提交导航；需用户点“确认当前页面并恢复”后才能继续 |
 | `browser_observe` | 无 | 只读快照：标题、地址、文本与带 `ref` 的控件 |
+| `browser_text` | `offset`, `limit` | 只读正文提取（默认 0/4000，上限 8000），可翻页；不含表单值与隐藏内容 |
 | `browser_scroll` | `direction: up/down` | 原生滚动 400 vp |
-| `browser_click` | `ref` | 点击；被遮挡、不在视口、隐藏或禁用会失败而不是假成功 |
+| `browser_click` | `ref` | 点击；视口外会先滚动到元素再点，被遮挡、隐藏或禁用会失败而不是假成功 |
 | `browser_hover` | `ref` | 在元素中心派发 `mouseover`/`mouseenter`/`mousemove`，展开悬停菜单后需重新快照 |
 | `browser_fill` | `ref`, `text` | 清空后填入（原生 setter + `input`/`change` 事件） |
 | `browser_type` | `ref`, `text` | 追加输入，不清空原值 |
@@ -47,7 +48,9 @@
 
 `browser_hover` 只派发合成指针事件，**不移动真实光标**：依赖真实 `mousemove` 坐标的页面（部分富文本编辑器、地图）只能部分生效；返回的 `Hover dispatched` 不代表菜单已展开，需要重新 `browser_observe` 确认。
 
-截图、按坐标点击、任意脚本执行、文件上传、拖拽与双击仍未实现。
+`browser_text` 与 `browser_observe` 走同一套可见性判断：`display:none`、`visibility:hidden`、`opacity:0`、`aria-hidden`、`script`/`style`、可编辑子树都不会进入结果。长文章用 `offset` 翻页，返回的 `total` 是完整字符数，`truncated` 表示还有后续。
+
+截图、按坐标点击、任意脚本执行、文件上传、拖拽与双击仍未实现。真机验证见 [BROWSER-VERIFY.md](BROWSER-VERIFY.md)。
 
 
 
@@ -72,13 +75,22 @@
 
 | 操作 | 影响 | 无危险参数时 |
 | --- | --- | --- |
-| `browser_observe`、`browser_scroll` | 只读 | `allow`（隔离实例内不改变页面或外部状态） |
+| `browser_observe`、`browser_text`、`browser_scroll` | 只读 | `allow`（隔离实例内不改变页面或外部状态） |
 | `browser_fill`、`browser_type`、`browser_select` | 改变表单状态 | `prompt` |
 | `browser_click`、`browser_hover`、`browser_press`、`browser_navigate`、`browser_open` | 可能导航/提交/触发页面脚本 | `prompt` |
 
 危险请求（非 `http(s)`、带凭据的 URL、缺失或畸形的编码文本/键/引用）**在任何预设下都不会被静默放行**：`danger-full-access` 最多降为 `prompt`，其余预设直接 `forbid` 并返回具体原因（例如 `scheme file: is not allowed (only http/https)`）。策略判定发生在取凭据和连接中继之前，拒绝不会产生任何网络或页面副作用。
 
 这减少了但**不能消除**跨进程竞态：权限读取与原生执行之间仍有窗口，页面内 JS 也可能在滚动的同一时刻改变状态。会话切换会让整个桥停止。
+
+## 审计留痕
+
+每次请求产生一行 JSONL，写在 `$DSH_HOME/browser-audit.jsonl`（目录 0700、文件 0600），可用 `DSH_BROWSER_AUDIT=0` 关闭：
+
+- 记录：时间、操作、策略决策（`allow`/`prompt`/`forbid`）及原因、结果（`ok`/`error`/`unknown`/`forbid`）、元素引用、滚动方向、导航动作、文本窗口、输入字节长度；
+- 对 URL 只记录 **scheme 与 hostname**，路径与查询串（可能含 token）一律丢弃；
+- 绝不记录页面内容、输入文本、凭据或会话标识；
+- 写入失败被吞掉，不影响请求。
 
 ## 参考的开源设计
 

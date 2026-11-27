@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observePage, buildObserveScript, buildHoverScript, buildHoverScriptTemplate } from './observe.js';
+import { observePage, buildObserveScript, buildHoverScript, buildHoverScriptTemplate, textPage, buildTextScript, buildTextScriptTemplate } from './observe.js';
 import vm from 'node:vm';
 
 const text = value => ({ nodeType: 3, nodeValue: value });
@@ -90,4 +90,33 @@ test('hover script substitutes only a bounded index and never page data', () => 
   assert.equal(buildHoverScriptTemplate().includes('__PH_INDEX__'), true);
   assert.throws(() => buildHoverScript('e80'), /Invalid element reference/);
   assert.throws(() => buildHoverScript('x1'), /Invalid element reference/);
+});
+
+test('text extraction returns prose, honors the window and never leaks form values', () => {
+  const body = element('body', [
+    text(' hello world '),
+    element('p', [text('second paragraph')]),
+    element('input', [text('secret input')]),
+    element('textarea', [text('secret area')]),
+    element('script', [text('var x=1')]),
+    element('div', [text('hidden text')], {}, { display: 'none' })
+  ]);
+  const full = textPage(documentFor(body), view, 0, 1000);
+  assert.match(full.text, /hello world/);
+  assert.match(full.text, /second paragraph/);
+  assert.equal(full.text.includes('secret'), false);
+  assert.equal(full.text.includes('var x'), false);
+  assert.equal(full.text.includes('hidden text'), false);
+  const win = textPage(documentFor(body), view, 0, 5);
+  assert.ok(win.text.length <= 5);
+  assert.equal(win.truncated, true);
+  assert.equal(textPage(documentFor(body), view, -1, 10).text, '');
+});
+
+test('text script carries only integer bounds and a fixed program', () => {
+  const script = buildTextScript(40, 200);
+  assert.match(script, /textPage\(document,window,40,200\)/);
+  assert.equal(buildTextScriptTemplate().includes('__PH_OFFSET__'), true);
+  assert.throws(() => buildTextScript(-1, 10), /Invalid text offset/);
+  assert.throws(() => buildTextScript(0, 9000), /Invalid text limit/);
 });

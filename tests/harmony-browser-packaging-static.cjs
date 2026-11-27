@@ -5,7 +5,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const source = path.join(root, 'plugins/dsh-harmony-browser');
 const raw = path.join(root, 'entry/src/main/resources/rawfile/tools/harmony-browser');
-const files = ['package.json', 'index.js', 'policy.js', 'client-relay.js', 'relay.cjs', 'credential-provider.js'];
+const files = ['package.json', 'index.js', 'policy.js', 'audit.js', 'client-relay.js', 'relay.cjs', 'credential-provider.js'];
 assert.deepEqual(fs.readdirSync(raw).sort(), [...files].sort());
 for (const file of files) {
   assert.deepEqual(fs.readFileSync(path.join(raw, file)), fs.readFileSync(path.join(source, file)), file);

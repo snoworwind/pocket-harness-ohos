@@ -3,7 +3,8 @@ import { url } from '@kit.ArkTS';
 import { BROWSER_CLICK_INDEX_PLACEHOLDER, BROWSER_CLICK_SCRIPT_TEMPLATE, BROWSER_INDEX_PLACEHOLDER,
   BROWSER_INPUT_SCRIPT_TEMPLATE, BROWSER_KEY_PLACEHOLDER, BROWSER_MODE_PLACEHOLDER,
   BROWSER_OBSERVE_SCRIPT, BROWSER_PRESS_SCRIPT_TEMPLATE, BROWSER_SELECT_SCRIPT_TEMPLATE,
-  BROWSER_TEXT_PLACEHOLDER, BROWSER_ALLOWED_KEYS, BROWSER_HOVER_SCRIPT_TEMPLATE } from './BrowserObserveScript';
+  BROWSER_TEXT_PLACEHOLDER, BROWSER_ALLOWED_KEYS, BROWSER_HOVER_SCRIPT_TEMPLATE,
+  BROWSER_TEXT_SCRIPT_TEMPLATE, BROWSER_TEXT_OFFSET_PLACEHOLDER, BROWSER_TEXT_LIMIT_PLACEHOLDER } from './BrowserObserveScript';
 
 // 仅供宿主持有；调用者负责先完成用户授权。代数随实例、可见性和导航变化失效。
 export interface BrowserObservation {
@@ -29,6 +30,7 @@ export class BrowserControl {
   private runPress: (key: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private runSelect: (ref: string, base64: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private runHover: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
+  private runText: (offset: number, limit: number) => Promise<string> = async () => { throw new Error('Browser unavailable'); };
   private navigatePage: (action: string) => boolean = () => false;
 
   attach(isHostVisible: () => boolean, openPage: (target: string) => boolean,
@@ -40,6 +42,7 @@ export class BrowserControl {
     runPress: (key: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     runSelect: (ref: string, base64: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     runHover: (ref: string) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
+    runText: (offset: number, limit: number) => Promise<string> = async () => { throw new Error('Browser unavailable'); },
     navigatePage: (action: string) => boolean = () => false): void {
     this.generation++;
     this.pendingNavigation = false;
@@ -57,6 +60,7 @@ export class BrowserControl {
     this.runPress = runPress;
     this.runSelect = runSelect;
     this.runHover = runHover;
+    this.runText = runText;
     this.navigatePage = navigatePage;
   }
 
@@ -77,6 +81,7 @@ export class BrowserControl {
     this.runPress = async () => { throw new Error('Browser unavailable'); };
     this.runSelect = async () => { throw new Error('Browser unavailable'); };
     this.runHover = async () => { throw new Error('Browser unavailable'); };
+    this.runText = async () => { throw new Error('Browser unavailable'); };
     this.navigatePage = () => false;
   }
 
@@ -231,6 +236,17 @@ export class BrowserControl {
     return result;
   }
 
+  // Readable text is a read-only operation, but it still needs the same
+  // generation checks: a navigation mid-read must not return another page.
+  async text(generation: number, offset: number, limit: number): Promise<string> {
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 200000) { throw new Error('Invalid text offset'); }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 8000) { throw new Error('Invalid text limit'); }
+    const result = await this.runText(offset, limit);
+    if (this.currentGeneration() !== generation) { throw new Error('Browser binding changed'); }
+    return result;
+  }
+
   // History navigation is native-only (no page script). It invalidates every
   // outstanding reference because the document changes.
   navigate(generation: number, action: string): void {
@@ -286,6 +302,12 @@ export struct BrowserView {
       (ref: string): Promise<string> => {
         const index = Number(ref.slice(1));
         const script = BROWSER_HOVER_SCRIPT_TEMPLATE.replace(BROWSER_CLICK_INDEX_PLACEHOLDER, String(index));
+        return this.controller.runJavaScript(script);
+      },
+      (offset: number, limit: number): Promise<string> => {
+        const script = BROWSER_TEXT_SCRIPT_TEMPLATE
+          .replace(BROWSER_TEXT_OFFSET_PLACEHOLDER, String(offset))
+          .replace(BROWSER_TEXT_LIMIT_PLACEHOLDER, String(limit));
         return this.controller.runJavaScript(script);
       },
       (action: string): boolean => {

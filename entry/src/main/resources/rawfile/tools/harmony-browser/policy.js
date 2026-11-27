@@ -28,6 +28,7 @@ export const BrowserDecision = Object.freeze({
 // harmless and dangerous commands).
 export const OPERATION_IMPACT = Object.freeze({
   observe: 'read',
+  text: 'read',
   scroll: 'read',
   fill: 'mutate',
   type: 'mutate',
@@ -75,6 +76,11 @@ export function detectDanger(operation, request) {
   }
   if (operation === 'scroll') {
     if (!['up', 'down'].includes(request.direction)) return 'invalid scroll direction';
+    return null;
+  }
+  if (operation === 'text') {
+    if (!Number.isSafeInteger(request.offset) || request.offset < 0) return 'invalid text offset';
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1) return 'invalid text limit';
     return null;
   }
   if (operation === 'observe') return null;

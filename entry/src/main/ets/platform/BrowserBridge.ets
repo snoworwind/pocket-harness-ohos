@@ -97,6 +97,7 @@ export class BrowserBridge {
         press: (key: string): Promise<string> => this.press(key),
         select: (ref: string, text: string): Promise<string> => this.select(ref, text),
         hover: (ref: string): Promise<string> => this.hover(ref),
+        text: (offset: number, limit: number): Promise<string> => this.text(offset, limit),
         navigate: (action: string): Promise<string> => this.navigate(action),
         onClosed: (): void => this.closed()
       });
@@ -165,6 +166,11 @@ export class BrowserBridge {
     if (request.operation === 'scroll' && direction !== 'up' && direction !== 'down') { return false; }
     if (request.operation === 'click' && !isValidRef(ref)) { return false; }
     if (request.operation === 'hover' && !isValidRef(ref)) { return false; }
+    const offset = request.offset ?? 0;
+    const limit = request.limit ?? 0;
+    if (request.operation === 'text' &&
+      (!Number.isSafeInteger(offset) || offset < 0 || offset > 200000 ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > 8000)) { return false; }
     if ((request.operation === 'fill' || request.operation === 'type' || request.operation === 'select') &&
       (!isValidRef(ref) || !isValidEncodedText(text))) { return false; }
     if (request.operation === 'press' && BROWSER_ALLOWED_KEYS.indexOf(key) < 0) { return false; }
@@ -182,7 +188,11 @@ export class BrowserBridge {
     }
     if (!this.samePage(generation, request.sessionId, page.title, page.url)) { return false; }
     this.approved = { generation: generation, sessionId: request.sessionId,
-      signature: signatureOf(request.operation, target, direction, ref, text, key, action),
+      // Only text carries offset/limit; every other operation must sign the same
+      // empty placeholders its take() call uses, or the signature never matches.
+      signature: signatureOf(request.operation, target, direction, ref, text, key, action,
+        request.operation === 'text' ? String(offset) : '',
+        request.operation === 'text' ? String(limit) : ''),
       pageTitle: page.title, pageUrl: page.url };
     return true;
   }
@@ -239,6 +249,19 @@ export class BrowserBridge {
     // Hover only dispatches synthetic pointer events; it does not move the real
     // cursor, so no menu or popover is guaranteed to have opened.
     return 'Hover dispatched; menu or popover visibility is not confirmed.';
+  }
+
+  private async text(offset: number, limit: number): Promise<string> {
+    const approval = this.take(signatureOf('text', '', '', '', '', '', '', String(offset), String(limit)));
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    const raw = await this.control.text(approval.generation, offset, limit);
+    if (!this.samePage(approval.generation, approval.sessionId, approval.pageTitle, approval.pageUrl)) {
+      throw new Error('Browser binding changed');
+    }
+    if (typeof raw !== 'string' || raw.length > 200000) { throw new Error('Invalid text response'); }
+    return raw;
   }
 
   private async input(ref: string, text: string, mode: string): Promise<string> {
@@ -366,8 +389,8 @@ export function textLengthOf(text: string): number {
 // The approval signature binds the exact arguments the user approved to the
 // arguments later executed. Any mismatch invalidates the approval.
 export function signatureOf(operation: string, url: string = '', direction: string = '', ref: string = '',
-  text: string = '', key: string = '', action: string = ''): string {
-  return [operation, url, direction, ref, text, key, action].join('\u0001');
+  text: string = '', key: string = '', action: string = '', offset: string = '', limit: string = ''): string {
+  return [operation, url, direction, ref, text, key, action, offset, limit].join('\u0001');
 }
 
 // ArkWeb may hand back the script result as a JSON-encoded string. Only the

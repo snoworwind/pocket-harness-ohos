@@ -2,16 +2,17 @@ import { connectRelay } from './client-relay.js';
 import { createCredentialProvider } from './credential-provider.js';
 import { encodeText, validateKey, validateRef } from './observe.js';
 import { BrowserDecision, classifyOperation } from './policy.js';
+import { encodedTextLength, recordAudit, urlAuditFields } from './audit.js';
 import { randomBytes } from 'node:crypto';
 
 export const inject = ['tools', 'agents'];
 
 // Page text is hostile. Randomized, escaped boundaries are defense in depth,
 // not an authorization boundary or a guarantee against prompt injection.
-export function renderUntrustedBrowserResult(value) {
+export function renderUntrustedBrowserResult(value, maximum = 8000) {
   if (typeof value !== 'string') throw new TypeError('Invalid browser result');
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 65536) throw new RangeError('Invalid result bound');
   const nonce = randomBytes(16).toString('hex');
-  const maximum = 8000;
   const truncated = value.length > maximum;
   let body = value.slice(0, maximum);
   // Do not split a UTF-16 surrogate pair at the truncation point.
@@ -100,15 +101,36 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
       if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length !== 1 ||
         !Object.hasOwn(args, 'action') || !['back', 'forward', 'refresh'].includes(args.action)) throw new Error('Expected back, forward or refresh only');
       args = { action: args.action };
+    } else if (operation === 'text') {
+      const raw = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+      for (const key of Object.keys(raw)) if (key !== 'offset' && key !== 'limit') throw new Error('Expected offset and limit only');
+      const offset = raw.offset ?? 0;
+      const limit = raw.limit ?? 4000;
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > 200000) throw new Error('Invalid text offset');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 8000) throw new Error('Invalid text limit');
+      args = { offset, limit };
     } else if (operation !== 'observe' || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length) throw new Error('Invalid arguments');
     // Codex-style policy gate: a dangerous request is rejected before any
     // credential is fetched or the relay is contacted, so no preset can turn it
     // into a silent allow. The reason is concrete, not a generic denial.
     const policy = classifyOperation(operation, args, { preset: initialPreset });
+    // Build the audit line from validated arguments only; it never carries page
+    // content, entered text or credentials (see audit.js).
+    const audit = { operation, decision: policy.decision };
+    if (policy.decision !== BrowserDecision.Allow) audit.reason = policy.reason;
+    if (operation === 'open') Object.assign(audit, urlAuditFields(args.url));
+    if (operation === 'click' || operation === 'hover') audit.ref = args.ref;
+    if (operation === 'scroll') audit.direction = args.direction;
+    if (operation === 'navigate') audit.action = args.action;
+    if (operation === 'text') { audit.offset = args.offset; audit.limit = args.limit; }
+    if (operation === 'fill' || operation === 'type' || operation === 'select') audit.textLength = encodedTextLength(args.text);
     if (policy.decision === BrowserDecision.Forbid) {
+      recordAudit({ ...audit, outcome: 'forbid' });
       throw new Error(`Browser operation forbidden: ${policy.reason}`);
     }
     let client;
+    let outcome = 'ok';
+    let outcomeCode;
     try {
       const credentials = await capability.getCredentials({ agent, signal });
       live(agent, signal);
@@ -120,6 +142,12 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
       if (operation === 'scroll') return 'Scroll command submitted; actual scrolling and network quiet are not verified. Native approval is not verified.';
       if (operation === 'click') return 'Click dispatched; page reaction, navigation and stability are not verified. Native approval is not verified.';
       if (operation === 'hover') return 'Hover dispatched; menu or popover visibility is not verified. Native approval is not verified.';
+      if (operation === 'text') {
+        const rendered = renderUntrustedBrowserResult(result.value, 32000);
+        return result.value.includes('"truncated":true')
+          ? rendered + '\nNOTE: text window ended before the page did; request the next window with a higher offset.'
+          : rendered;
+      }
       if (operation === 'observe') {
         const rendered = renderUntrustedBrowserResult(result.value);
         // "truncated":true is emitted by our fixed snapshot program, not page
@@ -137,11 +165,16 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
       return result.value;
     } catch (error) {
       if (signal.aborted || error?.code === 'unknown' || error?.code === 'aborted' || error?.code === 'closed' || error?.code === 'connection_failed' || error?.code === 'authentication_failed' || error?.code === 'protocol_error') {
+        outcome = 'unknown'; outcomeCode = 'unknown';
         throw Object.assign(new Error('UNKNOWN: browser execution may have occurred; do not automatically retry'), { code: 'unknown' });
       }
+      outcome = 'error'; outcomeCode = typeof error?.code === 'string' ? error.code : 'failed';
       // Do not expose credential-provider or transport errors, which could contain secrets.
       throw new Error('Browser relay request failed; no automatic retry');
-    } finally { client?.close(); }
+    } finally {
+      client?.close();
+      recordAudit({ ...audit, outcome, code: outcomeCode });
+    }
   } };
   return registerBrowserTools(ctx, defineTool, core);
 }
@@ -192,7 +225,7 @@ export function createBrowserCore(binding, { timeoutMs = 30000, maxPending = 16 
   }
   function request(operation, args = {}, { signal, agent } = {}) {
     if (closed) return Promise.reject(new Error('Browser bridge closed'));
-    if (!['open', 'observe', 'scroll', 'click', 'hover', 'fill', 'type', 'select', 'press', 'navigate'].includes(operation)) return Promise.reject(new Error('Unsupported browser operation'));
+    if (!['open', 'observe', 'scroll', 'click', 'hover', 'text', 'fill', 'type', 'select', 'press', 'navigate'].includes(operation)) return Promise.reject(new Error('Unsupported browser operation'));
     let request;
     try {
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid arguments');
@@ -214,6 +247,11 @@ export function createBrowserCore(binding, { timeoutMs = 30000, maxPending = 16 
         if (keys.length !== 2 || !Object.hasOwn(args, 'ref') || !Object.hasOwn(args, 'value')) throw new Error('Expected ref and value only');
         validateRef(args.ref);
         request = Object.freeze({ operation, ref: args.ref, text: encodeText(args.value) });
+      } else if (operation === 'text') {
+        if (keys.length !== 2 || keys[0] !== 'offset' || keys[1] !== 'limit') throw new Error('Expected offset and limit only');
+        if (!Number.isSafeInteger(args.offset) || args.offset < 0 || args.offset > 200000) throw new Error('Invalid text offset');
+        if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 8000) throw new Error('Invalid text limit');
+        request = Object.freeze({ operation, offset: args.offset, limit: args.limit });
       } else if (operation === 'press') {
         if (keys.length !== 1 || keys[0] !== 'key') throw new Error('Expected key only');
         request = Object.freeze({ operation, key: validateKey(args.key) });
@@ -257,6 +295,7 @@ export function registerBrowserTools(ctx, defineTool, core) {
     { name: 'browser_scroll', description: 'Request a user-approved native scroll command. Submission does not establish actual scrolling or network quiet.', parameters: { direction: { type: 'string', enum: ['up', 'down'], required: true, description: 'Scroll direction: up or down.' } }, output, execute: (args, exec) => execute('scroll', args, exec) },
     { name: 'browser_click', description: 'Request a user-approved click on an element reference from a previous browser_observe snapshot. Dispatch does not establish that the page reacted or navigated.', parameters: { ref: { type: 'string', required: true, description: 'Element reference such as e3, taken from a recent browser_observe result. Re-observe after any page change.' } }, output, execute: (args, exec) => execute('click', args, exec) },
     { name: 'browser_hover', description: 'Dispatch pointer-hover events on an element reference from a previous browser_observe snapshot so menus and popovers that open on hover become visible. Does not move the real cursor; take a new snapshot afterwards.', parameters: { ref: { type: 'string', required: true, description: 'Element reference such as e3, from a recent browser_observe result.' } }, output, execute: (args, exec) => execute('hover', args, exec) },
+    { name: 'browser_text', description: 'Read the visible readable text of the page (never form values or hidden content), returned as untrusted data. Use offset/limit to page through long articles.', parameters: { offset: { type: 'number', required: false, description: 'Character offset to start at (default 0, max 200000).' }, limit: { type: 'number', required: false, description: 'Maximum characters to return (default 4000, max 8000).' } }, output, execute: (args, exec) => execute('text', args, exec) },
     { name: 'browser_fill', description: 'Clear an editable input or textarea and enter text, using the native value setter and input/change events. Refuses read-only, disabled and non-text fields.', parameters: { ref: { type: 'string', required: true, description: 'Element reference from browser_observe.' }, text: { type: 'string', required: true, description: 'Text to enter (max 512 characters). Never logged or echoed back.' } }, output, execute: (args, exec) => execute('fill', args, exec) },
     { name: 'browser_type', description: 'Append text to an editable field without clearing it. Use browser_fill to replace the existing value.', parameters: { ref: { type: 'string', required: true, description: 'Element reference from browser_observe.' }, text: { type: 'string', required: true, description: 'Text to append (max 512 characters).' } }, output, execute: (args, exec) => execute('type', args, exec) },
     { name: 'browser_press', description: 'Dispatch a whitelisted key to the focused element. Enter on a form control may also request form submission; navigation is not confirmed.', parameters: { key: { type: 'string', required: true, enum: ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'], description: 'Key to dispatch.' } }, output, execute: (args, exec) => execute('press', args, exec) },

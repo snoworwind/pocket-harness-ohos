@@ -42,6 +42,7 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
           (operation === 'fill' || operation === 'type' || operation === 'select') ? ['ref', 'text', 'signal', 'getAutoPermission'] :
           operation === 'press' ? ['key', 'signal', 'getAutoPermission'] :
           operation === 'navigate' ? ['action', 'signal', 'getAutoPermission'] :
+          operation === 'text' ? ['offset', 'limit', 'signal', 'getAutoPermission'] :
           operation === 'observe' ? ['signal', 'getAutoPermission'] : [];
         if (!allowed.length || Object.keys(options).some(key => !allowed.includes(key))) return Promise.reject(failure('invalid_request', 'Invalid operation or options'));
         if (getAutoPermission !== undefined && typeof getAutoPermission !== 'function') return Promise.reject(failure('invalid_request', 'Invalid automatic-approval resolver'));
@@ -56,6 +57,7 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
             typeof text !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length > 1536)) return Promise.reject(failure('invalid_request', 'Invalid element reference or encoded text'));
         else if (operation === 'press' && (typeof key !== 'string' || !['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(key))) return Promise.reject(failure('invalid_request', 'Unsupported key'));
         else if (operation === 'navigate' && !['back', 'forward', 'refresh'].includes(action)) return Promise.reject(failure('invalid_request', 'Invalid navigation action'));
+        else if (operation === 'text' && (!Number.isSafeInteger(options.offset) || options.offset < 0 || options.offset > 200000 || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 8000)) return Promise.reject(failure('invalid_request', 'Invalid text window'));
         if (requestSignal?.aborted) return Promise.reject(failure('aborted', 'Request aborted before dispatch'));
         const id = `${prefix}_${++count}`;
         const frame = operation === 'open' ? { type: 'request', id, sessionId, operation, url } :
@@ -64,6 +66,7 @@ export function connectRelay({ host, port, credential, sessionId, signal } = {})
           (operation === 'fill' || operation === 'type' || operation === 'select') ? { type: 'request', id, sessionId, operation, ref, text } :
           operation === 'press' ? { type: 'request', id, sessionId, operation, key } :
           operation === 'navigate' ? { type: 'request', id, sessionId, operation, action } :
+          operation === 'text' ? { type: 'request', id, sessionId, operation, offset: options.offset, limit: options.limit } :
           { type: 'request', id, sessionId, operation };
         if (bytes(JSON.stringify(frame)) > 8192) return Promise.reject(failure('invalid_request', 'Request frame too large'));
         return new Promise((resolveRequest, rejectRequest) => {

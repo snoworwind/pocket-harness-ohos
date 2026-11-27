@@ -170,6 +170,7 @@ test('real relay carries fill/press/select/navigate without leaking text to appr
     async press(generation, key) { actions.push(['press', key]); return 'pressed'; },
     async select(generation, ref, text) { actions.push(['select', ref, Buffer.from(text, 'base64').toString('utf8')]); return 'selected'; },
     async hover(generation, ref) { actions.push(['hover', ref]); return 'hovered'; },
+    async text(generation, offset, limit) { actions.push(['text', offset, limit]); return JSON.stringify({ text: 'readable body', total: 13, offset, truncated: false }); },
     navigate(generation, action) { actions.push(['navigate', action]); } };
   const bridge = new BrowserBridge(runtime, control, { visibleSessionId: () => agent.id,
     authorize: async details => { approvals.push(details); return true; },
@@ -189,6 +190,10 @@ test('real relay carries fill/press/select/navigate without leaking text to appr
   assert.match(await call('browser_press', { key: 'Enter' }), /Key events dispatched/);
   assert.match(await call('browser_select', { ref: 'e2', value: 'cn' }), /Option selected/);
   assert.match(await call('browser_hover', { ref: 'e3' }), /Hover dispatched/);
+  const body = await call('browser_text', { offset: 0, limit: 100 });
+  assert.match(body, /UNTRUSTED browser result/);
+  assert.match(body, /readable body/);
+  assert.equal(JSON.stringify(approvals).includes('readable body'), false, 'approval payload must not contain page text');
   assert.match(await call('browser_navigate', { action: 'back' }), /fresh snapshot/);
 
   assert.deepEqual(actions, [
@@ -197,9 +202,10 @@ test('real relay carries fill/press/select/navigate without leaking text to appr
     ['press', 'Enter'],
     ['select', 'e2', 'cn'],
     ['hover', 'e3'],
+    ['text', 0, 100],
     ['navigate', 'back']
   ]);
-  assert.equal(approvals.length, 6, 'every action required its own approval');
+  assert.equal(approvals.length, 7, 'every action required its own approval');
 
   // Invalid arguments are refused before any relay request is made.
   await assert.rejects(call('browser_press', { key: 'F12' }), /no automatic retry|Unsupported key/);

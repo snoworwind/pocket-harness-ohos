@@ -33,6 +33,8 @@ export interface BrowserRelayRequest {
   text?: string;
   key?: string;
   action?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface BrowserRelayCallbacks {
@@ -49,6 +51,7 @@ export interface BrowserRelayCallbacks {
   press: (key: string) => Promise<string>;
   select: (ref: string, text: string) => Promise<string>;
   hover: (ref: string) => Promise<string>;
+  text: (offset: number, limit: number) => Promise<string>;
   navigate: (action: string) => Promise<string>;
   onClosed?: () => void;
 }
@@ -283,6 +286,12 @@ export class BrowserRelay {
     } else if (frame.operation === 'press') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'key']) ||
         typeof frame.key !== 'string' || BROWSER_ALLOWED_KEYS.indexOf(frame.key) < 0) { this.close(); return; }
+    } else if (frame.operation === 'text') {
+      if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'offset', 'limit']) ||
+        typeof frame.offset !== 'number' || !Number.isSafeInteger(frame.offset) ||
+        frame.offset < 0 || frame.offset > 200000 ||
+        typeof frame.limit !== 'number' || !Number.isSafeInteger(frame.limit) ||
+        frame.limit < 1 || frame.limit > 8000) { this.close(); return; }
     } else if (frame.operation === 'navigate') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'action']) ||
         (frame.action !== 'back' && frame.action !== 'forward' && frame.action !== 'refresh')) { this.close(); return; }
@@ -303,7 +312,7 @@ export class BrowserRelay {
     this.arm(29000);
     const request: BrowserRelayRequest = { id: frame.id, sessionId: frame.sessionId,
       operation: frame.operation, url: frame.url, direction: frame.direction, ref: frame.ref,
-      text: frame.text, key: frame.key, action: frame.action };
+      text: frame.text, key: frame.key, action: frame.action, offset: frame.offset, limit: frame.limit };
     this.execute(request).catch(() => this.close());
   }
 
@@ -332,6 +341,7 @@ export class BrowserRelay {
           request.operation === 'press' ? await this.callbacks.press(request.key as string) :
           request.operation === 'select' ? await this.callbacks.select(request.ref as string, request.text as string) :
           request.operation === 'hover' ? await this.callbacks.hover(request.ref as string) :
+          request.operation === 'text' ? await this.callbacks.text(request.offset as number, request.limit as number) :
           request.operation === 'navigate' ? await this.callbacks.navigate(request.action as string) :
           await this.callbacks.observe();
         ok = true;

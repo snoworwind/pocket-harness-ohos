@@ -257,6 +257,10 @@ const server = net.createServer(socket => {
     } else if (valid && obj.operation === 'press') {
       valid = exact(obj, ['type','id','sessionId','operation','key']) && typeof obj.key === 'string' &&
         ['Enter','Tab','Escape','Backspace','Delete','Home','End','PageUp','PageDown','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(obj.key);
+    } else if (valid && obj.operation === 'text') {
+      valid = exact(obj, ['type','id','sessionId','operation','offset','limit']) &&
+        typeof obj.offset === 'number' && Number.isSafeInteger(obj.offset) && obj.offset >= 0 && obj.offset <= 200000 &&
+        typeof obj.limit === 'number' && Number.isSafeInteger(obj.limit) && obj.limit >= 1 && obj.limit <= 8000;
     } else if (valid && obj.operation === 'navigate') {
       valid = exact(obj, ['type','id','sessionId','operation','action']) && ['back','forward','refresh'].includes(obj.action);
     }

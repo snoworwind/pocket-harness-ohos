@@ -145,10 +145,15 @@ function clickScriptForIndex(index) {
     'let style=null;try{style=globalThis.getComputedStyle?globalThis.getComputedStyle(el):null;}catch(e){style=null;}' +
     'if(style&&(style.display==="none"||style.visibility==="hidden"||style.visibility==="collapse"))return "hidden";' +
     // Borrowed from agent-browser: fail instead of reporting success when the
-    // target is outside the viewport or covered by another element.
-    'const rect=el.getBoundingClientRect();const x=rect.left+rect.width/2,y=rect.top+rect.height/2;' +
-    'if(x<0||y<0||x>globalThis.innerWidth||y>globalThis.innerHeight)return "offscreen";' +
-    'let top=null;try{top=document.elementFromPoint(x,y);}catch(e){top=null;}' +
+    // target is outside the viewport or covered by another element. A real user
+    // scrolls first, so bring the element into view once and re-measure; the
+    // occlusion check then runs on the on-screen position.
+    'const measure=()=>{const r=el.getBoundingClientRect();const x=r.left+r.width/2,y=r.top+r.height/2;' +
+    'return {x:x,y:y,ok:x>=0&&y>=0&&x<=globalThis.innerWidth&&y<=globalThis.innerHeight};};' +
+    'let p=measure();' +
+    'if(!p.ok){try{el.scrollIntoView({block:"center",inline:"center"});}catch(e){}p=measure();}' +
+    'if(!p.ok)return "offscreen";' +
+    'let top=null;try{top=document.elementFromPoint(p.x,p.y);}catch(e){top=null;}' +
     'if(top&&top!==el&&!el.contains(top)&&!top.contains(el))return "covered";' +
     'el.click();return "clicked";}catch(e){return "error";}})()';
 }
@@ -353,4 +358,95 @@ function selectScriptFor(index, base64) {
     'el.dispatchEvent(new Event("change",{bubbles:true}));' +
     'return el.selectedIndex===idx?"selected":"rewritten";' +
     '}catch(e){return "error";}})()';
+}
+
+// ---------------------------------------------------------------------------
+// Readable text extraction.
+//
+// Same visibility walk as the snapshot, but keeps prose only and drops every
+// interactive/editable subtree so form values never appear. Bounded by the same
+// node/depth caps plus a total-length budget; the caller asks for a window with
+// offset/limit so long articles can be read in pieces.
+// ---------------------------------------------------------------------------
+
+export const MAX_TEXT_WINDOW = 8000;
+export const MAX_TEXT_TOTAL = 200000;
+export const TEXT_OFFSET_PLACEHOLDER = '__PH_OFFSET__';
+export const TEXT_LIMIT_PLACEHOLDER = '__PH_LIMIT__';
+
+export function validateTextWindow(offset, limit) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_TEXT_TOTAL) throw new Error('Invalid text offset');
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_TEXT_WINDOW) throw new Error('Invalid text limit');
+  return { offset, limit };
+}
+
+export function textPage(doc, view, offset, limit) {
+  const result = { text: '', total: 0, offset: offset, truncated: false };
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_TEXT_TOTAL) return result;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_TEXT_WINDOW) return result;
+  let acc = 0, out = '';
+  const push = (raw) => {
+    const t = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+    if (!t) return;
+    const line = t + '\n';
+    if (out.length < limit && acc + line.length > offset) {
+      const start = Math.max(0, offset - acc);
+      out += line.slice(start, start + (limit - out.length));
+    }
+    acc += line.length;
+    if (acc > MAX_TEXT_TOTAL) acc = MAX_TEXT_TOTAL;
+  };
+  try {
+    const root = doc.body;
+    if (!root || !view || typeof view.getComputedStyle !== 'function') return result;
+    const stack = [{ node: root, depth: 0, textVisible: false }];
+    let visited = 0;
+    while (stack.length && visited++ < MAX_NODES && acc < MAX_TEXT_TOTAL) {
+      const entry = stack.pop();
+      const node = entry.node, depth = entry.depth, textVisible = entry.textVisible;
+      if (!node || depth > MAX_DEPTH) continue;
+      try {
+        if (node.nodeType === 3) {
+          if (textVisible) push(node.nodeValue);
+          continue;
+        }
+        if (node.nodeType !== 1) continue;
+        const tag = typeof node.tagName === 'string' ? node.tagName.toUpperCase() : '';
+        if (!tag || node.hidden || node.getAttribute('aria-hidden') === 'true') continue;
+        const editable = node.getAttribute('contenteditable');
+        const role = node.getAttribute('role');
+        if (node.isContentEditable || (typeof editable === 'string' &&
+            /^(?:|true|plaintext-only)$/i.test(editable.trim())) ||
+            (typeof role === 'string' && /(?:^|\s)(?:textbox|searchbox)(?:\s|$)/i.test(role))) continue;
+        const style = view.getComputedStyle(node);
+        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity) === 0) continue;
+        const rects = node.getClientRects();
+        const hasBox = !!rects && rects.length > 0 && Array.prototype.some.call(rects, r => r.width > 0 && r.height > 0);
+        if (SKIP.has(tag)) continue;
+        const children = node.childNodes;
+        const length = Math.min(Number(children.length) || 0, MAX_NODES);
+        const childTextVisible = hasBox || (style.display === 'contents' && textVisible);
+        for (let i = length - 1; i >= 0; i--) stack.push({ node: children[i], depth: depth + 1, textVisible: childTextVisible });
+      } catch { /* inaccessible or poisoned node */ }
+    }
+  } catch { /* unavailable document */ }
+  result.text = out;
+  result.total = acc;
+  result.truncated = offset + out.length < acc;
+  return result;
+}
+
+export function buildTextScript(offset, limit) {
+  const window = validateTextWindow(offset, limit);
+  return textScriptFor(window.offset, window.limit);
+}
+
+export function buildTextScriptTemplate() {
+  return textScriptFor(TEXT_OFFSET_PLACEHOLDER, TEXT_LIMIT_PLACEHOLDER);
+}
+
+function textScriptFor(offset, limit) {
+  const constants = `const MAX_STRING=${MAX_STRING},MAX_NODES=${MAX_NODES},MAX_DEPTH=${MAX_DEPTH},MAX_TEXT_TOTAL=${MAX_TEXT_TOTAL};`;
+  const tags = `const SKIP=new Set(${JSON.stringify([...SKIP])});`;
+  return `(function(){${constants}${tags}const textPage=${textPage.toString()};return JSON.stringify(textPage(document,window,${offset},${limit}));})()`;
 }
