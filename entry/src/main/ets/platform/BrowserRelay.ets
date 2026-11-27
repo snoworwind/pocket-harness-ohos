@@ -282,7 +282,7 @@ export class BrowserRelay {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'ref', 'text']) ||
         typeof frame.ref !== 'string' || !/^e\d{1,3}$/.test(frame.ref) || Number(frame.ref.slice(1)) >= 80 ||
         typeof frame.text !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(frame.text) ||
-        frame.text.length > 1536) { this.close(); return; }
+        frame.text.length > 2048) { this.close(); return; }
     } else if (frame.operation === 'press') {
       if (!exactKeys(frame, ['type', 'id', 'sessionId', 'operation', 'key']) ||
         typeof frame.key !== 'string' || BROWSER_ALLOWED_KEYS.indexOf(frame.key) < 0) { this.close(); return; }

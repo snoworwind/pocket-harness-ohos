@@ -25,7 +25,14 @@ const INTERACTIVE = new Set(['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT']);
 // the host before any interaction; they are not authorization tokens.
 export function observePage(doc, view, register) {
   const result = { title: '', url: '', items: [] };
-  const clean = (s) => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_STRING) : '';
+  // Truncation must not split a surrogate pair: an orphaned high surrogate
+  // cannot be UTF-8 encoded and turns into U+FFFD on the way to the host.
+  const isHigh = (c) => c >= 0xD800 && c <= 0xDBFF;
+  const clip = (s, max) => {
+    if (typeof s !== 'string' || s.length <= max) return s;
+    return s.slice(0, isHigh(s.charCodeAt(max - 1)) ? max - 1 : max);
+  };
+  const clean = (s) => typeof s === 'string' ? clip(s.replace(/\s+/g, ' ').trim(), MAX_STRING) : '';
   // Each DOM read may throw or be overridden by page code. Fail closed.
   try { result.title = clean(doc.title); } catch { /* unavailable */ }
   try { result.url = clean(doc.location.href); } catch { /* unavailable */ }
@@ -76,7 +83,7 @@ export function observePage(doc, view, register) {
           // and selects are skipped: their descendants hold values/options, and
           // reading those would leak form state.
           if (tag === 'A' || tag === 'BUTTON') {
-            const caption = clean(node.textContent).slice(0, 80);
+            const caption = clip(clean(node.textContent), 80);
             if (caption) item.caption = caption;
           }
           if (typeof register === 'function') {
@@ -221,7 +228,10 @@ function decodeSnippet(placeholder) {
 
 export function buildInputScript(ref, base64, mode) {
   const index = validateRef(ref);
-  if (typeof base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length > MAX_TEXT * 3) {
+  // MAX_TEXT counts UTF-16 units; the worst case is 3 UTF-8 bytes per unit
+  // (BMP characters such as Chinese), which base64 expands by 4/3 → 4 chars
+  // per unit. A tighter bound silently rejected 385-512 Chinese characters.
+  if (typeof base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length > MAX_TEXT * 4) {
     throw new Error('Invalid encoded text');
   }
   if (mode !== 'fill' && mode !== 'type') throw new Error('Invalid input mode');
@@ -385,13 +395,21 @@ export function textPage(doc, view, offset, limit) {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_TEXT_TOTAL) return result;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_TEXT_WINDOW) return result;
   let acc = 0, out = '';
+  // A window boundary must never land inside a surrogate pair; doing so emits
+  // an unencodable lone surrogate to the host.
+  const isHigh = (c) => c >= 0xD800 && c <= 0xDBFF;
+  const isLow = (c) => c >= 0xDC00 && c <= 0xDFFF;
+  const safeEnd = (s, end) => (end > 0 && end < s.length && isHigh(s.charCodeAt(end - 1))) ? end - 1 : end;
+  const safeStart = (s, start) => (start > 0 && start < s.length && isLow(s.charCodeAt(start))) ? start + 1 : start;
   const push = (raw) => {
     const t = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
     if (!t) return;
     const line = t + '\n';
     if (out.length < limit && acc + line.length > offset) {
       const start = Math.max(0, offset - acc);
-      out += line.slice(start, start + (limit - out.length));
+      const end = safeEnd(line, Math.min(line.length, start + (limit - out.length)));
+      const from = safeStart(line, start);
+      if (from < end) out += line.slice(from, end);
     }
     acc += line.length;
     if (acc > MAX_TEXT_TOTAL) acc = MAX_TEXT_TOTAL;

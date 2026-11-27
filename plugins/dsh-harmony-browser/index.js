@@ -196,6 +196,10 @@ export function validateUrl(value) {
   let url;
   try { url = new URL(value); } catch { throw new Error('Invalid URL'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Only HTTP(S) URLs without credentials are allowed');
+  // Percent-encoding inflates non-ASCII paths ~9x, so the bound must be checked
+  // on the canonical form that actually travels over the relay; otherwise an
+  // oversized URL only fails later with a misleading transport error.
+  if (url.href.length > MAX_URL) throw new Error('Invalid URL');
   return url.href;
 }
 

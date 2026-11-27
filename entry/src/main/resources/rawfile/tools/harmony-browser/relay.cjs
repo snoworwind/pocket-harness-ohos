@@ -253,7 +253,7 @@ const server = net.createServer(socket => {
     else if (valid && (obj.operation === 'fill' || obj.operation === 'type' || obj.operation === 'select')) {
       valid = exact(obj, ['type','id','sessionId','operation','ref','text']) && typeof obj.ref === 'string' &&
         /^e\d{1,3}$/.test(obj.ref) && Number(obj.ref.slice(1)) < 80 && typeof obj.text === 'string' &&
-        /^[A-Za-z0-9+/]*={0,2}$/.test(obj.text) && obj.text.length <= 1536;
+        /^[A-Za-z0-9+/]*={0,2}$/.test(obj.text) && obj.text.length <= 2048;
     } else if (valid && obj.operation === 'press') {
       valid = exact(obj, ['type','id','sessionId','operation','key']) && typeof obj.key === 'string' &&
         ['Enter','Tab','Escape','Backspace','Delete','Home','End','PageUp','PageDown','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(obj.key);

@@ -393,3 +393,70 @@ test('rendered page output is bounded, randomised and never splits a surrogate p
   assert.throws(() => renderUntrustedBrowserResult('x', 0), RangeError);
   assert.throws(() => renderUntrustedBrowserResult('x', 65537), RangeError);
 });
+
+// --- surrogate pairs -----------------------------------------------------
+
+const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+test('text paging never splits a surrogate pair and still reassembles exactly', async () => {
+  const { buildTextScript } = await load('observe.js');
+  const body = domElement('body', [textNode('\u{1F600}'.repeat(10))]);
+  const full = JSON.parse(vm.runInNewContext(buildTextScript(0, 1000), textContext(body)));
+  assert.equal(full.total, 21);
+  let joined = '';
+  let offset = 0;
+  let pages = 0;
+  while (offset < full.total && pages++ < 50) {
+    const page = JSON.parse(vm.runInNewContext(buildTextScript(offset, 7), textContext(body)));
+    if (!page.text) break;
+    assert.equal(LONE.test(page.text), false, 'page at offset ' + offset + ' contains a lone surrogate');
+    joined += page.text;
+    offset += page.text.length;
+  }
+  assert.equal(joined, full.text, 'safe boundaries must not drop or duplicate characters');
+});
+
+test('a caption ending in an emoji is truncated without a lone surrogate', async () => {
+  const { observePage } = await load('observe.js');
+  const link = domElement('a', []);
+  link.textContent = 'a'.repeat(79) + '\u{1F600}';
+  const body = domElement('body', [link]);
+  const doc = { title: 't', location: { href: 'https://example.test/' }, body };
+  const result = observePage(doc, textContext(body).window, () => 'e0');
+  const item = result.items.find(i => i.type === 'element');
+  assert.ok(item && item.caption, 'the link keeps a caption');
+  assert.equal(LONE.test(item.caption), false, 'caption must not end in half an emoji');
+  assert.equal(item.caption.length, 79);
+});
+
+test('snapshot text nodes and titles are clipped without lone surrogates', async () => {
+  const { observePage } = await load('observe.js');
+  const body = domElement('body', [textNode('\u{1F600}'.repeat(200))]);
+  const doc = { title: '\u{1F600}'.repeat(200), location: { href: 'https://example.test/' }, body };
+  const result = observePage(doc, textContext(body).window, () => 'e0');
+  assert.equal(LONE.test(result.title), false);
+  const text = result.items.filter(i => i.type === 'text').map(i => i.text).join('');
+  assert.equal(LONE.test(text), false);
+});
+
+// --- text limits and URL normalisation -----------------------------------
+
+test('the documented 512-character limit holds for multi-byte text', async () => {
+  const { encodeText, buildInputScript, validateText } = await load('observe.js');
+  const chinese = '\u6C49'.repeat(512);
+  const encoded = encodeText(chinese);
+  assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), chinese);
+  assert.ok(encoded.length <= 2048, 'base64 of 512 BMP characters is at most 2048 chars');
+  assert.doesNotThrow(() => buildInputScript('e0', encoded, 'fill'),
+    '512 Chinese characters must not be rejected as invalid encoded text');
+  assert.throws(() => validateText('\u6C49'.repeat(513)), /too long/);
+  assert.throws(() => buildInputScript('e0', 'A'.repeat(2049), 'fill'), /Invalid encoded text/,
+    'the bound still rejects genuinely oversized blobs');
+});
+
+test('validateUrl rejects URLs that only become oversized after normalisation', async () => {
+  const { validateUrl } = await load('index.js');
+  assert.throws(() => validateUrl('https://example.test/' + '\u4E2D'.repeat(4000)), /Invalid URL/,
+    'percent-encoding inflates non-ASCII paths, so the canonical form must be bounded');
+  assert.equal(validateUrl('https://example.test/a'), 'https://example.test/a');
+});
