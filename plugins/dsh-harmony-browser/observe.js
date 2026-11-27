@@ -446,7 +446,10 @@ export function buildTextScriptTemplate() {
 }
 
 function textScriptFor(offset, limit) {
-  const constants = `const MAX_STRING=${MAX_STRING},MAX_NODES=${MAX_NODES},MAX_DEPTH=${MAX_DEPTH},MAX_TEXT_TOTAL=${MAX_TEXT_TOTAL};`;
+  // Every free identifier textPage() uses must be defined here: the page script
+  // is built from textPage.toString(), so a missing constant becomes a
+  // ReferenceError at runtime, not at build time.
+  const constants = `const MAX_STRING=${MAX_STRING},MAX_NODES=${MAX_NODES},MAX_DEPTH=${MAX_DEPTH},MAX_TEXT_TOTAL=${MAX_TEXT_TOTAL},MAX_TEXT_WINDOW=${MAX_TEXT_WINDOW};`;
   const tags = `const SKIP=new Set(${JSON.stringify([...SKIP])});`;
   return `(function(){${constants}${tags}const textPage=${textPage.toString()};return JSON.stringify(textPage(document,window,${offset},${limit}));})()`;
 }

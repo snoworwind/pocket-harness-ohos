@@ -195,3 +195,29 @@ test('a malformed or over-used approval check closes the connection', async t =>
     }
   }
 });
+
+test('text requests carry a validated window and bad windows never leave the client', async t => {
+  const r = await relay(t);
+  const client = await connectRelay(r.ready); t.after(() => client.close());
+  const pending = client.request('text', { offset: 100, limit: 500 });
+  const frame = await r.next();
+  assert.deepEqual(Object.keys(frame).sort(), ['id', 'limit', 'offset', 'operation', 'sessionId', 'type']);
+  assert.equal(frame.operation, 'text');
+  assert.equal(frame.offset, 100);
+  assert.equal(frame.limit, 500);
+  r.reply({ type: 'result', id: frame.id, ok: true, value: '{"text":"x","total":1,"offset":100,"truncated":false}' });
+  assert.equal((await pending).ok, true);
+
+  for (const bad of [{ offset: -1, limit: 10 }, { offset: 0, limit: 0 }, { offset: 0, limit: 9000 },
+    { offset: 1.5, limit: 10 }, { offset: 0, limit: 10, extra: 1 }, { limit: 10 }, {}]) {
+    await assert.rejects(client.request('text', bad), /invalid_request|Invalid/i,
+      'rejects ' + JSON.stringify(bad));
+  }
+  // Nothing above may have been written to the relay: the next frame must be
+  // the observe below, not a rejected text window.
+  const sent = client.request('observe');
+  const follow = await r.next();
+  assert.equal(follow.operation, 'observe', 'rejected windows never occupied the wire');
+  r.reply({ type: 'result', id: follow.id, ok: true, value: 'ok' });
+  await sent;
+});

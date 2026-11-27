@@ -67,7 +67,10 @@ export function detectDanger(operation, request) {
     return null;
   }
   if (operation === 'click' || operation === 'hover') {
-    if (typeof request.ref !== 'string' || !/^e\d{1,3}$/.test(request.ref)) return 'invalid element reference';
+    // The bound must match observe.js (MAX_ITEMS = 80). Checking only the shape
+    // would let e80..e999 through whenever a caller skips index.js validation.
+    const match = typeof request.ref === 'string' ? /^e(\d{1,3})$/.exec(request.ref) : null;
+    if (!match || Number(match[1]) >= 80) return 'invalid element reference';
     return null;
   }
   if (operation === 'navigate') {

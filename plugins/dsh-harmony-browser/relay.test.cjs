@@ -249,3 +249,23 @@ test('an answer to a check that was never asked fails closed', async t => {
   r.send(a.sock, {type:'policy',id:'p5',automatic:true});
   await closed(a.sock);
 });
+
+test('text exact frames are forwarded and malformed text frames rejected', async t => {
+  const r = await setup(t);
+  const bad = [{}, { offset: 0 }, { limit: 10 }, { offset: -1, limit: 10 }, { offset: 0, limit: 0 },
+    { offset: 0, limit: 9000 }, { offset: 1.5, limit: 10 }, { offset: '0', limit: 10 },
+    { offset: 200001, limit: 10 }, { offset: 0, limit: 10, extra: 1 }];
+  for (const extra of bad) {
+    const a = await r.connect(); await a.next();
+    r.send(a.sock, { type: 'request', id: 'bad', sessionId: 's', operation: 'text', ...extra });
+    await closed(a.sock);
+  }
+  const a = await r.connect(); await a.next();
+  const frame = { type: 'request', id: 't1', sessionId: 's', operation: 'text', offset: 10, limit: 100 };
+  r.send(a.sock, frame);
+  assert.deepEqual(await r.out(), frame);
+  r.reply({ type: 'result', id: 't1', ok: true, value: '{"text":"x","total":1,"offset":10,"truncated":false}' });
+  await a.next();
+  r.send(a.sock, { type: 'receipt', id: 't1' });
+  assert.deepEqual(await a.next(), { type: 'received', id: 't1' });
+});

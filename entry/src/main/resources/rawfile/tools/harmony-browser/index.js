@@ -73,6 +73,10 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
       return browserSessionPreset(ctx, agent) === initialPreset;
     };
     // Validate before acquiring a credential or contacting the relay.
+    // A malformed or unsafe argument is still an attempt worth recording: it
+    // never reaches the policy layer, so without this the trail would be blind
+    // to rejected URLs such as file:// or javascript:.
+    try {
     if (operation === 'open') {
       if (!args || Object.keys(args).length !== 1 || !Object.hasOwn(args, 'url')) throw new Error('Expected URL only');
       args = { url: validateUrl(args.url) };
@@ -110,6 +114,10 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 8000) throw new Error('Invalid text limit');
       args = { offset, limit };
     } else if (operation !== 'observe' || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length) throw new Error('Invalid arguments');
+    } catch (error) {
+      recordAudit({ operation, outcome: 'invalid', code: 'invalid_arguments' });
+      throw error;
+    }
     // Codex-style policy gate: a dangerous request is rejected before any
     // credential is fetched or the relay is contacted, so no preset can turn it
     // into a silent allow. The reason is concrete, not a generic denial.
@@ -119,7 +127,8 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
     const audit = { operation, decision: policy.decision };
     if (policy.decision !== BrowserDecision.Allow) audit.reason = policy.reason;
     if (operation === 'open') Object.assign(audit, urlAuditFields(args.url));
-    if (operation === 'click' || operation === 'hover') audit.ref = args.ref;
+    if (operation === 'click' || operation === 'hover' || operation === 'fill' ||
+      operation === 'type' || operation === 'select') audit.ref = args.ref;
     if (operation === 'scroll') audit.direction = args.direction;
     if (operation === 'navigate') audit.action = args.action;
     if (operation === 'text') { audit.offset = args.offset; audit.limit = args.limit; }

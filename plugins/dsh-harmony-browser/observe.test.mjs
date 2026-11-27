@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observePage, buildObserveScript, buildHoverScript, buildHoverScriptTemplate, textPage, buildTextScript, buildTextScriptTemplate } from './observe.js';
+import fs from 'node:fs';
+import { observePage, buildObserveScript, buildClickScriptTemplate, buildHoverScript, buildHoverScriptTemplate, buildInputScriptTemplate, buildPressScriptTemplate, buildSelectScriptTemplate, textPage, buildTextScript, buildTextScriptTemplate } from './observe.js';
 import vm from 'node:vm';
 
 const text = value => ({ nodeType: 3, nodeValue: value });
@@ -119,4 +120,25 @@ test('text script carries only integer bounds and a fixed program', () => {
   assert.equal(buildTextScriptTemplate().includes('__PH_OFFSET__'), true);
   assert.throws(() => buildTextScript(-1, 10), /Invalid text offset/);
   assert.throws(() => buildTextScript(0, 9000), /Invalid text limit/);
+});
+
+test('ArkTS script templates stay byte-identical to the generated ones', async () => {
+  // BrowserObserveScript.ets is a generated snapshot. Without this check it can
+  // silently drift from observe.js, which is exactly how a missing constant once
+  // shipped a browser_text that threw on every device.
+  const source = fs.readFileSync(new URL('../../entry/src/main/ets/pages/BrowserObserveScript.ets', import.meta.url), 'utf8');
+  const pairs = [
+    ['BROWSER_OBSERVE_SCRIPT', buildObserveScript()],
+    ['BROWSER_CLICK_SCRIPT_TEMPLATE', buildClickScriptTemplate()],
+    ['BROWSER_INPUT_SCRIPT_TEMPLATE', buildInputScriptTemplate()],
+    ['BROWSER_PRESS_SCRIPT_TEMPLATE', buildPressScriptTemplate()],
+    ['BROWSER_SELECT_SCRIPT_TEMPLATE', buildSelectScriptTemplate()],
+    ['BROWSER_HOVER_SCRIPT_TEMPLATE', buildHoverScriptTemplate()],
+    ['BROWSER_TEXT_SCRIPT_TEMPLATE', buildTextScriptTemplate()]
+  ];
+  for (const [name, expected] of pairs) {
+    const match = source.match(new RegExp('^export const ' + name + ': string = (.*);$', 'm'));
+    assert.ok(match, 'missing ' + name + ' in BrowserObserveScript.ets');
+    assert.equal(JSON.parse(match[1]), expected, name + ' has drifted from observe.js');
+  }
 });
