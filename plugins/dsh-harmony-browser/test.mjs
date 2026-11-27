@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { apply, createBrowserCore, registerBrowserTools, validateUrl } from './index.js';
+import { BrowserDecision, classifyOperation, detectDanger } from './policy.js';
 
 test('plugin is inert and URL validation fails closed', () => {
   apply({ tools: { register() { throw Error('unexpected registration'); } } });
@@ -43,4 +44,33 @@ test('registration adapter registers nine definitions', async () => {
   assert.throws(() => defs[1].execute({}, { agent: { id: 'session-a' } }), /live agent Session/);
   assert.equal(await defs[1].execute({}, { agent: session, signal: new AbortController().signal }), 'observe');
   assert.deepEqual(seen, [session, session]);
+});
+
+// Codex-derived invariant: a dangerous request is never silently allowed.
+// danger-full-access may only downgrade Forbid to Prompt, never to Allow.
+test('policy: danger is never silently allowed under any preset', () => {
+  for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,<b>x', 'http://user:pass@example.com/']) {
+    assert.equal(classifyOperation('open', { url }, { preset: 'danger-full-access' }).decision, BrowserDecision.Prompt);
+    for (const preset of ['', 'read-only', 'workspace-write', 'auto', 'custom']) {
+      assert.equal(classifyOperation('open', { url }, { preset }).decision, BrowserDecision.Forbid);
+    }
+  }
+});
+test('policy: reads are allowed, mutations and external actions are prompted', () => {
+  assert.equal(classifyOperation('observe', {}, {}).decision, BrowserDecision.Allow);
+  assert.equal(classifyOperation('scroll', { direction: 'down' }, {}).decision, BrowserDecision.Allow);
+  for (const [op, req] of [['fill', { ref: 'e1', text: 'aGk=' }], ['type', { ref: 'e1', text: 'aGk=' }], ['select', { ref: 'e1', text: 'aGk=' }], ['click', { ref: 'e1' }], ['press', { key: 'Enter' }], ['navigate', { action: 'refresh' }]]) {
+    assert.equal(classifyOperation(op, req, {}).decision, BrowserDecision.Prompt);
+  }
+  assert.equal(classifyOperation('click', { ref: 'e1' }, { preset: 'auto' }).decision, BrowserDecision.Allow);
+});
+test('policy: rejections carry a concrete reason, malformed requests fail closed', () => {
+  const r = classifyOperation('open', { url: 'file:///etc/passwd' }, { preset: 'auto' });
+  assert.equal(r.decision, BrowserDecision.Forbid);
+  assert.match(r.reason, /file:/);
+  assert.match(classifyOperation('wat', {}, {}).reason, /unsupported/);
+  assert.equal(detectDanger('observe', {}), null);
+  assert.match(detectDanger('click', { ref: 'zz' }), /reference/);
+  assert.match(detectDanger('fill', { ref: 'e1' }), /encoded text/);
+  assert.match(detectDanger('press', {}), /key/);
 });

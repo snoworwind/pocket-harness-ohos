@@ -63,6 +63,16 @@
 - 自动路径会在执行前再查一次，预设变化即降级为人工确认。
 - 服务缺失、抛错或返回未知值一律按人工确认处理。
 
+在预设之上还有一层**策略分类**（`plugins/dsh-harmony-browser/policy.js`，借鉴 Codex 的三态决策），对每个已校验的请求先归入 `allow`/`prompt`/`forbid`：
+
+| 操作 | 影响 | 无危险参数时 |
+| --- | --- | --- |
+| `browser_observe`、`browser_scroll` | 只读 | `allow`（隔离实例内不改变页面或外部状态） |
+| `browser_fill`、`browser_type`、`browser_select` | 改变表单状态 | `prompt` |
+| `browser_click`、`browser_press`、`browser_navigate`、`browser_open` | 可能导航/提交/离开当前页 | `prompt` |
+
+危险请求（非 `http(s)`、带凭据的 URL、缺失或畸形的编码文本/键/引用）**在任何预设下都不会被静默放行**：`danger-full-access` 最多降为 `prompt`，其余预设直接 `forbid` 并返回具体原因（例如 `scheme file: is not allowed (only http/https)`）。策略判定发生在取凭据和连接中继之前，拒绝不会产生任何网络或页面副作用。
+
 这减少了但**不能消除**跨进程竞态：权限读取与原生执行之间仍有窗口，页面内 JS 也可能在滚动的同一时刻改变状态。会话切换会让整个桥停止。
 
 ## 参考的开源设计
@@ -70,5 +80,6 @@
 - [Vercel agent-browser](https://github.com/vercel-labs/agent-browser)：参考其先观察再操作、页面变化后刷新快照的交互模型，以及[不可信内容边界和输出上限](https://agent-browser.dev/security)。本项目的随机边界是纵深防御，不保证阻止提示注入。
 - [NexoAgent 浏览器快照](https://github.com/NexoBridge/NexoAgent/blob/b3ca6056d3b70fdb2768d2956e92c42ce745bf15/electron/server/browser-ax.ts)：参考页面生命周期与快照绑定的设计。其实现依赖 Electron/CDP，不能直接用于 ArkWeb；其中可能返回的表单值不应照搬。
 - [Browser Use 可见性与交互实现](https://github.com/browser-use/browser-use/blob/main/browser_use/ax.py)：参考 `display: contents` 元素无自身盒子但其文本可能可见的处理；该项目的 CDP 交互与自动接受对话框策略未在此照搬。
+- [OpenAI Codex 审批与沙箱策略](https://github.com/openai/codex)：参考 `codex-rs/core/src/safety.rs` 的 `SafetyCheck`（`AutoApprove`/`AskUser`/`Reject{reason}`）三态与 `codex-rs/core/src/exec_policy.rs` 的 `Decision`（`Allow`/`Prompt`/`Forbidden`）决策矩阵。据此新增 `policy.js`：危险请求在任何预设下都不会被静默放行（`danger-full-access` 最多降为 `Prompt`，其余一律 `Forbid`），且拒绝带有具体原因。只读操作在隔离实例内归为 `Allow`，会改变页面或对外产生副作用的操作归为 `Prompt`。Codex 的进程级沙箱（bwrap/Seatbelt）无法直接用于 ArkWeb，本项目的隔离依靠独立 Web 实例、loopback 绑定与逐操作原生确认。
 
 以上为设计参考，并未将这些项目的源码复制进本项目。

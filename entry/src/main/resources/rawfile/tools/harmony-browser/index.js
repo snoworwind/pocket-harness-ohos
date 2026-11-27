@@ -1,6 +1,7 @@
 import { connectRelay } from './client-relay.js';
 import { createCredentialProvider } from './credential-provider.js';
 import { encodeText, validateKey, validateRef } from './observe.js';
+import { BrowserDecision, classifyOperation } from './policy.js';
 import { randomBytes } from 'node:crypto';
 
 export const inject = ['tools', 'agents'];
@@ -100,6 +101,13 @@ export function registerRelayTools(ctx, defineTool, connect = connectRelay, capa
         !Object.hasOwn(args, 'action') || !['back', 'forward', 'refresh'].includes(args.action)) throw new Error('Expected back, forward or refresh only');
       args = { action: args.action };
     } else if (operation !== 'observe' || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length) throw new Error('Invalid arguments');
+    // Codex-style policy gate: a dangerous request is rejected before any
+    // credential is fetched or the relay is contacted, so no preset can turn it
+    // into a silent allow. The reason is concrete, not a generic denial.
+    const policy = classifyOperation(operation, args, { preset: initialPreset });
+    if (policy.decision === BrowserDecision.Forbid) {
+      throw new Error(`Browser operation forbidden: ${policy.reason}`);
+    }
     let client;
     try {
       const credentials = await capability.getCredentials({ agent, signal });

@@ -19,7 +19,7 @@ test('disabled plugin does not touch its context', async () => {
 test('enabled async apply registers tools without returning an invalid effect', async () => {
   // Substitute only module imports so this test also runs without the installed DSH runtime.
   let source = await readFile(new URL('./index.js', import.meta.url), 'utf8');
-  for (const name of ['client-relay.js', 'credential-provider.js', 'observe.js']) {
+  for (const name of ['client-relay.js', 'credential-provider.js', 'observe.js', 'policy.js']) {
     source = source.replace(`'./${name}'`, JSON.stringify(new URL(name, import.meta.url).href));
   }
   const stub = 'data:text/javascript,' + encodeURIComponent('export const defineTool = definition => definition');
